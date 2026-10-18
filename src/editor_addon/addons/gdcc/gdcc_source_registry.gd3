@@ -2,7 +2,7 @@
 class_name GdccSourceRegistry
 extends Node
 
-## Content truth table and dirty tracking for the diagnostics channel (plan §3.5/§4.4).
+## Content truth table and dirty tracking for the diagnostics channel.
 ## Child feature of `GdccEditorService`: owns `_sources`/`_dirty`/tombstones/`_disk_known`
 ## and the `_validate`-driven `notify_source_changed` entry point. Pure state — it performs
 ## no RPC and no ticking; the reconciler and scheduler consume it through the accessors
@@ -91,7 +91,7 @@ func entry(path: String) -> Variant:
 
 
 ## Live content version of `path`, or -1 when untracked. Read-only probe — unlike
-## `notify_source_changed` it never bumps versions or touches dirty marks (the Phase 5
+## `notify_source_changed` it never bumps versions or touches dirty marks (the
 ## revalidation pump uses it for the fire-time staleness check).
 func live_version(path: String) -> int:
     var e: Variant = _sources.get(path)

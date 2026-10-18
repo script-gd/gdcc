@@ -163,7 +163,7 @@ func request_lookup(path: String, text: String, line: int, col: int) -> Dictiona
     # `definition_ok` rides along for observability: a null definition with
     # `definition_ok == true` is the server's "no definition found", while
     # `definition_ok == false` is a leg failure — callers asserting "unknown symbol"
-    # must not confuse the two (review finding).
+    # must not confuse the two.
     return {
         "ok": true, "hover": hover_response.get("result"),
         "definition": definition, "definition_ok": definition_ok,
@@ -181,7 +181,7 @@ func _lookup_degraded() -> Dictionary:
 ## definition that can actually navigate (same-file line, or a cross-file line whose
 ## Script resource loaded). A definition with no project path, valid start line, or
 ## loadable cross-file Script is NOT success on its own. Returned columns are not
-## reverse-mapped through the Phase 7 view: the engine consumes only the line, and
+## reverse-mapped through the erasure view: the engine consumes only the line, and
 ## both erasure forms preserve line counts.
 func _lookup_result(path: String, response: Dictionary) -> Dictionary:
     var description: String = _lookup_hover_text(response.get("hover"))

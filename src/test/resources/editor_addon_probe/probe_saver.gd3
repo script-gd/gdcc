@@ -2,8 +2,8 @@
 class_name ProbeSaver
 extends ResourceFormatSaver
 
-## Phase 0 probe: ResourceFormatSaver overrides, including the `resource as ProbeScript`
-## cross-class cast guard before writing the source text back (implementation plan §3.3/§5).
+## Bootstrap probe: ResourceFormatSaver overrides, including the `resource as ProbeScript`
+## cross-class cast guard before writing the source text back.
 
 func _save(resource: Resource, path: String, flags: int) -> int:
     var script: ProbeScript = resource as ProbeScript

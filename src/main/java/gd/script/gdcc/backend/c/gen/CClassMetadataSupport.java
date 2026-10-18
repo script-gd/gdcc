@@ -16,7 +16,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/// Phase 6 compile-time class metadata (editor-integration plan §7 Phase 6).
+/// Compile-time class metadata for the editor integration.
 ///
 /// Every compiled class — including each nested inner class under its canonical
 /// `Outer__sub__Inner` registration name — gets one synthesized static method
@@ -128,8 +128,8 @@ public final class CClassMetadataSupport {
 
     /// Builds the `{"gdcc": {...}}` payload for one class. `source_res_path` is emitted only
     /// when the display label is `res://`-shaped; `source_path` only when the caller uploaded an
-    /// absolute path (plan §7 Phase 6 item 3 — consumers globalize `source_res_path` as the
-    /// fallback). `source_name` keeps the dotted source-level name (`Outer.Inner`) recorded by
+    /// absolute path (there is deliberately no globalize-`source_res_path` fallback: a bare
+    /// res:// label cannot prove the class was compiled from THIS project). `source_name` keeps the dotted source-level name (`Outer.Inner`) recorded by
     /// the frontend skeleton, never the canonical registration identity.
     public static @NotNull String buildMetadataJson(
             @NotNull LirModule module,

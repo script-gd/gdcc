@@ -4,7 +4,7 @@ extends ResourceFormatSaver
 
 var last_save_time: float = 0.0
 
-## Writes `.gd3` resources back to disk (implementation plan §2.4/§3.3): a plain text
+## Writes `.gd3` resources back to disk: a plain text
 ## round-trip of the in-memory source, nothing else. Write failures are reported — the file
 ## may already be truncated by the `WRITE` open, so returning OK on a failed write would make
 ## the editor treat unsaved changes as saved. Note `FileAccess.get_error()` does NOT reflect

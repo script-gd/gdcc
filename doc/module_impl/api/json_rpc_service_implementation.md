@@ -9,11 +9,11 @@
 ## 文档状态
 
 - 状态：事实源维护中
-- 更新日期：2026-09-28
+- 更新日期：2026-10-18
 - 近期变更（2026-09-28）：新增第 27 个方法 `module.copy`（模块快照复制，见 §2.2 表末
   语义说明与 §5 测试锚点），编辑器插件 dock 编译流改为"复制私有诊断模块 → 副本
   options.set → 编译副本"，详见
-  `doc/module_impl/editor_addon/gd3_editor_integration_implementation.md` Phase 10。
+  `doc/module_impl/editor_addon/gd3_editor_integration_implementation.md` §4.9。
 - 范围：
   - `src/main/java/gd/script/gdcc/rpc/**`
   - `src/main/java/gd/script/gdcc/api/ModuleState.java`（`.gd`/`.gd3` 源码收集过滤）
@@ -147,7 +147,7 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
   返回，shutdown hook 的 `stop(0)`/`executor.close()` 会与尚未返回的请求线程互相等待
   死锁）、禁止用 sleep 赌写回完成。notification 形态（无 `id`）同样触发退出（204 后
   生效）。边界：若服务 exchange 在写回前断开，进程按设计保持运行（客户端从未看到确认；
-  编辑器侧的端口探测+kill 兜底覆盖清理，见集成计划 §3.7）；两个**并发** shutdown 请求
+  编辑器侧的端口探测+kill 兜底覆盖清理，见集成实现 §3.7）；两个**并发** shutdown 请求
   各自标记自己的 exchange，先完成写回者触发退出，另一并发调用方可能观测到连接中断而
   非 `{}`（二者请求的是同一退出，结果等价）。退出后的优雅收尾由 `gdcc serve` 既有的
   JVM shutdown hook 完成（`server.close()` + `API.close()`，见 §2.5）。仅 `OS.kill`
@@ -217,7 +217,7 @@ DTO codec 规则：
    `Boolean includeLowering`（默认 `false`）、`String displayPath` /
    `String absolutePath` / `String category`（默认 `null`）。`absolutePath`
    （2026-09-28 新增）是可选的宿主绝对源路径，仅被编译期类元数据
-   （`gd3_editor_integration_implementation.md` Phase 6 的 `source_path`）消费；
+   （`gd3_editor_integration_implementation.md` §7.1 的 `source_path`）消费；
    与 `displayPath` 同规则——重传缺省时保留既有值，空白串报 -32602。
 4. 类型错误的组件（Gson `JsonSyntaxException`/`JsonParseException`）以 `-32602` 失败。
 5. param record 在紧凑构造器中执行 blank/格式校验，覆盖那些 API 层更晚才会失败的
@@ -371,13 +371,13 @@ DTO codec 规则：
   PopupPanel 显示服务版本、与 dock 同格式且每秒刷新的成功构建相对时间、项目级编译参数
   以及真实 GDCC 项目设置入口。相对时间阈值与旧时间记录读取见编辑器集成文档。
 - `server_launcher.gd` — `@tool extends Node`；按需拉起/所有权内关闭 `gdcc serve`
-  （解释执行；dock 在 gdcc 语言注册前就依赖它）。合同见集成计划 §3.7。
+  （解释执行；dock 在 gdcc 语言注册前就依赖它）。合同见集成实现 §3.7。
 - `gdcc_syntax_highlighter.gd` — `@tool extends EditorSyntaxHighlighter`；`.gd3` 的
   GDScript 对等语法高亮（解释执行——编译类在 GDExtension SCENE 级注册，够不到
-  EDITOR 级的 EditorSyntaxHighlighter 基类）。合同见集成计划 §3.9。
+  EDITOR 级的 EditorSyntaxHighlighter 基类）。合同见集成实现 §3.9。
 - `gdcc_editor_service.gd3`、`gdcc_script_language.gd3`、`gdcc_script.gd3`、
   `gdcc_script_format_loader.gd3`、`gdcc_script_format_saver.gd3` — `.gd3` 语言集成
-  （编译目标；与客户端同模块 `gdcc_for_editor`）。合同见集成计划 §3。
+  （编译目标；与客户端同模块 `gdcc_for_editor`）。合同见集成实现 §3。
 - `gdcc_rpc_client.gd3` — JSON-RPC 客户端库源码。**自举编译目标。** 使用专属扩展名
   `.gd3` 而非 `.gd`：Godot 引擎（含编辑器）不加载、不解析、不注册 `.gd3` 文件，
   因此源码中的 `class_name GdccRpcClient` 与编译产物 GDExtension 注册的同名类
@@ -657,15 +657,15 @@ fixture，列入 §7 后续工作。
   `createdAt`/`completedAt` 是 ISO-8601 字符串），以及最终的
   `CompileResult.outcome`。
 - dock 的 host/port/启动命令是**项目级设置**（ProjectSettings `gdcc/compilation_server/host`、
-  `gdcc/compilation_server/port`、`gdcc/compilation_server/launch_command`；旧项目的 `gdcc/server/*` 三键一次性迁移并移除，新键优先，见集成计划 §3.7 的
+  `gdcc/compilation_server/port`、`gdcc/compilation_server/launch_command`；旧项目的 `gdcc/server/*` 三键一次性迁移并移除，新键优先，见集成实现 §3.7 的
   配置来源修订与一次性 EditorSettings 迁移说明），dock 自身不再提供编辑框，只在状态
   区只读显示 configured/effective 端点与 auto-launch 是否已配置；`auto_setup_module`
-  在任何连接尝试前先经 `server_launcher.gd` 的 `ensure_running_async`（见集成计划
+  在任何连接尝试前先经 `server_launcher.gd` 的 `ensure_running_async`（见集成实现
   §3.7）：已侦听则直连（外部服务，绝不关闭）；未配置命令则保持被动失败行为；配置了
   命令则按 `{host}`/`{port}` 占位符拉起并等待就绪（≤15s）。`server_launcher.gd` 还
   持有 `shutdown_owned()`（插件 `_exit_tree` 最后一步）：对本会话拉起的进程发
   `server.shutdown` RPC，收到 200 响应即完成；不可达且端口仍在侦听时才 `OS.kill`
-  兜底（PID 复用防护，见集成计划 §9 R19）。
+  兜底（PID 复用防护，见集成实现 §10 R19）。
 - 标题栏菜单通过独立客户端查询 `server.availableCCompilerKinds`，可用项之外始终提供
   默认 Auto。项目选择保存于 `gdcc/build/c_compiler_kind`，Auto 在构建副本的 `options.set`
   中写入 `cCompilerKind: null`；显式选择回传枚举名称。断连、查询失败或无后端时禁用
@@ -744,12 +744,11 @@ fixture，列入 §7 后续工作。
   （仅解析，不 lowering，因为编辑器专用 API 不是自举
   目标）与 `plugin.cfg` 五字段检查。若分析或 lowering 拒绝了客户端的某个构造，
   按 §4.2 简化客户端后重跑；不得削弱测试期望。
-- `.gd3` 语言集成静态门禁：`EditorAddonScriptLanguageAnalysisTest`（gd3 编辑器集成
-  计划 Phase 1）—— `addons/gdcc/` 下**全部** `.gd3` 源码（语言/脚本/加载器/保存器/
+- `.gd3` 语言集成静态门禁：`EditorAddonScriptLanguageAnalysisTest`（gd3 编辑器集成）—— `addons/gdcc/` 下**全部** `.gd3` 源码（语言/脚本/加载器/保存器/
   常驻服务/客户端）作为一个模块 analyze+lowering 干净（跨类引用可解析）；全部编译源
   去注释+去字符串内容后无 `await`；plugin/dock/项目管理器/工具栏/launcher/高亮器
   等解释型 `.gd` 仅语法解析；安装器两个 `.gdextension` 安装出口（单平台/多平台）产物均含
-  `reloadable = false` 且无 `reloadable = true`（热重载悬空指针防护，集成计划 §6；
+  `reloadable = false` 且无 `reloadable = true`（热重载悬空指针防护，集成实现 §6；
   后端 `GdextensionMetadataFile` 的 `reloadable = true` 渲染合同不变，改写只做在
   安装器后处理）；无动态库产物的安装必须抛 `IOException`（负例）。
 - `.gd3` 语言集成引擎测试（zig + `GODOT_BIN` 门控）：
@@ -820,7 +819,7 @@ PCH、逐 TU 编译与单次链接策略。GDExtension 的边界为 C ABI，具�
 生成 `build/distributions/gdcc_editor_addon.zip`，不改变源码目录的手工安装。
 包根为 `addons/gdcc/`，排除 `.gd3` 与其他 addon；debug/release 模式均加载对应 Release 库，
 扩展保持 `reloadable = false`。CI 的 Linux x64 editor-addon 任务和 Release 工作流共用此入口，
-详细内容边界见 `gd3_editor_integration_implementation.md` §3.8。
+详细内容边界见 `gd3_editor_integration_implementation.md` §3.12。
 
 ---
 
@@ -862,7 +861,7 @@ test_suite 中新增聚焦 fixture 单独定位环节（特别是 2、4）。
 2026-09-23 起）：`plugin.gd` 持有**单一写入者** busy 协调器——dock 与
 `server_launcher.gd` 只在 busy 起止时向它上报 ±1（`_report_busy`），首个 0→1 时保存
 原值并置 `false`，归 0 时恢复该原值（不写死 `true`）；dock 与 launcher 不再直写
-`OS.*`，双写入者互相覆盖的风险由此消除（集成计划 §3.5/§3.6）。客户端另以
+`OS.*`，双写入者互相覆盖的风险由此消除（集成实现 §3.5/§3.6）。客户端另以
 `request_timeout` 设置 `HTTPRequest.timeout` 兜底挂起请求。真实
 编辑器手工验收必须包含"点击 ping/compile 后不再移动鼠标，请求仍能完成"一条。
 

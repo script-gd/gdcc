@@ -39,7 +39,7 @@ class RpcCompileHttpIntegrationTest {
             rpc.callForResult("vfs.putFile", params(
                     "moduleId", "demo", "path", "/src/main.gd",
                     "content", "class_name RpcCompileMain\nextends RefCounted\n\nfunc value() -> int:\n    return 1\n",
-                    // Phase 6: absolutePath WITHOUT displayPath must still reach the compile
+                    // absolutePath WITHOUT displayPath must still reach the compile
                     // (the registry's "no displayPath" shortcut must not drop it).
                     "absolutePath", "/abs/path/to/main.gd"
             ));
@@ -86,7 +86,7 @@ class RpcCompileHttpIntegrationTest {
             assertTrue(page.isJsonArray());
             assertTrue(rpc.callForResult("compile.getLatestEvent", params("taskId", taskId)).isJsonNull());
 
-            // Phase 6: the absolutePath-only upload landed in the class metadata.
+            // The absolutePath-only upload landed in the class metadata.
             var entryC = Files.readString(tempDir.resolve("compile-project").resolve("entry.c"));
             assertTrue(entryC.contains("/abs/path/to/main.gd"),
                     "entry.c must embed the absolutePath-only upload's source_path");

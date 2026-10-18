@@ -2469,7 +2469,7 @@ public class CCodegenTest {
         assertEquals(1, countOccurrences(hCode, "godot_Variant_destroy(&arg0);"), hCode);
         assertEquals(1, countOccurrences(hCode, "godot_Variant_destroy(&r);"), hCode);
         // +1 over the fixture's own wrappers: the synthesized `_gdcc_get_metadata` accessor
-        // (Phase 6) contributes the static 0-arg Dictionary shape with the same ret cleanup.
+        // contributes the static 0-arg Dictionary shape with the same ret cleanup.
         assertEquals(4, countOccurrences(hCode, "godot_Variant_destroy(&ret);"), hCode);
         assertFalse(hCode.contains("godot_bool_destroy(&r);"), hCode);
         assertTrue(consumeStringWrapperBody.contains("godot_String_destroy(&arg0);"), consumeStringWrapperBody);
@@ -2515,7 +2515,7 @@ public class CCodegenTest {
         var echoIntWrapperBody = resolveCallWrapperBody(hCode, "_1_arg_int_ret_int");
 
         // +1 over the fixture's own wrappers: the synthesized `_gdcc_get_metadata` accessor
-        // (Phase 6) contributes the static 0-arg Dictionary shape with the same ret cleanup.
+        // contributes the static 0-arg Dictionary shape with the same ret cleanup.
         assertEquals(3, countOccurrences(hCode, "godot_Variant_destroy(&ret);"), hCode);
         assertTrue(echoNodeWrapperBody.contains("godot_Variant_destroy(&ret);"), echoNodeWrapperBody);
         assertTrue(echoIntWrapperBody.contains("godot_Variant_destroy(&ret);"), echoIntWrapperBody);

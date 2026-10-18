@@ -2,7 +2,7 @@
 class_name GdccModuleLifecycle
 extends Node
 
-## Private diagnostics module lifecycle (plan §3.5): setup state machine (ping →
+## Private diagnostics module lifecycle: setup state machine (ping →
 ## module.create, with -32001 stale-remnant rebuild), heartbeat, ensure-hook-first outage
 ## recovery, bounded setup-failure cap, and channel teardown. Child feature of
 ## `GdccEditorService`: the root ticks it first every frame and broadcasts its transitions
@@ -12,7 +12,7 @@ extends Node
 
 # `gdcc_editor_diagnostics_<project-root-hash>_<pid>`; computed once. The pid component makes
 # a same-id module provably this process's own crash remnant, so the -32001 rebuild path can
-# never delete another editor's module (plan §3.5).
+# never delete another editor's module.
 var _diag_module_id: String = ""
 var _module_ready: bool = false
 # True from this session's successful module.create until uninstall deletes it or an
@@ -36,7 +36,7 @@ var _setup_concluded: bool = false
 # FAILURE, module-ready, or channel reset (a hook SUCCESS deliberately does not reset it —
 # that would defeat the cap). Beyond the cap the attempt concludes (busy released) and
 # further retries ride activity frames — an endpoint that accepts TCP but never answers RPC
-# must not pin the editor awake forever (review finding).
+# must not pin the editor awake forever.
 var _setup_fail_streak: int = 0
 # Set after this window's stale-module (-32001) delete succeeded; a second -32001 from the
 # very next create means a contradictory server — defer with backoff instead of looping.
@@ -51,15 +51,15 @@ var _next_heartbeat_msec: int = 0
 # can queue a replacement while the old one is in flight).
 var _ping_sent: int = 0
 var _ping_done: int = 0
-# Hook completion attribution (review findings): scalar counters suffice ONLY because the
+# Hook completion attribution: scalar counters suffice ONLY because the
 # tick enforces a single outstanding hook globally (`_hook_sent == _hook_done` gates firing)
 # — a teardown cannot free the old window's hook for a new one to overwrite `_setup_session`
 # underneath it. The launcher guarantees a callback within its own probe/spawn budgets
 # (~20s); the timeout below covers a hook whose waiter was dropped without a callback
 # (launcher teardown), synthesizing the missing completion so attribution never deadlocks.
 # A per-window reply-token object would be cleaner, but the gdcc bootstrap can construct
-# Callables neither from custom-class instances nor with bound arguments (probed; see the
-# implementation doc), so shared-field attribution + single-outstanding is the strongest
+# Callables neither from custom-class instances nor with bound arguments (probed), so
+# shared-field attribution + single-outstanding is the strongest
 # available design. Accepted residual: after a TIMEOUT-abandon, a wedged hook's very late
 # answer can be misattributed to the next hook — bounded to one early ping (worst case one
 # 30s refused-hang) and self-healing.
@@ -70,8 +70,7 @@ var _hook_inflight: bool = false
 var _hook_inflight_since: int = 0
 # Endpoint the in-flight module.create was SENT to (recorded at send time). A stale OK
 # completion after a retarget means the module exists on the OLD server while the reset
-# dropped its ownership — the cleanup must be owed explicitly via the retarget queue
-# (review finding).
+# dropped its ownership — the cleanup must be owed explicitly via the retarget queue.
 var _create_sent_host: String = ""
 var _create_sent_port: int = 0
 # Most recent setup/heartbeat failure text exposed by the diagnostics status snapshot;
@@ -144,7 +143,7 @@ func busy_wanted() -> bool:
 
 
 ## Setup/heartbeat tick. While the module is missing, the ensure hook runs BEFORE the first
-## ping of each outage window (plan §3.5: connection-refused goes through the hook first) —
+## ping of each outage window (connection-refused goes through the hook first) —
 ## the launcher's TCP probe fails in ≤200ms while a refused HTTPRequest hangs for the full
 ## 30s request timeout, so hook-first is also the fast path. Once ready, the same ping
 ## cadence doubles as the heartbeat whose failure detects a killed or restarted server.
@@ -158,7 +157,7 @@ func service_tick(now: int) -> void:
         # released `_hook_inflight` already). Hook-first means NO ping until it lands: a
         # refused HTTPRequest would hang for the full request timeout behind the launcher's
         # fast probe. And single-outstanding means no NEW hook either — that is what keeps
-        # `_setup_session` attributable (review finding).
+        # `_setup_session` attributable.
         if now - _hook_inflight_since < HOOK_TIMEOUT_MSEC:
             return
         # The hook never answered (e.g. the launcher was torn down with the waiter still
@@ -248,7 +247,7 @@ func _on_diag_create_done(response: Dictionary) -> void:
     if _setup_stage != 2 or _setup_session != _diag_session:
         # Stale answer: a retarget/outage bumped the session while the create was in flight.
         # A SUCCESS means the module now exists on the endpoint the create was SENT to while
-        # the reset dropped its ownership — owe that endpoint a delete (review finding).
+        # the reset dropped its ownership — owe that endpoint a delete.
         if service.response_ok(response) and _create_sent_port != 0:
             service.enqueue_orphan_cleanup(_create_sent_host, _create_sent_port, module_id())
         return
@@ -261,7 +260,7 @@ func _on_diag_create_done(response: Dictionary) -> void:
         if _stale_deleted:
             # The server answered -32001 right after we deleted that same id — a
             # contradictory server must not spin the delete/create pair in a tight loop;
-            # share the bounded backoff path instead (review finding).
+            # share the bounded backoff path instead.
             _stale_deleted = false
             _defer_setup_retry()
             return
@@ -291,7 +290,7 @@ func _on_diag_stale_delete_done(response: Dictionary) -> void:
         service.rpc_client().create_module(module_id(), "GDCC Editor Diagnostics") \
                 .completed.connect(_on_diag_create_done)
         return
-    # -32002 (module busy, e.g. a compile holds the gate): defer per plan §3.5; the next
+    # -32002 (module busy, e.g. a compile holds the gate): defer; the next
     # heartbeat tick restarts the create attempt from the ping stage. The guard flag stays
     # cleared so that retried -32001 answers still get their delete attempt.
     _stale_deleted = false
@@ -316,7 +315,7 @@ func _enter_module_ready() -> void:
 
 ## Ping already succeeded here, so the server is reachable and only the module dance failed:
 ## this is NOT the concluded-degraded state — keep `_setup_concluded` false so the retry
-## keeps holding busy (a low-power idle window must not starve it, review finding).
+## keeps holding busy (a low-power idle window must not starve it).
 func _defer_setup_retry() -> void:
     _setup_fail_streak += 1
     if _setup_fail_streak >= SETUP_FAIL_CAP:
@@ -378,7 +377,7 @@ func _on_ensure_ready(err: int, _spawned_by_us: bool) -> void:
         # overlap, so the ping/create/initial-sync chain gets frames even if the editor drops
         # into the low-power window right after. The fail streak is NOT reset here: an
         # endpoint that keeps accepting TCP while never answering RPC must still hit
-        # SETUP_FAIL_CAP, and a capped window must stay concluded (review finding).
+        # SETUP_FAIL_CAP, and a capped window must stay concluded.
         if _setup_fail_streak < SETUP_FAIL_CAP:
             _setup_concluded = false
             _next_heartbeat_msec = now
@@ -391,7 +390,7 @@ func _on_ensure_ready(err: int, _spawned_by_us: bool) -> void:
         # busy). Re-arm the hook for the next backoff cycle. Honest contract: between cycles
         # nothing keeps the editor awake — a retry whose backoff expires while the editor is
         # fully idle runs on the NEXT frame (user activity); only the active
-        # spawn/probe/analysis windows hold busy. That is the §4.4 silent degrade.
+        # spawn/probe/analysis windows hold busy. That is the silent degrade.
         _setup_fail_streak = 0
         _setup_concluded = true
         _ensure_attempted = false

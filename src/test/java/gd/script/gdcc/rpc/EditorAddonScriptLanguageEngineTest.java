@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase 1 engine acceptance of the .gd3 editor integration (plan §7/§8.2), gated on zig +
+/// Engine acceptance of the .gd3 editor integration, gated on zig +
 /// `GODOT_BIN`. Unlike the bootstrap/probe tests (`-s` script mode), these cases run a real
 /// headless EDITOR (`--headless --editor`), because the feature under test is editor
 /// integration: the addon project copy is launched with both the real `gdcc` plugin and an
@@ -54,7 +54,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Cases:
 /// - `language`: language registered as GD3; ResourceLoader load round-trip (source, language
 ///   identity, header parse); ResourceSaver round-trip; `_reload` from disk; worker-thread
-///   `load_threaded_*` path (the §2.4 purity constraint); `_validate` answers valid; a
+///   `load_threaded_*` path (the loader thread-purity constraint); `_validate` answers valid; a
 ///   disable/enable cycle keeps the resident language instance identical.
 /// - `launch`: cold start without a service auto-spawns `gdcc serve` via the configured
 ///   launch command (placeholders substituted by the launcher); disabling the plugin then
@@ -102,7 +102,7 @@ class EditorAddonScriptLanguageEngineTest {
             Map.entry("create_resource", List.of(
                     "config", "classdb_instantiate", "property_list", "save", "edit_resource",
                     "disabled_create_safe", "survived")),
-            // Phase 2: LSP connection lifecycle (backoff retry across the editor-boot window
+            // LSP connection lifecycle (backoff retry across the editor-boot window
             // where the GDScript language server does not listen yet, then drop/reconnect
             // cycles — endpoint steering forces a disconnect, and a plugin disable/enable
             // cycle exercises stop/start re-handshake. Note: the server's runtime restart on
@@ -113,7 +113,7 @@ class EditorAddonScriptLanguageEngineTest {
                     "config", "lsp_endpoint", "lsp_ready", "reconnect_drop",
                     "reconnect_attempts", "reconnect_recover", "plugin_cycle_reconnect",
                     "blocking_safe_after_cycle", "thread_reprobe_clears_flag", "survived")),
-            // Phase 2: `_validate` diagnostic merge — degraded path, error/clean/warning
+            // `_validate` diagnostic merge — degraded path, error/clean/warning
             // samples with exact line anchoring, non-BMP column accounting (R11), and the
             // uninstalled-service safe answer.
             Map.entry("lsp_validate", List.of(
@@ -126,21 +126,21 @@ class EditorAddonScriptLanguageEngineTest {
                     "outline_async_cache", "outline_stale", "outline_timeout", "outline_empty_cache",
                     "outline_non_threaded", "outline_eviction", "outline_error", "outline_empty", "editor_outline",
                     "outline_navigation", "outline_unsaved", "outline_reconnect", "outline_disabled", "survived")),
-            // Phase 2: publishDiagnostics carry no version, so attribution must follow the
+            // publishDiagnostics carry no version, so attribution must follow the
             // per-URI generation FIFO (g1 sent, g2 sent, then g1's notification must still
             // bind to g1); plus a blocking request/response round-trip.
             Map.entry("lsp_fifo", List.of(
                     "config", "lsp_endpoint", "lsp_ready", "fifo_open_change",
                     "fifo_g1_diagnostics", "fifo_g2_diagnostics", "fifo_timeout_realign",
                     "blocking_request", "survived")),
-            // Phase 2 (review finding): runtime enable flips `use_thread` too late — the
+            // Runtime enable flips `use_thread` too late — the
             // server already started main-thread-polled and a programmatic set_setting
-            // cannot restart it (§2.6). The session must refuse inline waits (no 150ms
+            // cannot restart it. The session must refuse inline waits (no 150ms
             // starvation per validate) while diagnostics still surface asynchronously.
             Map.entry("lsp_runtime_enable", List.of(
                     "config", "lsp_port_set", "editor_ready", "plugin_enabled", "lsp_ready",
                     "blocking_refused", "async_diagnostics_surface", "async_outline_surfaces", "survived")),
-            // Phase 3: gdcc diagnostics channel — merge into `_validate` (path-extends
+            // gdcc diagnostics channel — merge into `_validate` (path-extends
             // error + lowering warning/error pair), displayPath keying for same-basename
             // files, stale-visible retention across an edit and LSP-error suppression
             // negatives, fix-then-clear round, busy coordination, -32001 stale-module
@@ -180,7 +180,7 @@ class EditorAddonScriptLanguageEngineTest {
                     "settings_navigation", "manual_server_settings", "editor_setup_menu", "settings_localization", "settings_locale_aliases", "settings_translation_restore", "settings_english_fallback",
                     "disabled_cleanup", "reenabled_shared_manager", "launch_command_migration",
                     "server_endpoint_migration", "server_settings_precedence")),
-            // Phase 4: `_complete_code` — degraded answers (client not READY / no sentinel /
+            // `_complete_code` — degraded answers (client not READY / no sentinel /
             // disabled service), white-box pins of the kind table and the insert-text
             // precedence (the server's emitted kind set is not controllable, so the mapping
             // contract is anchored directly), keyword + member completion through the real
@@ -196,7 +196,7 @@ class EditorAddonScriptLanguageEngineTest {
                     "complete_call_hint", "complete_cjk", "complete_no_sentinel",
                     "fifo_survives_completion", "complete_disabled_safe",
                     "validate_still_healthy", "survived")),
-            // Phase 5: diagnostic visibility — the signal-triggered revalidation after a
+            // Diagnostic visibility — the signal-triggered revalidation after a
             // background merge (current-tab + version gated, popup-deferred, ordering-pinned
             // against the idle beat), the version-advance and same-version-remerge
             // positive/negative pair, the non-current-tab drop, the dock status area, and
@@ -207,7 +207,7 @@ class EditorAddonScriptLanguageEngineTest {
                     "new_version_same_diag_fires", "non_current_tab_dropped",
                     "popup_deferral", "endpoint_retarget_closed", "endpoint_retarget_recover",
                     "endpoint_persists_after_toggle", "status_area", "survived")),
-            // Phase 6+7 (plan §7): compile-time `_gdcc_get_metadata` readback through ClassDB
+            // Compile-time `_gdcc_get_metadata` readback through ClassDB
             // (incl. the nested class and the cache-isolation rule), the class_name erasure
             // admission matrix and rewrite/mapping shapes (whitebox), then end-to-end on a
             // per-case compiled fixture: no `hides a native class` pseudo-error, gdcc
@@ -220,7 +220,7 @@ class EditorAddonScriptLanguageEngineTest {
                     "decision_flip", "edit_shows_gdcc_not_hides",
                     "flip_to_no_erasure", "flip_back_to_erasure", "self_type_filter_matrix",
                     "self_type_error_filtered", "real_type_error_kept", "survived")),
-            // Phase 8: LSP workspace mirror — project `.gd3` files reach the server's parse
+            // LSP workspace mirror — project `.gd3` files reach the server's parse
             // cache only via client didOpen (its disk scan indexes `.gd` only). Anchors:
             // nothing is mirrored while the channel is down (negative), the initial replay
             // lands server-side (documentSymbol proof), an unsaved editor buffer wins over
@@ -231,12 +231,12 @@ class EditorAddonScriptLanguageEngineTest {
                     "lsp_endpoint", "lsp_ready", "mirror_initial_sync", "mirror_buffer_wins",
                     "mirror_disk_refresh", "mirror_delete_close", "mirror_tombstone_recreated",
                     "validate_budget_during_bulk", "mirror_reconnect_replay", "survived")),
-            // Phase 9: `_lookup_code` — degraded answers for the negative paths (client not
+            // `_lookup_code` — degraded answers for the negative paths (client not
             // READY, unknown symbol, disabled service), white-box pins of the hover/
             // definition payload mapping and the URI round-trip, then end-to-end through
             // the real GDScript LSP: same-file hover+definition (LOCAL_VARIABLE type,
             // 1-based location, no `script` key for same-file), cross-file definition via
-            // the Phase 8 workspace mirror (`script` resource + provider path), the
+            // the workspace mirror (`script` resource + provider path), the
             // code-point caret anchor (CJK before the sentinel), and the sentinel-less
             // whole-word fallback.
             Map.entry("lsp_lookup", List.of(
@@ -246,7 +246,7 @@ class EditorAddonScriptLanguageEngineTest {
                     "lookup_cross_file", "lookup_class_name_gap", "lookup_cjk",
                     "lookup_unknown_symbol", "lookup_no_sentinel_fallback",
                     "lookup_disabled_safe", "survived")),
-            // Post-Phase-10 fixes: `gdcc/sync/excluded_globs` — the default set keeps the
+            // Sync exclusions: `gdcc/sync/excluded_globs` — the default set keeps the
             // addon's own .gd3 files out of the diagnostics module AND the LSP workspace
             // mirror, an excluded file OPEN in an editor tab is temporarily included
             // (admitted via notify, evicted after the tab closes), and a settings edit
@@ -268,7 +268,7 @@ class EditorAddonScriptLanguageEngineTest {
             Map.entry("lookup_suspended", List.of(
                     "config", "service_ready", "lsp_ready", "lookup_helpers", "editor_opened",
                     "lookup_version_gate", "outline_keeps_path", "lookup_keeps_path", "save_on_original_path", "survived")),
-            // Phase 9: `_auto_indent_code` — verbatim mirror of the 4.5 GDScript reference
+            // `_auto_indent_code` — verbatim mirror of the 4.5 GDScript reference
             // algorithm (whitespace-stack nesting, blank/comment passthrough, the dedent
             // quirk, the from_line gate, the spaces-indent setting, and the pathological
             // from>to early break). Exact-output anchors computed by hand from the C++
@@ -277,7 +277,7 @@ class EditorAddonScriptLanguageEngineTest {
                     "config", "indent_tabs_basic", "indent_blank_comment_preserved",
                     "indent_dedent_stack_quirk", "indent_from_line_gate",
                     "indent_spaces_setting", "indent_inverted_range", "survived")),
-            // Post-Phase-10: `.gd3` syntax highlighting — the registered GDScript-parity
+            // `.gd3` syntax highlighting — the registered GDScript-parity
             // highlighter is auto-selected for a newly opened .gd3 tab (the ScriptEditor
             // language-name match), per-column colors track the editor theme settings across
             // annotations/type hints/members/strings/regions (incl. a cross-line string and
@@ -924,7 +924,7 @@ class EditorAddonScriptLanguageEngineTest {
                             "flag=" + str(service.lsp_blocking_unsafe))
                     _step("survived", true)
                 
-                # `_validate` diagnostic merge (plan §4.2 steps 1-2 + degrade shapes). Retried
+                # `_validate` diagnostic merge (sync/wait plus degrade shapes). Retried
                 # calls absorb a slow first publish; assertions always run on the final content.
                 func _run_lsp_validate_mode() -> void:
                     var lang := _find_gd3_language()
@@ -958,7 +958,7 @@ class EditorAddonScriptLanguageEngineTest {
                             err_ok = false
                             continue
                         # Every error must carry the current file's res:// path, otherwise the
-                        # editor would file it under "dependency script errors" (§4.2).
+                        # editor would file it under "dependency script errors".
                         if str(e.get("path", "")) != err_path \\
                                 or not e.has("line") or not e.has("column") or not e.has("message"):
                             err_ok = false
@@ -1021,7 +1021,7 @@ class EditorAddonScriptLanguageEngineTest {
                         DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
                 
                     # Disabled state: the service is UNINSTALLED and the resident language must
-                    # still answer the safe valid:true shape (plan §3.5 entry-point contract).
+                    # still answer the safe valid:true shape (UNINSTALLED entry-point contract).
                     EditorInterface.set_plugin_enabled("gdcc", false)
                     await get_tree().process_frame
                     await get_tree().process_frame
@@ -1112,7 +1112,7 @@ class EditorAddonScriptLanguageEngineTest {
                 
                 # Runtime-enable path (gdcc disabled at boot): the language server starts with
                 # thread mode OFF and a programmatic `set_setting` cannot restart it (the
-                # settings-changed notification is C++-only, §2.6). The plugin must mark the
+                # settings-changed notification is C++-only). The plugin must mark the
                 # session blocking-unsafe: inline waits refused, sync still sent, diagnostics
                 # surface asynchronously on editor beats.
                 func _run_lsp_runtime_enable_mode() -> void:
@@ -1188,7 +1188,7 @@ class EditorAddonScriptLanguageEngineTest {
                         warnings = result.get("warnings", [])
                     return result
                 
-                # ---------------- Phase 3: gdcc diagnostics channel ----------------
+                # ---------------- gdcc diagnostics channel ----------------
                 # The fixtures' exact frontend diagnostics are pinned Java-side by
                 # EditorAddonDiagnosticsFixtureTest; here we assert the addon's mapping,
                 # version gating, suppression rules, and module/reconcile lifecycle.
@@ -1355,7 +1355,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("display_path_keying", keying_ok,
                             "a=" + str(dup_a_items.size()) + " b=" + str(dup_b_items.size()))
                 
-                    # Stale-visible contract (post-Phase-10 fix): the edit bumps the version
+                    # Stale-visible contract: the edit bumps the version
                     # instantly, but the previous round's gdcc error must STAY visible — the
                     # editor replaces displayed markers wholesale on every validation beat, so
                     # a version-gated empty read would blank the gutter for the whole
@@ -1471,8 +1471,8 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("rename_reconciles", rename_ok and old_gone,
                             "rename=" + str(rename_ok) + " old_vfs_gone=" + str(old_gone))
                 
-                    # Deletion triggers a whole-module re-round even with nothing dirty
-                    # (review finding): the consumer is clean while the provider exists and must
+                    # Deletion triggers a whole-module re-round even with nothing dirty:
+                    # the consumer is clean while the provider exists and must
                     # gain an error once the provider's class_name vanishes from the module.
                     var provider_path := "res://diag_provider.gd3"
                     var provider_src := "class_name DiagProvider\nextends Node\n"
@@ -1497,7 +1497,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("deletion_triggers_reanalysis", dep_ok and broke,
                             "clean_before=" + str(dep_ok) + " broke_after=" + str(broke))
                 
-                    # Tombstone rule (review finding): deleting a file whose buffer is dirty must
+                    # Tombstone rule: deleting a file whose buffer is dirty must
                     # NOT let the still-open tab resurrect it — `notify_source_changed` refuses
                     # the path while it is absent from disk. The v1 wait first makes the file
                     # mirrored and disk-known, so the deletion is distinguishable from an
@@ -1552,7 +1552,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("hook_invoked_on_outage", _hook_calls > 0,
                             "calls=" + str(_hook_calls) + " " + hook_probe
                             + " stage=" + str(service._lifecycle._setup_stage))
-                    # Bounded degradation (review finding): an endpoint that accepts TCP (hook
+                    # Bounded degradation: an endpoint that accepts TCP (hook
                     # keeps answering OK) but always fails RPC must hit the setup-failure cap
                     # and release busy — the editor must not be pinned awake by a dead endpoint.
                     _hook_calls = 0
@@ -1569,8 +1569,8 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("hook_ok_ping_fail_capped", capped,
                             "concluded=" + str(service._lifecycle._setup_concluded)
                             + " calls=" + str(_hook_calls))
-                    # Stale hook answers must not be consumed as the newer window's answer
-                    # (review finding): retarget while window 1's deferred hook is pending, then
+                    # Stale hook answers must not be consumed as the newer window's answer:
+                    # retarget while window 1's deferred hook is pending, then
                     # answer it late. The single-outstanding design holds window 2's hook until
                     # the stale answer lands; a wrongly-applied stale OK would set the heartbeat
                     # deadline (reset zeroed it) and suppress window 2's hook entirely.
@@ -1614,7 +1614,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("recovered_after_hook", recovered_ok)
                 
                     # A hook left pending across uninstall must not poison the attribution
-                    # counters (review finding): teardown synthesizes the missing completion, so
+                    # counters: teardown synthesizes the missing completion, so
                     # the next session's hook answer applies instead of being dropped as stale.
                     _hook_calls = 0
                     _deferred_replies.clear()
@@ -1657,13 +1657,13 @@ class EditorAddonScriptLanguageEngineTest {
                 """;
     }
 
-    /// Phase 4 (completion) modes. Kept in a separate text block only because of the 64KB
+    /// Completion modes. Kept in a separate text block only because of the 64KB
     /// literal limit — the concatenation must reproduce one continuous GDScript source, so
     /// this block starts with the blank line that separated the sections pre-split.
     private static String driverPluginCompletion() {
         return """
                 
-                # ---------------- Phase 4: code completion (plan §4.3) ----------------
+                # ---------------- code completion ----------------
                 
                 # The exact safe shape of every `_complete_code` failure path: all four
                 # mandatory keys present, result ERR_UNAVAILABLE, empty options.
@@ -1720,7 +1720,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("lsp_ready", await _wait_lsp_ready(45.0))
                 
                     # White-box pins: the server decides WHICH kinds it emits, so the mapping
-                    # table itself is anchored directly (plan §4.3; Snippet→KIND_NODE_PATH is
+                    # table itself is anchored directly (Snippet→KIND_NODE_PATH is
                     # the recorded deviation for the server's node-path options).
                     _step("kind_mapping", lang._completion_kind(7) == 0 and lang._completion_kind(2) == 1 \\
                             and lang._completion_kind(3) == 1 and lang._completion_kind(4) == 1 \\
@@ -1760,9 +1760,8 @@ class EditorAddonScriptLanguageEngineTest {
                     # Class-body keyword completion behind an identifier prefix: an empty line
                     # yields COMPLETION_NONE (no token sits at the cursor, so the parser never
                     # assigns a context) and legitimately zero options — keywords are offered
-                    # only in an identifier context (engine fact, see the plan's Phase 4
-                    # deviation note). Every option must carry the seven mandatory keys (a
-                    # missing key makes the engine drop the option silently, §2.2; `matches`
+                    # only in an identifier context (verified engine behavior). Every option must carry the seven mandatory keys (a
+                    # missing key makes the engine drop the option silently; `matches`
                     # stays optional per `op.has("matches")` in script_language_extension.h)
                     # with contract-relevant types pinned (`font_color` Color, location 1024).
                     var body_path := "res://gd3_complete_body.gd3"
@@ -1842,7 +1841,7 @@ class EditorAddonScriptLanguageEngineTest {
                     # the error diagnostics for exactly this generation. The error sits at
                     # 0-based line 5, a line no earlier document version of this URI used:
                     # severity alone could collide with the stray-`f` error of the completion
-                    # sample, so the line is asserted too (review finding).
+                    # sample, so the line is asserted too.
                     var lsp = _service().get_lsp_client()
                     var fifo_uri: String = lsp.path_to_uri(ProjectSettings.globalize_path(body_path))
                     var fifo_source := "extends Node\\n\\n\\n\\n\\nfunc broken( -> void:\\n    pass\\n"
@@ -1863,7 +1862,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("fifo_survives_completion", fifo_ok, "gen=" + str(fg))
                 
                     # Disabled plugin: the resident language instance must keep answering the
-                    # safe degraded shape (UNINSTALLED entry-point contract, §3.5).
+                    # safe degraded shape (UNINSTALLED entry-point contract).
                     EditorInterface.set_plugin_enabled("gdcc", false)
                     await get_tree().process_frame
                     await get_tree().process_frame
@@ -1894,13 +1893,13 @@ class EditorAddonScriptLanguageEngineTest {
                 """;
     }
 
-    /// Phase 5 (diagnostic visibility) mode. Kept in a separate text block only because of
+    /// Diagnostic-visibility mode. Kept in a separate text block only because of
     /// the 64KB literal limit — the concatenation must reproduce one continuous GDScript
     /// source, so this block starts with the blank line that separated the sections.
     private static String driverPluginRevalidate() {
         return """
                 
-                # ---------------- Phase 5: diagnostic visibility (plan §7 Phase 5) ----------------
+                # ---------------- diagnostic visibility ----------------
                 
                 # Observation anchor: the language's guard-passing `_validate` invocation count.
                 # The acceptance chain is "merge → pump → plugin relay → ScriptTextEditor
@@ -1908,7 +1907,7 @@ class EditorAddonScriptLanguageEngineTest {
                 # no driver-side validation call IS the revalidation. (Editor-signal-level
                 # observation via CodeTextEditor.validate_script connections proved unreliable
                 # for relay-originated emissions in this nested context; the counter reads the
-                # production effect directly and is what the plan's acceptance names.)
+                # production effect directly.)
                 func _lang_validate_count() -> int:
                     var l := _find_gd3_language()
                     if l == null:
@@ -3125,7 +3124,7 @@ class EditorAddonScriptLanguageEngineTest {
                     # the 0.5s with-errors cadence only once errors are displayed, 4.5
                     # code_editor.cpp:1733-1737) while the analysis debounce is 0.8s, so the
                     # merge can land BEFORE the idle — a post-merge counter window would then
-                    # pass on the idle beat alone (review finding). Settling first also lets
+                    # pass on the idle beat alone. Settling first also lets
                     # the idle validation itself push version 2 (no driver-side push needed).
                     if code_edit != null:
                         code_edit.set_text(err_src)
@@ -3342,12 +3341,12 @@ class EditorAddonScriptLanguageEngineTest {
                 """;
     }
 
-    /// Phase 6+7 (class metadata + class_name erasure) mode. Separate text block for the
+    /// Class metadata + class_name erasure mode. Separate text block for the
     /// 64KB literal limit, same as the completion/revalidate chunks.
     private static String driverPluginClassMetadata() {
         return """
                 
-                # ---------------- Phase 6+7: class metadata + class_name erasure (plan §7) ----------------
+                # ---------------- class metadata + class_name erasure ----------------
                 
                 func _run_class_name_erasure_mode() -> void:
                     var service := _service()
@@ -3365,7 +3364,7 @@ class EditorAddonScriptLanguageEngineTest {
                             + "\\nfunc outline_erased() -> void:\\n    pass\\n"
                     var subject_abs := ProjectSettings.globalize_path(subject_path)
                 
-                    # --- Phase 6: metadata readback through ClassDB (the runtime consumption
+                    # --- Metadata readback through ClassDB (the runtime consumption
                     # contract): the compiled fixture class answers `_gdcc_get_metadata` with the
                     # exact source facts the compile was fed. ---
                     var meta_ok: bool = ClassDB.class_exists("Gd3Phase7Subject") \\
@@ -3402,7 +3401,7 @@ class EditorAddonScriptLanguageEngineTest {
                         inner_ok = inner_ok and again is Dictionary and not again.get("gdcc", {}).has("injected")
                     _step("metadata_inner_and_cache", inner_ok)
                 
-                    # --- Phase 7 admission matrix (whitebox on lsp_safe_text): only the exact
+                    # --- Erasure admission matrix (whitebox on lsp_safe_text): only the exact
                     # provenance match erases; every other shape stays identical text. ---
                     var matrix_ok := true
                     var v_positive: Dictionary = service.lsp_safe_text(subject_path, subject_src)
@@ -3460,7 +3459,7 @@ class EditorAddonScriptLanguageEngineTest {
                     forms_ok = forms_ok and t_string.get("erased", true) == false
                     var t_indent: Dictionary = service.lsp_safe_text(subject_path, "  class_name Gd3Phase7Subject\\nextends Node\\n")
                     forms_ok = forms_ok and t_indent.get("erased", true) == false
-                    # Comment tail must not inject a same-line base (review finding): the real base
+                    # Comment tail must not inject a same-line base: the real base
                     # comes from the next line, and the erase uses the zero-drift blank form.
                     var t_tail: Dictionary = service.lsp_safe_text(subject_path,
                             "class_name Gd3Phase7Subject # extends RefCounted\\nextends Node\\n")
@@ -3475,7 +3474,7 @@ class EditorAddonScriptLanguageEngineTest {
                             "class_name Gd3Phase7Subject, \\"res://extends_x.png\\"\\nextends Node\\n")
                     forms_ok = forms_ok and t_icon.get("erased", false) == true \\
                             and int(t_icon["removed_prefix"]) == 0
-                    # Adversarial multiline sequence (review finding): a triple-quote run held in a
+                    # Adversarial multiline sequence: a triple-quote run held in a
                     # comment must not arm the string state; the class_name INSIDE the real string
                     # is not a declaration.
                     var t_adv: Dictionary = service.lsp_safe_text(subject_path,
@@ -3580,7 +3579,7 @@ class EditorAddonScriptLanguageEngineTest {
 
                     # Decision flip: the signal must clear the memoized admissions, RE-SYNC the
                     # current document (anchored by the LSP document version advancing), and fire a
-                    # Phase 5 revalidation (validate counter advances with no driver-side edit).
+                    # revalidation (validate counter advances with no driver-side edit).
                     var frames := 0
                     while frames < 5:
                         await get_tree().process_frame
@@ -3605,7 +3604,7 @@ class EditorAddonScriptLanguageEngineTest {
                     # The edit MUST go through the real editor buffer: an open tab is re-validated
                     # by the editor itself with the BUFFER text, so a driver-side `_validate` with
                     # divergent text would be rolled back by the next editor-driven validation
-                    # (version churn starves the merge — the Phase 5 mode drives set_text too).
+                    # (version churn starves the merge — the revalidate mode drives set_text too).
                     var edited_src := "class_name Gd3Phase7Subject\\nextends Node\\n\\n@onready var camera = $Camera3D\\n"
                     if code_edit != null:
                         code_edit.set_text(edited_src)
@@ -3628,7 +3627,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("edit_shows_gdcc_not_hides", pair_ok and saw_compile_error,
                             str(edit_result) + " v=" + str(edit_version) + " merged=" + str(edit_merged))
                 
-                    # Real admission flip in BOTH directions (review finding: memo clearing alone
+                    # Real admission flip in BOTH directions (memo clearing alone
                     # proves nothing): unloading the fixture extension removes the compiled class,
                     # so erasure must switch OFF; loading it back switches erasure ON again. The
                     # fixture carries `reloadable = true` exactly to allow this (it registers no
@@ -3646,7 +3645,7 @@ class EditorAddonScriptLanguageEngineTest {
                         off_frames += 1
                         resynced_off = lsp_client.document_version_for(subject_uri) > v_before_unload
                     var flip_off: Dictionary = service.lsp_safe_text(subject_path, subject_src)
-                    # Content anchor (review finding): the version advance alone could hide a wrong
+                    # Content anchor: the version advance alone could hide a wrong
                     # re-sent text — the post-unload resync must have delivered the RAW buffer text
                     # (erasure off), the post-load resync the erased view of it.
                     var raw_sent_ok: bool = lsp_client.debug_sent_text(subject_uri) == edited_src
@@ -3738,13 +3737,13 @@ class EditorAddonScriptLanguageEngineTest {
                 """;
     }
 
-    /// Phase 8 (LSP workspace mirror) mode. Kept in a separate text block only because of
+    /// LSP workspace mirror mode. Kept in a separate text block only because of
     /// the 64KB literal limit — the concatenation must reproduce one continuous GDScript
     /// source, so this block starts with the blank line that separated the sections.
     private static String driverPluginWorkspace() {
         return """
                 
-                # ---------------- Phase 8: LSP workspace mirror (plan §7 Phase 8) ----------------
+                # ---------------- LSP workspace mirror ----------------
                 
                 # Flattens the (possibly nested) DocumentSymbol tree into a name list — the
                 # server-side proof that a `.gd3` entered its parse cache (the server's own
@@ -3838,7 +3837,7 @@ class EditorAddonScriptLanguageEngineTest {
                             await _wait_mirror_sent(provider_uri, "mirror_probe_method", 15.0) \\
                                     and await _wait_doc_symbol(provider_uri, "mirror_probe_method", 15.0))
                 
-                    # The editor-buffer rule (plan §7 Phase 8 item 2): an unsaved buffer
+                    # The editor-buffer rule: an unsaved buffer
                     # registered through the same `notify_source_changed` `_validate` uses must
                     # replace the mirrored text even though the disk file never changed.
                     var buffer_src := "extends RefCounted\\n\\nfunc mirror_probe_method_v2_buffer() -> int:\\n    return 2\\n"
@@ -3865,7 +3864,7 @@ class EditorAddonScriptLanguageEngineTest {
                         await get_tree().process_frame
                     _step("mirror_delete_close", closed_ok)
                 
-                    # Tombstone + recreate interlock (review finding): simulate the
+                    # Tombstone + recreate interlock: simulate the
                     # reconciler's tombstone mark on a path that EXISTS on disk again (the
                     # module-gated tombstone lift cannot run while the diagnostics module is
                     # absent — exactly the state of this case). The mirror must treat the
@@ -3891,7 +3890,7 @@ class EditorAddonScriptLanguageEngineTest {
                                     and client.document_version_for(churn_uri) == churn_v0,
                             "v0=%d v1=%d" % [churn_v0, client.document_version_for(churn_uri)])
                 
-                    # Bulk sync must not starve `_validate` (plan §7 Phase 8 验收): queue 40
+                    # Bulk sync must not starve `_validate`: queue 40
                     # fresh files (5 drain frames at 8 ops/frame), then keep validating an
                     # error sample until the mirror's queue is EMPTY. The loop measures calls
                     # across the whole drain (a blocking validate call pauses the frame pump,
@@ -3964,13 +3963,13 @@ class EditorAddonScriptLanguageEngineTest {
                 """;
     }
 
-    /// Phase 9 (`_lookup_code`) mode. Kept in a separate text block only because of the
+    /// `_lookup_code` mode. Kept in a separate text block only because of the
     /// 64KB literal limit — the concatenation must reproduce one continuous GDScript
     /// source, so this block starts with the blank line that separated the sections.
     private static String driverPluginLookup() {
         return """
                 
-                # ---------------- Phase 9: symbol lookup (plan §7 Phase 9) ----------------
+                # ---------------- symbol lookup ----------------
                 
                 # The exact safe shape of every `_lookup_code` failure path: result
                 # ERR_UNAVAILABLE with the `type` key present (the engine answers
@@ -4005,9 +4004,9 @@ class EditorAddonScriptLanguageEngineTest {
                     var classy_path := "res://gd3_lookup_classy.gd3"
                     # Path-based extends (NOT class_name): the 4.5 server resolves global
                     # class names through the engine's ScriptServer table — which never lists
-                    # `.gd3` classes (that registration is the deferred Stage C, plan §7
-                    # Phase 9 `_get_global_class_name`) — while an extends PATH resolves
-                    # through the parser's own dependency loading, which the Phase 8 mirror's
+                    # `.gd3` classes (that registration is the deferred Stage C
+                    # `_get_global_class_name` feature) — while an extends PATH resolves
+                    # through the parser's own dependency loading, which the workspace mirror's
                     # didOpen feeds.
                     var provider_src := "extends RefCounted\\n\\nfunc provider_probe() -> int:\\n    return 7\\n"
                     var consumer_src := "extends \\"res://gd3_lookup_provider.gd3\\"\\n\\n" \\
@@ -4253,7 +4252,7 @@ class EditorAddonScriptLanguageEngineTest {
                             str(local_result))
                 
                     # Cross-file lookup: the inherited method resolves through the path-based
-                    # extends, whose dependency parse the Phase 8 mirror's didOpen feeds (wait
+                    # extends, whose dependency parse the workspace mirror's didOpen feeds (wait
                     # for the provider's server-side parse first). The definition must carry
                     # the provider's Script resource + path + the 1-based def line (0-based
                     # line 2 → 3), or Ctrl+click could never leave the current tab.
@@ -4296,7 +4295,7 @@ class EditorAddonScriptLanguageEngineTest {
                             + sentinel + "Gd3LookupClassy.new()\\n"
                     var gap_result: Dictionary = lang._lookup_code(
                             classy_use_code, "Gd3LookupClassy", classy_use_path, null)
-                    # White-box mapping pin (review finding): the VERIFIED raw answer itself
+                    # White-box mapping pin: the VERIFIED raw answer itself
                     # must map to the degraded shape — otherwise a second end-to-end call
                     # degrading for infra reasons could pass with a broken `_lookup_result`.
                     _step("lookup_class_name_gap",
@@ -4316,7 +4315,7 @@ class EditorAddonScriptLanguageEngineTest {
                     var cjk_result: Dictionary = await _lookup_until_ok(lang, cjk_code, "cjk_probe", cjk_path)
                     _step("lookup_cjk", int(cjk_result.get("result", -1)) == OK, str(cjk_result))
                 
-                    # Negative (three-part, review findings): an unknown symbol must degrade —
+                    # Negative (three-part): an unknown symbol must degrade —
                     # but first prove (1) the document is parsed AND the symbol genuinely
                     # unresolved — the server's own analyzer error naming the identifier
                     # (documentSymbol refuses error-carrying docs) — and (2) the raw channel
@@ -4336,7 +4335,7 @@ class EditorAddonScriptLanguageEngineTest {
                             + sentinel + "zz_no_such_symbol_zz()\\n"
                     var unknown_result: Dictionary = lang._lookup_code(
                             unknown_code, "zz_no_such_symbol_zz", unknown_path, null)
-                    # White-box mapping pin (review finding): the VERIFIED raw answer itself
+                    # White-box mapping pin: the VERIFIED raw answer itself
                     # must map to the degraded shape — a second end-to-end call degrading
                     # for infra reasons could otherwise pass with a broken `_lookup_result`.
                     _step("lookup_unknown_symbol",
@@ -4353,7 +4352,7 @@ class EditorAddonScriptLanguageEngineTest {
                             str(fallback_result))
                 
                     # Disabled plugin: the resident language instance must keep answering the
-                    # safe degraded shape (UNINSTALLED entry-point contract, §3.5).
+                    # safe degraded shape (UNINSTALLED entry-point contract).
                     EditorInterface.set_plugin_enabled("gdcc", false)
                     await get_tree().process_frame
                     await get_tree().process_frame
@@ -4468,7 +4467,7 @@ class EditorAddonScriptLanguageEngineTest {
                             "err=" + str(save_error) + " path_before=" + path_before_save)
                     _step("survived", true)
                 
-                # ---------------- Phase 9: auto indent (plan §7 Phase 9) ----------------
+                # ---------------- auto indent ----------------
                 
                 # Exact-output anchors for the verbatim mirror of the 4.5
                 # `GDScriptLanguage::auto_indent_code` reference: nesting comes from the
@@ -4531,12 +4530,12 @@ class EditorAddonScriptLanguageEngineTest {
                 """;
     }
 
-    /// Post-Phase-10 fixes: sync exclusion globs. Separate block only for the 64KB literal
+    /// Sync exclusion globs. Separate block only for the 64KB literal
     /// limit — the concatenation must keep one continuous GDScript source.
     private static String driverPluginExclusions() {
         return """
                 
-                # ---------------- Post-Phase-10: sync exclusion globs ----------------
+                # ---------------- sync exclusion globs ----------------
                 
                 func _run_sync_exclusions_mode() -> void:
                     var service := _service()
@@ -4679,7 +4678,7 @@ class EditorAddonScriptLanguageEngineTest {
                     # finding): an outage+recovery would ALSO evict the path (recovery
                     # reconcile) while clearing the failure text — a session bump is the only
                     # trace that survives recovery, so without the pin the anchor could pass
-                    # with the throttled check removed. NOTE on ordering (review finding): an
+                    # with the throttled check removed. NOTE on ordering: an
                     # excluded path that no tab ever held may legitimately be evicted BEFORE
                     # its first upload — upload-vs-evict ordering is intentionally NOT
                     # asserted (the server-side delete of PREVIOUSLY uploaded content is
@@ -4939,7 +4938,7 @@ class EditorAddonScriptLanguageEngineTest {
     private static String driverPluginSyntaxHighlighter() {
         return """
                 
-                # ---------------- Post-Phase-10: .gd3 syntax highlighter ----------------
+                # ---------------- .gd3 syntax highlighter ----------------
                 
                 # Last color change at or before `col` in the highlighter's per-line map; the
                 # invalid-color sentinel makes a missing entry fail the comparison loudly.
@@ -5225,7 +5224,7 @@ class EditorAddonScriptLanguageEngineTest {
         runCase("create_resource", new JsonObject());
     }
 
-    /// Phase 2 acceptance: the LSP client reaches READY through its backoff retry on a fresh
+    /// Acceptance: the LSP client reaches READY through its backoff retry on a fresh
     /// editor boot (plugin loads before the server listens), and reconnects after a forced
     /// drop and after a plugin disable/enable cycle.
     @Test
@@ -5236,7 +5235,7 @@ class EditorAddonScriptLanguageEngineTest {
         runCase("lsp_connect", config);
     }
 
-    /// Phase 2 acceptance: `_validate` merges GDScript LSP diagnostics — error/clean/warning
+    /// Acceptance: `_validate` merges GDScript LSP diagnostics — error/clean/warning
     /// samples with exact line anchoring and mandatory `path`, non-BMP column accounting,
     /// plus the degraded (no server) and uninstalled-service safe answers.
     @Test
@@ -5247,7 +5246,7 @@ class EditorAddonScriptLanguageEngineTest {
         runCase("lsp_validate", config);
     }
 
-    /// Phase 2 acceptance: `publishDiagnostics` carries no version, so two generations sent
+    /// Acceptance: `publishDiagnostics` carries no version, so two generations sent
     /// back-to-back must be attributed to their notifications strictly FIFO.
     @Test
     void lspDiagnosticsFollowGenerationFifo() throws Exception {
@@ -5256,7 +5255,7 @@ class EditorAddonScriptLanguageEngineTest {
         runCase("lsp_fifo", config);
     }
 
-    /// Phase 2 (review finding): enabling the plugin at runtime flips `use_thread` too late
+    /// Acceptance: enabling the plugin at runtime flips `use_thread` too late
     /// for the already-running server (settings-changed notification is C++-only). Inline
     /// waits must be refused for the session while diagnostics still arrive asynchronously.
     @Test
@@ -5267,7 +5266,7 @@ class EditorAddonScriptLanguageEngineTest {
         runCase("lsp_runtime_enable", config);
     }
 
-    /// Phase 3 acceptance: the gdcc diagnostics channel end-to-end — version-gated merge
+    /// Acceptance: the gdcc diagnostics channel end-to-end — version-gated merge
     /// into `_validate`, displayPath keying, suppression negatives, fix-then-clear, busy
     /// coordination, stale-module (-32001) rebuild, delete/rename reconciliation, and the
     /// ensure_server_hook outage path. Runs against a real in-process gdcc RPC server; the
@@ -5364,7 +5363,7 @@ class EditorAddonScriptLanguageEngineTest {
         }
     }
 
-    /// Post-Phase-10 acceptance: the `gdcc/sync/excluded_globs` project setting keeps the
+    /// Acceptance: the `gdcc/sync/excluded_globs` project setting keeps the
     /// addon's own `.gd3` files out of the diagnostics module by default, refuses to track
     /// excluded open buffers, and reconciles live in both directions when the setting
     /// changes (through the plugin's ProjectSettings.settings_changed wiring). Runs against
@@ -5380,7 +5379,7 @@ class EditorAddonScriptLanguageEngineTest {
         }
     }
 
-    /// Phase 4 acceptance (plan §4.3): `_complete_code` end-to-end — degraded answers for
+    /// Acceptance: `_complete_code` end-to-end — degraded answers for
     /// the negative paths (client not READY, no sentinel, disabled service), white-box pins
     /// of the kind mapping and insert-text precedence, signature-help mapping plus a real
     /// call-site hint through the GDScript LSP, keyword/member completion with the seven
@@ -5395,7 +5394,7 @@ class EditorAddonScriptLanguageEngineTest {
         runCase("lsp_completion", config);
     }
 
-    /// Phase 5 acceptance (plan §7 Phase 5): signal-triggered revalidation surfaces
+    /// Acceptance: signal-triggered revalidation surfaces
     /// background analysis results with no user input (ordering-pinned against the editor
     /// idle beat, version-gated, popup-deferred, current-tab-gated), the dock status area
     /// reflects the channel state, and the endpoint is single-sourced through
@@ -5413,7 +5412,7 @@ class EditorAddonScriptLanguageEngineTest {
         }
     }
 
-    /// Phase 6+7 acceptance (plan §7): every compiled class answers `_gdcc_get_metadata`
+    /// Acceptance: every compiled class answers `_gdcc_get_metadata`
     /// through ClassDB with its provenance (source paths, dotted source name, module, version),
     /// and the LSP sync view erases `class_name` exactly when the ClassDB class proves to be
     /// compiled from the file being edited — killing the unsuppressible `hides a native class`
@@ -5432,8 +5431,8 @@ class EditorAddonScriptLanguageEngineTest {
         }
     }
 
-    /// Phase 8 acceptance (plan §7 Phase 8): the LSP workspace mirror didOpens the whole
-    /// project `.gd3` set after every LSP (re)connect — with the Phase 7 view transform
+    /// Acceptance: the LSP workspace mirror didOpens the whole
+    /// project `.gd3` set after every LSP (re)connect — with the class_name-erasure view transform
     /// and the editor-buffer-wins rule — follows disk and buffer changes, didCloses
     /// deletions, and never starves `_validate`'s bounded inline wait during bulk sync.
     /// `closed_port` is a guaranteed-dead endpoint for the not-READY negative and the
@@ -5718,10 +5717,10 @@ class EditorAddonScriptLanguageEngineTest {
         runCase("lsp_outline", config);
     }
 
-    /// Phase 9 acceptance (plan §7 Phase 9 `_lookup_code`): hover/definition proxied to
+    /// Acceptance: hover/definition proxied to
     /// the GDScript LSP — degraded answers for the negative paths (client not READY,
     /// unknown symbol, disabled service), white-box pins of the payload mapping and URI
-    /// round-trip, same-file and cross-file (Phase 8 mirror-backed) lookups with the
+    /// round-trip, same-file and cross-file (workspace-mirror-backed) lookups with the
     /// LOCAL_VARIABLE type / 1-based location / Script-resource navigation contract, the
     /// code-point caret anchor, and the sentinel-less fallback.
     @Test
@@ -5763,7 +5762,7 @@ class EditorAddonScriptLanguageEngineTest {
         runCase("lookup_suspended", config);
     }
 
-    /// Phase 9 acceptance (plan §7 Phase 9 `_auto_indent_code`): exact-output anchors for
+    /// Acceptance: exact-output anchors for
     /// the verbatim mirror of the 4.5 GDScript reference algorithm — whitespace-stack
     /// nesting, blank/comment passthrough without stack effect, the dedent-between-widths
     /// quirk, the from_line gate, the spaces-indent editor setting, and the pathological
@@ -5773,7 +5772,7 @@ class EditorAddonScriptLanguageEngineTest {
         runCase("auto_indent", new JsonObject());
     }
 
-    /// Post-Phase-10 acceptance: `.gd3` syntax highlighting. The plugin registers a
+    /// Acceptance: `.gd3` syntax highlighting. The plugin registers a
     /// GDScript-parity `EditorSyntaxHighlighter` template whose supported language is "GD3";
     /// a newly opened `.gd3` tab auto-selects it (language-name match), per-column colors for
     /// annotations, type hints, members (base-class ClassDB entries AND the script's own
@@ -5842,7 +5841,7 @@ class EditorAddonScriptLanguageEngineTest {
         patchEnabledPlugins(projectDir, enableGdccAtBoot);
 
         var lspPort = config.has("lsp_port") ? config.get("lsp_port").getAsInt() : -1;
-        // Cases driving real native builds inside the editor (Phase 10 dock compile) need a
+        // Cases driving real native builds inside the editor (the dock compile case) need a
         // much larger quit-after frame budget than interactive-speed cases; the 10-minute
         // process timeout stays the actual backstop.
         var quitAfter = config.has("quit_after") ? config.get("quit_after").getAsInt() : QUIT_AFTER_FRAMES;
@@ -5860,7 +5859,7 @@ class EditorAddonScriptLanguageEngineTest {
         return compiledAddon;
     }
 
-    /// Phase 6/7 fixture: compiles `Gd3Phase7Subject` (plus a nested class) into a second
+    /// Class-metadata/erasure fixture: compiles `Gd3Phase7Subject` (plus a nested class) into a second
     /// GDExtension whose metadata `source_path` points at the subject file INSIDE this case's
     /// project copy — the provenance match the erasure admission requires can never come from
     /// the once-per-suite addon build (that one compiles from the original `src/`). The

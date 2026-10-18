@@ -114,7 +114,7 @@ func _enter_tree() -> void:
     #    the language's bounded synchronous waits deadlock without it. The engine persists
     #    this setting on editor exit, so the original value must be restored on unload.
     #    A programmatic flip does NOT restart an already-running server (the settings-changed
-    #    notification is emitted only by C++ UI flows, plan §2.6), so the gate is whether the
+    #    notification is emitted only by C++ UI flows), so the gate is whether the
     #    endpoint is listening right now: a listening server stays main-thread-polled for the
     #    rest of this process (mark the session blocking-unsafe, sticky across disable — the
     #    scripted restore does not restart it either); a not-yet-listening server will read
@@ -238,11 +238,11 @@ func _enter_tree() -> void:
     # The service's diagnostics scheduler is frame-driven (debounce pump + RPC flights) and
     # therefore reports busy through the single-writer coordinator like the dock and the
     # launcher — otherwise the low-power idle window right after the user stops typing would
-    # starve exactly the frames the debounce needs (plan §3.5/§4.4). Connected once per
+    # starve exactly the frames the debounce needs. Connected once per
     # plugin instance; the engine drops the connection when this plugin is freed.
     if not _service.busy_delta.is_connected(_report_busy):
         _service.busy_delta.connect(_report_busy)
-    # Phase 5 relay: the service reports revalidation-worthy analysis merges through its
+    # Revalidation relay: the service reports revalidation-worthy analysis merges through its
     # own signal; the ACTUAL `validate_script` emission happens HERE in interpreted code.
     # This indirection is load-bearing: a gdcc-compiled foreign-signal `Object.emit_signal`
     # from the service's frame pump empirically delivers to no connection (2026-09-27
@@ -417,7 +417,7 @@ func _read_server_endpoint() -> Array:
 
 
 ## One-shot bounded probe (non-blocking `poll()` + ticks deadline, the only blocking form
-## plan §1.2 permits): is something accepting TCP on the LSP endpoint right now? Used to
+## this addon permits): is something accepting TCP on the LSP endpoint right now? Used to
 ## decide whether a `use_thread` flip can still reach the server before it starts. The
 ## probe sends nothing, so it never steals `latest_client_id` diagnostics targeting.
 func _lsp_endpoint_listening(host: String, port: int) -> bool:
@@ -444,7 +444,7 @@ func _exit_tree() -> void:
     # uninstall the language integration → restore the LSP thread setting → and only then
     # shut down the spawned server (uninstall may still need the server reachable). Note the
     # scripted restore does NOT restart the engine's LSP server (settings-changed
-    # notification is C++-only, plan §2.6); ordering still matters so our own client is
+    # notification is C++-only); ordering still matters so our own client is
     # disconnected and the language unregistered before the setting flips back.
     var base_control := get_editor_interface().get_base_control()
     if base_control.theme_changed.is_connected(_apply_script_icon):
@@ -721,7 +721,7 @@ func _apply_highlighter_to_current_editor() -> void:
 
 
 ## Relays the service's `revalidation_requested` into the editor's own revalidation
-## channel (plan §7 Phase 5 item 1), deferred OUT of the caller's stack first. The
+## channel, deferred OUT of the caller's stack first. The
 ## deferral is load-bearing (2026-09-27 engine-test bisect): emissions initiated anywhere
 ## inside the service's `SceneTree.process_frame` pump stack — even from this interpreted
 ## handler nested under it — reach no `validate_script` connection, while the same

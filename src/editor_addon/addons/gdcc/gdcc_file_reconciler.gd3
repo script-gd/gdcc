@@ -2,7 +2,7 @@
 class_name GdccFileReconciler
 extends Node
 
-## File-set reconciliation (plan §3.5): diffs the on-disk project `.gd3` set against the
+## File-set reconciliation: diffs the on-disk project `.gd3` set against the
 ## mirrored set. Child feature of `GdccEditorService`. Removals (and the old path of
 ## renames) issue `vfs.deletePath` and erase every local trace under a tombstone, so a
 ## still-open tab cannot resurrect the file. Additions and modifications upload immediately
@@ -46,7 +46,7 @@ func _flag_closed_temporary_inclusions(now: int) -> void:
 
 ## Forwarding target for the editor's `filesystem_changed` signal: flags a reconciliation;
 ## the actual disk scan and VFS diff run on the scheduling pump so bursts of editor
-## filesystem notifications coalesce into one pass (plan §3.5).
+## filesystem notifications coalesce into one pass.
 func notify_filesystem_changed() -> void:
     if not service.is_active():
         return
@@ -263,7 +263,7 @@ func _on_reconcile_delete_done(response: Dictionary) -> void:
 
 
 ## Public sibling-facing wrapper around `_scan_gd3_files` (hub-and-spoke protocol): the
-## Phase 8 LSP workspace mirror reuses this exact walk for its own event-driven scan so
+## LSP workspace mirror reuses this exact walk for its own event-driven scan so
 ## both features always agree on what the project `.gd3` set is.
 func project_gd3_files() -> Array:
     return _scan_gd3_files("res://")

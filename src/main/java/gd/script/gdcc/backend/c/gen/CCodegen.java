@@ -583,7 +583,7 @@ public class CCodegen implements Codegen {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generateBlock().");
         }
         if (CClassMetadataSupport.isMetadataAccessor(metadataJsonByClass, clazz, func)) {
-            // Phase 6 class metadata: the LIR stub only exists so registration/validation treat
+            // Class metadata: the LIR stub only exists so registration/validation treat
             // `_gdcc_get_metadata` as an ordinary static function; the C body is intrinsic
             // (function-local `static` cache + JSON lazy parse cannot be expressed in LIR).
             return CClassMetadataSupport.renderAccessorBody(metadataJsonByClass.get(clazz.getName()));
@@ -1048,7 +1048,7 @@ public class CCodegen implements Codegen {
         for (var classDef : module.getClassDefs()) {
             registry.addGdccClass(classDef);
         }
-        // Phase 6 synthesis runs before CGenHelper construction so the static
+        // Class-metadata synthesis runs before CGenHelper construction so the static
         // `() -> Dictionary` binding shape is collected together with user functions.
         this.metadataJsonByClass = CClassMetadataSupport.synthesize(module, ctx, Instant.now()).metadataJsonByClass();
         this.helper = new CGenHelper(ctx, module.getClassDefs());

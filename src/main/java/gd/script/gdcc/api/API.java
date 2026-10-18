@@ -275,7 +275,7 @@ public final class API implements AutoCloseable {
     }
 
     /// Full-shape upload: `absolutePath` is the optional host-absolute source path consumed by
-    /// compile-time class metadata (Phase 6 `source_path`); it never affects VFS placement.
+    /// compile-time class metadata (`source_path`); it never affects VFS placement.
     /// `displayPath` may be null when only the absolute path is known — the VFS then keeps its
     /// usual fallback (existing label or virtual path).
     public @NotNull VfsEntrySnapshot.FileEntrySnapshot putFile(

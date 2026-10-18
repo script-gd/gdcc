@@ -2,8 +2,8 @@
 class_name ProbeEngineCalls
 extends RefCounted
 
-## Phase 0 probe: exercises the engine API call routes the editor integration needs
-## (implementation plan §5): language/loader/saver registration, threaded loading,
+## Bootstrap probe: exercises the engine API call routes the editor integration needs:
+## language/loader/saver registration, threaded loading,
 ## StreamPeerTCP (including the get_partial_data [err, bytes] array unpack), file and
 ## directory access, sentinel-character text processing, time/system calls, editor-only
 ## type reachability, and is_instance_valid. These bodies must compile; the runtime smoke

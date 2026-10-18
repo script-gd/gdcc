@@ -250,8 +250,8 @@ public final class EditorAddonProjectInstaller {
                     CCompilerKind.ZIG_CC));
             for (var source : listAddonSources()) {
                 // Preserve addon-relative paths, including utility subdirectories. The
-                // res:// display label and the host-absolute path feed Phase 6 class metadata
-                // (`source_res_path`/`source_path`); the Phase 7 class-name erasure admission
+                // res:// display label and the host-absolute path feed the compile-time class
+                // metadata (`source_res_path`/`source_path`); the class-name erasure admission
                 // probe requires `source_path` and fails closed without it.
                 var relative = ADDON_SOURCE_DIR.relativize(source).toString().replace('\\', '/');
                 api.putFile(MODULE_ID, "/src/" + relative, Files.readString(source),
@@ -263,7 +263,7 @@ public final class EditorAddonProjectInstaller {
     }
 
     /// One fixture source for `compileFixtureLibrary`: VFS placement plus the caller-facing
-    /// labels that Phase 6 class metadata is built from.
+    /// labels that compile-time class metadata is built from.
     record FixtureSource(
             String virtualPath,
             String displayPath,
@@ -274,7 +274,7 @@ public final class EditorAddonProjectInstaller {
 
     /// Compiles an arbitrary fixture source set into a native GDExtension library — the
     /// per-case counterpart of `compileClientLibrary` (engine tests that need a compiled class
-    /// with a source path pointing INTO their case project copy, e.g. the Phase 7 erasure
+    /// with a source path pointing INTO their case project copy, e.g. the class-name-erasure
     /// fixture, cannot reuse the once-per-suite addon build).
     static CompileResult compileFixtureLibrary(
             Path projectPath,

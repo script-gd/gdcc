@@ -2,9 +2,8 @@
 class_name ProbeScript
 extends ScriptExtension
 
-## Phase 0 probe: proves a gdcc class can extend ScriptExtension and override its engine
-## virtuals with exact metadata signatures (doc/module_impl/editor_addon/
-## gd3_editor_integration_implementation.md §5). Never instantiated as a real script.
+## Bootstrap probe: proves a gdcc class can extend ScriptExtension and override its engine
+## virtuals with exact metadata signatures. Never instantiated as a real script.
 
 var _source: String = ""
 var _language: ProbeLang = null

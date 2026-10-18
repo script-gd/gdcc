@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Pins the `server.shutdown` timing contract (editor-addon plan §2.8): the method handler only
+/// Pins the `server.shutdown` timing contract: the method handler only
 /// records the exit intent and returns `{}`; the process exit happens strictly after the
 /// response exchange is written and closed, on a thread outside the request executor.
 ///

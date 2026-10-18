@@ -2,9 +2,9 @@
 class_name ProbeLoader
 extends ResourceFormatLoader
 
-## Phase 0 probe: ResourceFormatLoader overrides plus the cache-mode conventions
+## Bootstrap probe: ResourceFormatLoader overrides plus the cache-mode conventions
 ## (CACHE_MODE_REUSE -> get_cached_ref, CACHE_MODE_REPLACE* -> take_over_path) and the
-## `_load(...) -> Variant` route (implementation plan §2.4/§5). `_load` stays a pure load:
+## `_load(...) -> Variant` route. `_load` stays a pure load:
 ## file read plus object graph construction, no service or cache side effects.
 
 var _language: ProbeLang = null

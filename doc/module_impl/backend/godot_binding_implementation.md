@@ -304,7 +304,7 @@ symbol identity。
   `gdextension_interface.cpp` 中 `memnew_placement(r_return, Variant(mb->call(...)))`
   无条件执行），因此 cleanup 必须恰好 destroy 一次：error path 在替换 nil 兜底前销毁，
   success path 在 unpack/consume 之后销毁。（旧文"error path 不得 destroy"系误写，
-  2026-09-28 Phase 6/7 评审轮修正。）
+  已修正。）
 - `void` helper 不允许把 `NULL r_ret` 传给 `godot_object_method_bind_call(...)`。
 
 ## Engine Constructor Wrapper

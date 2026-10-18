@@ -152,7 +152,7 @@ public final class FrontendClassSkeletonBuilder {
                 topLevelHeader.superClassRef().canonicalName(),
                 context
         );
-        // The dotted source-level name feeds the backend's class metadata (Phase 6); inner
+        // The dotted source-level name feeds the backend's class metadata; inner
         // classes extend it segment by segment along the accepted inner-header chain.
         topLevelClassDef.setSourceClassName(topLevelHeader.sourceName());
         recordDeclarationOrigin(topLevelClassDef, sourceUnitGraph.unit().ast(), context);
@@ -276,7 +276,7 @@ public final class FrontendClassSkeletonBuilder {
     ) {
         var classDef = new LirClassDef(className, superClassName);
         // Same normalization the diagnostic remapper keys on (`sourcePathText`: trimmed,
-        // `/` separators) — backend consumers (e.g. Phase 6 metadata facts) join on this text.
+        // `/` separators) — backend consumers (e.g. class metadata facts) join on this text.
         classDef.setSourceFile(FrontendDiagnostic.sourcePathText(context.sourcePath()));
         return classDef;
     }

@@ -27,7 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Boundary anchors for custom-receiver Callables, originally written as minimal
 /// reproductions of two gaps found while building per-window reply tokens for the editor
-/// addon (see `doc/module_impl/editor_addon/gd3_editor_integration_implementation.md` §5):
+/// addon:
 ///
 ///   * GAP A (receiver retention) is PARITY with the official interpreter, not a bug:
 ///     standard Callables store only `(ObjectID, StringName)` and never retain the receiver

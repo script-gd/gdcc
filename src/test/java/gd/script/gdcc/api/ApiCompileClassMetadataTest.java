@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase 6 pipeline acceptance (plan §7 Phase 6): every compiled class — top-level and nested —
+/// Pipeline acceptance for compile-time class metadata: every compiled class — top-level and nested —
 /// emits exactly one static `_gdcc_get_metadata` accessor whose embedded JSON reflects the
 /// source snapshot facts that flowed through `vfs.putFile` (displayPath / optional absolutePath).
 class ApiCompileClassMetadataTest {
@@ -64,7 +64,7 @@ class ApiCompileClassMetadataTest {
         assertEquals("res://src/meta_outer.gd3", inner.get("source_res_path").getAsString());
 
         // displayPath without the res:// shape keeps the class self-describing but omits
-        // source_res_path, and a missing absolutePath omits source_path (plan item 3).
+        // source_res_path, and a missing absolutePath omits source_path.
         var plain = plainJson.getAsJsonObject("gdcc");
         assertFalse(plain.has("source_res_path"));
         assertFalse(plain.has("source_path"));

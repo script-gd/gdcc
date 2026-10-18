@@ -2,13 +2,13 @@
 class_name GdccDiagCache
 extends Node
 
-## Diagnostics cache for the gdcc channel (plan §4.2 step 3 / §4.4). Child feature of
+## Diagnostics cache for the gdcc channel. Child feature of
 ## `GdccEditorService`: the scheduler's merge is the only writer; `_validate` reads through
-## `diagnostics_for`. Entries are served only while the diagnostics module is READY — plan
-## §4.4's offline degrade leaves `_validate` with the LSP channel alone instead of stale
+## `diagnostics_for`. Entries are served only while the diagnostics module is READY — the
+## offline degrade leaves `_validate` with the LSP channel alone instead of stale
 ## entries.
 ##
-## Stale-visible read contract (post-Phase-10 fix): an edit advances the registry version
+## Stale-visible read contract: an edit advances the registry version
 ## instantly, but the previous round's diagnostics KEEP being served until the fresh round
 ## merges over them. The editor replaces a tab's displayed markers wholesale with every
 ## `_validate` result, so dropping the entry on version mismatch would blank the gutter for

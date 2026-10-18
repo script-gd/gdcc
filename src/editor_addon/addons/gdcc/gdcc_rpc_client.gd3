@@ -91,7 +91,8 @@ func put_file(moduleId: String, path: String, content: String, displayPath: Stri
     var params: Dictionary = {"moduleId": moduleId, "path": path, "content": content}
     if displayPath != "":
         params["displayPath"] = displayPath
-    # Optional host-absolute source path (Phase 6 class metadata `source_path`); omitted
+    # Optional host-absolute source path (feeds the compile-time class metadata
+    # `source_path`); omitted
     # entirely when empty so pre-existing callers keep their old wire shape.
     if absolutePath != "":
         params["absolutePath"] = absolutePath

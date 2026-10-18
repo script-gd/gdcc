@@ -2,10 +2,9 @@
 class_name ProbeLang
 extends ScriptLanguageExtension
 
-## Phase 0 probe: proves a gdcc class can extend ScriptLanguageExtension, override its
-## engine virtuals (including typed-array returns), and cross-reference ProbeScript
-## (doc/module_impl/editor_addon/gd3_editor_integration_implementation.md §5).
-## `_init() -> void` doubles as the §3.2 semantics probe: gdcc models it as the class
+## Bootstrap probe: proves a gdcc class can extend ScriptLanguageExtension, override its
+## engine virtuals (including typed-array returns), and cross-reference ProbeScript.
+## `_init() -> void` doubles as the semantics probe: gdcc models it as the class
 ## constructor while the signature also matches the ScriptLanguageExtension._init virtual.
 
 func _init() -> void:

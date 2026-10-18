@@ -667,7 +667,7 @@ class RpcJsonCodecTest {
         );
 
         assertNull(putFileWithoutDisplayPath.displayPath());
-        // Phase 6: the optional absolutePath stays null for pre-existing callers.
+        // The optional absolutePath stays null for pre-existing callers.
         assertNull(putFileWithoutDisplayPath.absolutePath());
     }
 

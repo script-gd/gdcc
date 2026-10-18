@@ -2,7 +2,7 @@
 class_name GdccScript
 extends ScriptExtension
 
-## Resource carrier for `.gd3` source text (implementation plan §2.3/§3.1). `_can_instantiate`
+## Resource carrier for `.gd3` source text. `_can_instantiate`
 ## is hard-false: a `.gd3` file is never executed as a script — the runtime behavior of its
 ## classes comes exclusively from the native library gdcc compiles it into.
 ##

@@ -32,8 +32,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase 0 gate of the .gd3 editor integration plan (`doc/module_impl/editor_addon/
-/// gd3_editor_integration_implementation.md` §5/§7): three probe levels over the sources in
+/// Bootstrap-capability gate of the .gd3 editor integration: three probe levels over the
+/// sources in
 /// `src/test/resources/editor_addon_probe/` (kept outside the addon directory so they never
 /// ship in the plugin). P0-A proves gdcc can analyze+lower the required engine API surface
 /// (ScriptLanguageExtension / ScriptExtension / ResourceFormatLoader / ResourceFormatSaver

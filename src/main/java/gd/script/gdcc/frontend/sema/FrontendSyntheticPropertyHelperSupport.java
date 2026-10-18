@@ -24,7 +24,7 @@ public final class FrontendSyntheticPropertyHelperSupport {
     /// with the hidden `LirFunctionDef` materialized per defaulted `Parameter`.
     public static final @NotNull String PARAMETER_DEFAULT_PREFIX = "_default_";
     /// Compiler-owned namespace for backend-synthesized class metadata accessors
-    /// (`_gdcc_get_metadata`, Phase 6) and any future `_gdcc_*` member the compiler injects.
+    /// (`_gdcc_get_metadata`) and any future `_gdcc_*` member the compiler injects.
     /// Member-level sibling of the class-level `_gdcc_coro_state_` reservation
     /// (`FrontendClassNameContract`): a source member under this prefix would collide with the
     /// synthesized symbol at C codegen and at ClassDB method registration.

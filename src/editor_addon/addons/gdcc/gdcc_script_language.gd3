@@ -2,7 +2,7 @@
 class_name GdccScriptLanguage
 extends ScriptLanguageExtension
 
-## Virtual `ScriptLanguage` for `.gd3` files (implementation plan §2.2/§3.2). Registered by
+## Virtual `ScriptLanguage` for `.gd3` files. Registered by
 ## GdccEditorService and held by every loaded GdccScript, so the instance is process-resident
 ## and never freed for the whole editor session.
 ##
@@ -81,7 +81,7 @@ var _in_validate: bool = false
 # class-level const is outside gdcc's bootstrap MVP.
 var VALIDATE_LSP_TIMEOUT_MSEC: int = 150
 
-# Total guard-passing `_validate` invocations (observability probe; the Phase 5
+# Total guard-passing `_validate` invocations (observability probe; the
 # revalidation acceptance anchors "the editor revalidated with no driver-side call" on
 # this counter advancing — engine test `diag_revalidate`).
 var _validate_call_count: int = 0
@@ -92,7 +92,7 @@ func validate_call_count() -> int:
     return _validate_call_count
 
 
-## Diagnostic merge entry (plan §4.2). Two channels feed the result:
+## Diagnostic merge entry. Two channels feed the result:
 ## 1. GDScript LSP: full-sync the buffer, wait ≤ `VALIDATE_LSP_TIMEOUT_MSEC` for that
 ##    generation's diagnostics, then map severity 1 → errors / 2 → warnings (LSP positions
 ##    are 0-based, so both line and column get +1).
@@ -102,7 +102,7 @@ func validate_call_count() -> int:
 ##    the version instantly, but the previous round's diagnostics stay visible until the
 ##    fresh round merges over them; the editor would otherwise blank the markers for the
 ##    whole debounce window) — and only while LSP reported no errors (cascade noise
-##    suppression, plan §4.2 step 3). gdcc positions are already 1-based — no shift; a stale
+##    suppression). gdcc positions are already 1-based — no shift; a stale
 ##    entry's line numbers refer to the pre-edit text until the fresh round lands.
 ## `path` is mandatory on errors, otherwise the editor files them under "dependency
 ## script errors" instead of the current tab. While the service is uninstalled the answer is
@@ -119,7 +119,7 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
     if _service.is_lsp_ready():
         # A timeout simply means the freshest generation did not arrive; the cache read
         # below then yields the previous diagnostics (stale beats none).
-        # Phase 7: the LSP view may have the `class_name` line erased (pseudo-error
+        # The LSP view may have the `class_name` line erased (pseudo-error
         # suppression); returned diagnostics on the erased line map their column back to
         # the raw text here. The gdcc analysis channel below always sees the raw text.
         var view: Dictionary = _service.lsp_safe_text(path, script)
@@ -163,7 +163,7 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
                 continue
             var category: String = str(item.get("category", ""))
             var gdcc_message: String = "[gdcc " + category + "] " + str(item.get("message", ""))
-            # File-level fallback for diagnostics without a range (plan §4.2 step 3).
+            # File-level fallback for diagnostics without a range.
             var gdcc_line: int = 1
             var gdcc_column: int = 1
             var gdcc_end_line: int = 1
@@ -298,12 +298,12 @@ func _overrides_external_editor() -> bool:
     return false
 
 
-## Completion entry (plan §4.3). The editor hands over the buffer text with a 0xFFFF
+## Completion entry. The editor hands over the buffer text with a 0xFFFF
 ## sentinel inserted at the caret (`CodeEdit.get_text_for_code_completion`); the GDScript
 ## LSP server completes from the SYNCED document plus the request position, so the sentinel
 ## is located, translated into a 0-based code-point (line, character) pair, and stripped
 ## before the sync. Positions count code points end to end — Godot Strings index code
-## points and the server's completion path does the same (§2.6/R11) — so multibyte text on
+## points and the server's completion path does the same — so multibyte text on
 ## the caret line cannot shift the request. Any failure answers the degraded dictionary.
 ## No reentry guard is needed (unlike `_validate`): the bounded pump inside
 ## `request_blocking` drives only socket IO, which can never call back into this virtual.
@@ -319,7 +319,7 @@ func _complete_code(code: String, path: String, owner: Object) -> Dictionary:
     # `last_break == -1` (caret on the first line) folds to `before.length()` naturally.
     var character: int = before.length() - last_break - 1
     var clean: String = before + code.substr(caret + 1)
-    # Phase 7: sync the erased view (same text `_validate` would send) and forward-map the
+    # Sync the erased view (same text `_validate` would send) and forward-map the
     # request position — a caret past the erased prefix on that line shifts left with it.
     var view: Dictionary = _service.lsp_safe_text(path, clean)
     var mapped: Dictionary = _service.lsp_safe_forward_position(view, line, character)
@@ -486,7 +486,7 @@ func _signature_parameter_span(label: String, start: int, end: int) -> Dictionar
     return {"start": first, "end": last}
 
 
-## Insert-text precedence (plan §4.3): `textEdit.newText`, then `insertText`, then the
+## Insert-text precedence: `textEdit.newText`, then `insertText`, then the
 ## label. The 4.5 GDScript server only ever sends `insertText`; the textEdit branch keeps
 ## the mapping spec-tolerant. An empty string counts as absent (LSP treats omitted
 ## insertText as "insert the label").
@@ -502,11 +502,11 @@ func _completion_insert_text(item: Dictionary, label: String) -> String:
     return label
 
 
-## LSP CompletionItemKind → CodeEdit CodeCompletionKind (plan §4.3). Kind values verified
+## LSP CompletionItemKind → CodeEdit CodeCompletionKind. Kind values verified
 ## against the 4.5 server's own mapping (`gdscript_text_document.cpp`): it actually emits
 ## Text=1, Method=2, Variable=6, Class=7, Property=10, Enum=13, Snippet=15 (node paths),
 ## File=17, Constant=21, Event=23; the other arms are spec-tolerant fallbacks. Snippet maps
-## to KIND_NODE_PATH (7) rather than the plan's generic fall-through because the server
+## to KIND_NODE_PATH (7) rather than a generic fall-through because the server
 ## emits it exclusively for node-path options.
 func _completion_kind(lsp_kind: int) -> int:
     if lsp_kind == 7:  # Class
@@ -537,9 +537,9 @@ func _lookup_code(code: String, symbol: String, path: String, owner: Object) -> 
     return _service.lookup().lookup_code(code, symbol, path)
 
 
-## Auto-indent entry (plan §7 Phase 9). Mirrors the 4.5 GDScript reference
+## Auto-indent entry. Mirrors the 4.5 GDScript reference
 ## (`GDScriptLanguage::auto_indent_code`, gdscript_editor.cpp) VERBATIM — quirks
-## included — so the manual editor comparison against `.gd` (the plan's acceptance) is a
+## included — so the manual editor comparison against `.gd` is a
 ## strict equality check:
 ##   * nesting is derived from the leading-whitespace widths of preceding non-blank,
 ##     non-comment lines (an indent-width stack), never from colons or brackets;

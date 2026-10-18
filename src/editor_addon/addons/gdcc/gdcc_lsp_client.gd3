@@ -66,7 +66,7 @@ var _next_generation: int = 1
 # is cleared on disconnect and the next `sync_document` re-opens the document.
 var _open_docs: Dictionary = {}
 # URI → text of the last didOpen/didChange actually sent (test/diagnostic observability —
-# e.g. the Phase 7 flip steps assert the re-synced VIEW content, not just that a sync
+# e.g. the class_name-erasure flip steps assert the re-synced VIEW content, not just that a sync
 # happened). Same lifetime as `_open_docs`.
 var _sent_texts: Dictionary = {}
 # URI → FIFO of generations sent via didOpen/didChange and not yet answered.
@@ -86,10 +86,10 @@ var _diag_history: Dictionary = {}
 var _in_blocking: bool = false
 
 ## Emitted immediately after every READY transition (own-signal `.emit()` from the frame
-## pump is delivery-safe — the Phase 5 emission investigation). The service refreshes its
+## pump is delivery-safe). The service refreshes its
 ## busy aggregate on this edge: a handshake completing after the service's own pump would
 ## otherwise wait one (possibly low-power-capped) frame before pending replay work — the
-## workspace mirror's full re-open — is accounted (review finding).
+## workspace mirror's full re-open — is accounted.
 signal ready_advanced
 
 
@@ -229,7 +229,7 @@ func change_document(uri: String, text: String) -> int:
 ## piece of per-URI state. A FAILED didClose send tears the connection down — the same
 ## contract as didOpen/didChange: a broken protocol stream must be rebuilt through a
 ## fresh handshake (and a full document-set replay) instead of silently diverging from
-## the server's open set (review finding).
+## the server's open set.
 func close_document(uri: String) -> void:
     if _state == STATE_READY and _open_docs.has(uri):
         if not _send_notification("textDocument/didClose", {"textDocument": {"uri": uri}}):
@@ -249,7 +249,7 @@ func close_document(uri: String) -> void:
 
 ## The LSP document version currently held for `uri` (-1 when not open). Test/diagnostic
 ## observability: a re-sync bumps the version, so callers can prove a document was re-sent
-## (e.g. the Phase 7 decision-flip re-sync) without intercepting the wire.
+## (e.g. the class_name-erasure decision-flip re-sync) without intercepting the wire.
 func document_version_for(uri: String) -> int:
     return int(_open_docs.get(uri, -1))
 
@@ -295,7 +295,7 @@ func get_diagnostics_for_generation(uri: String, generation: int) -> Array:
 ## mode. A timeout KEEPS the pending queue intact: the server publishes exactly once per
 ## didOpen/didChange on a live connection, so a late notification pops its own generation
 ## and the FIFO self-realigns — clearing here would instead let a late answer bind to the
-## next generation sent after the clear (review finding; disconnect still clears all).
+## next generation sent after the clear (disconnect still clears all).
 func wait_diagnostics(uri: String, generation: int, timeout_msec: int) -> bool:
     if generation < 0:
         return false

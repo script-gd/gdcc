@@ -450,7 +450,7 @@ public final class CompileTaskRunner implements Runnable {
         return DiagnosticSourcePathRemapper.remap(displayPathsByLogicalPath, diagnostics);
     }
 
-    /// Per-file caller-facing facts handed to backend codegen (Phase 6 class metadata). Keyed by
+    /// Per-file caller-facing facts handed to backend codegen (compile-time class metadata). Keyed by
     /// the same normalized logical-path text the diagnostics remapper uses
     /// (`DiagnosticSourcePathRemapper.logicalPathKey` — trimmed, `/` separators), which is also
     /// what the frontend stamps onto `LirClassDef.sourceFile`.
@@ -566,7 +566,7 @@ public final class CompileTaskRunner implements Runnable {
             @NotNull Path logicalPath,
             @NotNull String source,
             /// Optional host-absolute source path forwarded to compile-time class metadata
-            /// (Phase 6 `source_path`); null when the caller never provided one.
+            /// (`source_path`); null when the caller never provided one.
             @Nullable String absolutePath
     ) {
         public SourceSnapshot {

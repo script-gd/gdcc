@@ -275,7 +275,7 @@ class CCodegenEngineMethodBindHeaderTest {
                 "(GDExtensionInt)1721LL"
         );
         assertFalse(newHeader.contains("(GDExtensionInt)72LL"), newHeader);
-        // The Phase 6 `_gdcc_get_metadata` payload embeds a wall-clock `compiled_at`, so the
+        // The `_gdcc_get_metadata` payload embeds a wall-clock `compiled_at`, so the
         // stability contract is asserted modulo that single known-varying field.
         assertEquals(normalizeCompiledAt(oldEntry), normalizeCompiledAt(newEntry));
     }

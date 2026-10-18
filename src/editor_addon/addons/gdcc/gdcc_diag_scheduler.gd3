@@ -2,7 +2,7 @@
 class_name GdccDiagScheduler
 extends Node
 
-## Analysis scheduler for the gdcc diagnostics channel (plan §3.5/§4.4). Child feature of
+## Analysis scheduler for the gdcc diagnostics channel. Child feature of
 ## `GdccEditorService`: owns the single-flight upload+analyze chain, the mirror of
 ## server-side content versions, failure backoff/suspension, and the version-checked merge
 ## of analyze.run results into `GdccDiagCache`. Single-flight: `_flight` non-empty pins the
@@ -24,11 +24,11 @@ var _flight_suspended: bool = false
 # res:// path -> version last uploaded to the diagnostics VFS (absent = not mirrored).
 var _mirrored_versions: Dictionary = {}
 # (path -> version) pairs that became cache-readable in recent merges and were not yet
-# drained by the service's revalidation pump (plan §7 Phase 5 item 1). Judged by cache
+# drained by the service's revalidation pump. Judged by cache
 # freshness BEFORE the write, so a version advance with unchanged diagnostics still
 # counts — an earlier `_validate` of that version necessarily read an empty cache.
 var _newly_readable: Dictionary = {}
-# Dock status area state (plan §7 Phase 5 item 2): ticks of the last merged analysis round
+# Dock status area state: ticks of the last merged analysis round
 # (0 = none since the last channel reset) and the most recent failure text ("" = none since
 # the last merged round; the channel-epoch clears live in reset/shutdown).
 var _last_round_msec: int = 0
@@ -145,7 +145,7 @@ func service_shutdown() -> void:
 ## deletion-triggered whole-module round), uploads every dirty path whose version is not yet
 ## mirrored, and runs one analyze. Edits landing mid-flight only update the registry's dirty
 ## marks; the completion handler's version check discards stale results and reschedules
-## immediately (plan §4.4). Persistent non-COMPLETED outcomes back off and eventually
+## immediately. Persistent non-COMPLETED outcomes back off and eventually
 ## suspend until the next real change — a broken server must not hot-loop.
 func service_tick(now: int) -> void:
     var registry: GdccSourceRegistry = service.registry()
@@ -266,7 +266,7 @@ func _on_flight_analyze_done(response: Dictionary) -> void:
     service.refresh_busy()
 
 
-## Version-checked merge (plan §4.4): a flight's diagnostics refresh exactly the paths whose
+## Version-checked merge: a flight's diagnostics refresh exactly the paths whose
 ## mirrored content version still equals the live version (`covered`); paths edited
 ## mid-flight keep their stale cache and stay dirty for an immediate re-round. Diagnostics
 ## group by `sourcePath` (the displayPath); items without one are module-level and land on
@@ -310,7 +310,7 @@ func _merge_analysis_result(result: Dictionary) -> void:
         var live_version: int = int(live.get("version", -1))
         # Record BEFORE the write: a (path, version) not yet served by the cache is newly
         # readable even when the diagnostic payload is unchanged — a `_validate` of that
-        # version before this merge necessarily read an empty cache (plan §7 Phase 5).
+        # version before this merge necessarily read an empty cache.
         if not cache.is_version_current(path, live_version):
             _newly_readable[path] = live_version
         cache.set_items(path, live_version, merged)

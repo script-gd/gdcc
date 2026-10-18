@@ -1,1057 +1,38 @@
-# .gd3 虚拟脚本语言编辑器集成实施计划
+# .gd3 编辑器集成实现（单一事实来源）
 
-> 本文档是 `src/editor_addon` Godot 编辑器集成功能的实施计划：通过 GDExtension 注册一个
-> 虚拟 `ScriptLanguageExtension` + `ScriptExtension`，让 Godot 4.5 编辑器把 `.gd3` 识别为
-> 脚本资源（可打开、编辑、保存），并把解析/补全请求代理到引擎自带的 GDScript 实现（编辑器
-> 内建 LSP 服务），同时在 GDScript 判定无误后叠加 gdcc 前端的诊断。全部集成代码用 `.gd3`
-> 编写，经 gdcc 编译进与 `gdcc_rpc_client.gd3` 相同的 `gdcc_for_editor` 原生库。
-> `.gd3` 从不作为可运行脚本挂载；运行时行为完全由 gdcc 编译出的原生类承担。
+> 本文档是 `src/editor_addon` Godot 编辑器集成功能的唯一事实源：通过 GDExtension 注册一个
+> 虚拟 `ScriptLanguageExtension` + `ScriptExtension`，让 Godot 编辑器把 `.gd3` 识别为
+> 脚本资源（可打开、编辑、保存），并把校验/补全/查找请求代理到引擎自带的 GDScript 实现
+> （编辑器内建 LSP 服务），在 GDScript 判定无误后叠加 gdcc 前端的诊断；另含编译工作流
+> （Build 部署与启用）、编译服务器拉起与安装向导。全部语言集成代码用 `.gd3` 编写，经
+> gdcc 编译进与 `gdcc_rpc_client.gd3` 相同的 `gdcc_for_editor` 原生库。`.gd3` 从不作为
+> 可运行脚本挂载；运行时行为完全由 gdcc 编译出的原生类承担。
+>
+> 本文档只保留当前已落地、可验证的实现事实与长期约定，不保留实施过程、阶段进度与评审
+> 记录（历史内容可从 git 历史查阅）。修改相关代码时必须同步修订本文。
 
 ## 文档状态
 
-- 状态：实施计划（Phase 0 已实施并通过验收；**Phase 1 已实施并通过验收**；
-  **Phase 2 已实施并通过自动化验收**；**Phase 3 已实施并通过自动化验收**；
-  **Phase 4 已实施并通过自动化验收**；**Phase 5 已实施并通过自动化验收**；
-  **Phase 6–7 已实施并通过自动化验收**（2026-09-28，含引擎端到端用例
-  `class_name_erasure` 13 步全绿）；**Phase 8 已实施并通过自动化验收**（2026-09-28，
-  引擎用例 `lsp_workspace` 14 步全绿）；**Phase 9（原 Phase 5 打磨）部分实施**：
-  `_lookup_code` 与 `_auto_indent_code` 曾通过自动化验收（2026-09-28，引擎
-  用例 `lsp_lookup` 15 步 / `auto_indent` 8 步全绿）；`_lookup_code` 在
-  **Godot >= 4.6.0** 恢复 `hover`/`definition` 转发，旧版本仍返回 `ERR_UNAVAILABLE`：
-  4.5.1 的浅层 GDScript 会接管 `.gd3` 资源路径，4.6 已修复此缓存副作用；
-  `lsp_lookup` 按版本条件恢复，保存回归同时覆盖启用与禁用分支。`_get_global_class_name`
-  （Stage C 暂缓）、模板、`--lsp-port` 设置项尚未实施；**Phase 10（编译工作流：
-  `module.copy` + 编译副本）已实施并通过自动化验收**（2026-09-28：服务端
-  `ApiModuleCopyTest` 7 项 + RPC 三层测试 + 引擎用例 `dock_compile` 当时12步全绿，
-  api+rpc 全量回归无回归，双评审终审 APPROVE；手动验收项见 Phase 10 验收节）；
-  已经过多轮并行评审并修订）
-- 更新日期：2026-10-14
-- 2026-10-14 修订：`_lookup_code` 使用 `int(Engine.get_version_info()["hex"]) >= 0x040600`
-  的版本门槛；光标定位、码点行列计算、擦除视图前向映射与查询结果映射集中于
-  `GdccLookupService`，语言入口仅委托。`request_lookup` 原始传输入口也拒绝旧版本，
-  防止绕过门槛。此门槛独立于脚本创建对话框的 `> 4.6.0` 限制。
-- 2026-10-14 修订：lookup 不再把所有符号伪装为 LOCAL_VARIABLE。hover/definition 后
-  最多追加一次有界符号检查：项目定义用 `documentSymbol` 的 selectionRange 精确分类，
-  原生符号用 `nativeSymbol` 分类；类、方法、属性、常量、枚举与信号按真实类型返回。
-  局部变量/常量通过 `GdccMarkdownToBbcode` 转换 hover Markdown；脚本成员从大纲
-  读取原始 BBCode，发布到 ScriptExtension 文档与编辑器帮助缓存。文档名优先使用
-  目标脚本原始源码中的 `class_name`，内部类使用 `Outer.Inner`；无声明类名时才回退
-  为带引号的项目相对路径。不启用 Stage C 全局类注册。命名脚本文档以源文档身份
-  覆盖同名编译扩展的帮助条目，使成员显示类名并保留源码导航；lookup 时重新发布
-  命名条目，避免扩展文档重新生成后误走原生帮助导航。旧命名条目的清理仍按已发布
-  快照执行。类名读取不依赖已擦除 `class_name` 的 LSP 同步视图。
-  同文件使用请求携带的原始缓冲区；跨文件优先使用源码注册表的存活文本，再回退
-  为目标资源源码，避免未保存的 `class_name` 改名仍显示旧名字；不采用墓碑条目。
-  命名修订验收：Godot 4.6.3 的分析测试 5 项通过；4.6.3、4.7.0 的 `lsp_lookup`
-  18 步、`lookup_suspended` 9 步、`class_name_erasure` 16 步均通过；4.5.1 的安全
-  分支与擦除回归通过（不启用 lookup）。跨文件缓冲区取值修订后复审 APPROVE。
-  符号检查失败保留有效导航（SCRIPT_LOCATION），不再误标为局部变量；单次 lookup
-  最多三个各 200ms 的 LSP 请求。原生属性访问器被上游 LSP 文档表省略时，仅对当前
-  脚本根函数的未限定方法调用做 ClassDB 回退，不猜测任意接收者类型。
-  原生符号检查失败时可从带原生所有者的 hover 声明恢复帮助引用；无法确认的脚本
-  符号不伪造分类。LookupResult 无构造函数、运算符与主题项种类，这些符号引用所属
-  类型的帮助，而非错误的方法/属性分区。信号大纲缺失参数类型时不编造类型字段。
-- 2026-10-14 分类/文档修复验收：`EditorAddonScriptLanguageAnalysisTest` 5 项通过；
-  Godot 4.6.3、4.7.0 的 `lsp_lookup` 17 步与 `lookup_suspended` 9 步均通过；
-  4.5.1 的 lookup 按版本跳过，`lookup_suspended` 与 `lsp_completion` 回归通过。
-  `review-expert-a` 初审反馈后的缓存清理、缩进代码块与回退遮蔽修订再次通过同一
-  版本矩阵；复审 APPROVE，无剩余阻断项。编辑器可视交互仍按 §8.3 手动验收。
-- 2026-10-14 修订：`_complete_code` 的 `call_hint` 转发到内置 GDScript LSP 的
-  `textDocument/signatureHelp`。补全请求成功后复用同一已同步文档与码点位置追加一次
-  有界查询；映射器从签名 label 的顶层参数列表截取完整参数片段，并用成对
-  `String.chr(0xFFFF)` 标记 `activeParameter`。补全失败仍整体降级；签名查询失败仅
-  返回空 hint，不丢弃已成功的补全结果。Godot 4.5.1 引擎用例 `lsp_completion` 18 步
-  全绿，含映射白盒与同文件函数调用的真实 LSP 往返。
-- 2026-10-14 验收：`EditorAddonScriptLanguageAnalysisTest` 5 项全绿；Godot 4.5.1
-  `lookup_suspended` 9 步全绿，`lsp_lookup` 按版本跳过；Godot 4.6.3 与 4.7.0
-
-  均通过当时的 `lsp_lookup` 15 步及 `lookup_suspended` 9 步，含真实编辑器符号信号后
-  原资源身份、缓存路径与保存往返检查。4.6.0 和 4.8 开发版尚未实测。
-- 2026-10-16 修订（双语界面）：插件自有 UI、状态、日志和警告改用英文原文与中文翻译，
-  独立 `gdcc.editor` 翻译域跟随编辑器语言，不改游戏 locale 或 `godot.editor` 域；详见
-  “编辑器插件国际化”节。
-- 2026-10-18 修订（编译服务配置统一）：host、port、launch_command 全部归入
-  `gdcc/compilation_server/*`；旧项目的 `gdcc/server/*` 键一次性迁入并移除，新键优先。
-  旧机器级 EditorSettings 仍从原键播种；迁移提示保存项目。设置分类、安装器、端点中继与测试同步。
-- 2026-10-16 修订（项目设置翻译）：另用设置名称专用目录接入现有 `godot.properties`
-  域，使原生项目设置分类与属性名显示中文；配置键和枚举存储值不变，卸载仅移除自己的资源。
-- 2026-10-16 修订（构建状态）：新增保存后的 `Build*`、右侧原生错误图标、菜单失败提示
-  与四种状态悬浮提示；保存时间、构建尝试时间及失败状态在项目 editor metadata 中保存。
-  三版本定向验证与启用失败边界见“构建状态提示”节。
-- 2026-10-13 修订（编译后端）：Build 菜单通过 `server.availableCCompilerKinds` 获取可用
-  后端，新增默认 Auto 的项目级选择；断连、无后端或查询失败时禁用构建并显示前置警告
-  图标的黄色提示。启动命令改为 `gdcc/compilation_server/launch_command`，旧项目键一次性迁移。
-- 2026-10-13 修订：dock 精简为单行连接/上次诊断/上次成功构建状态与填满剩余空间的
-  只读输出，移除模块输入及 Ping/Create/Analyze/Build/Cancel 按钮，仅保留清空输出图标。
-  dock 与标题栏 Build 菜单共用秒/分钟/小时/天的相对时间格式，空闲时每秒刷新；详见
-  “精简 dock 与相对时间”节。
-- 2026-10-12 修订（项目库选择）：addon 生成的 `bin/gdcc.gdextension` 改用
-  `<platform>.<architecture>` 条目，每个目标只指向最近安装的库；迁移旧 debug/release
-  条目并移除兼容别名，避免 Debug 编辑器在 Release 构建后仍加载旧 Debug 库。
-- 2026-10-12 修订：项目操作迁入解释型 `gdcc_project_manager.gd` 独立节点，底部 dock
-  与标题栏 Build 分裂按钮共享同一实例、构建所有权、任务和启用状态。新增项目级
-  debug/release 与 strictMode 选择、服务版本查询、上次成功安装时间及 GDCC 项目设置入口；
-  自动诊断模块创建与排除路径同步保持原服务合同。详见“共享项目管理与标题栏 Build”节。
-- 2026-10-10 修订：构建副本 ID、内部目录及产物名基于项目名称和根路径固定；
-  同一项目身份只允许一个构建所有者，诊断模块继续进程隔离。当前回归步骤以
-  `EditorAddonScriptLanguageEngineTest.EXPECTED_STEPS` 的 `dock_compile` 为准。
-- 2026-10-06 修订：Compile 按钮改为 **Build**；编译副本使用当前项目名称，成功后部署
-  动态库到项目 `bin` 并生成 `gdcc.gdextension`，通过引擎扫描持久化扩展清单并加载，
-  重建时显式重载。合同、失败边界与测试锚点见下方“Build 部署与启用”节。
-- 2026-10-05 修订（三）：`.gd3` 语法高亮落地——新增解释型 `gdcc_syntax_highlighter.gd`
-  （`EditorSyntaxHighlighter` 子类，逐块移植 4.5 `GDScriptSyntaxHighlighter` 状态机），
-  `plugin.gd` 注册模板并为已开页签接力应用；修复注解/类型提示/成员等着色缺口。同步
-  实证一条新自举约束并记入 §5：编译 `.gd3` 类无法继承编辑器专有基类（GDExtension
-  SCENE 级注册 vs `register_editor_types` 的 EDITOR 级），高亮器因此不用编译形态。
-  合同见 §3.9；引擎锚点 `syntax_highlighter` 用例 9 步全绿。
-- 2026-10-05 修订（二）：编译服务配置从 gdcc 面板迁入**项目设置**——
-  `gdcc/server/host|port|launch_command` 三键由机器级 EditorSettings 改为项目级
-  ProjectSettings（project.godot，经 Project Settings 对话框编辑，随项目版本化共享）。
-  dock 的 host/port/启动命令输入框随之移除，状态区只读显示 configured/effective 端点
-  与 auto-launch 指示；插件 `_enter_tree` 注册 schema 并对旧 EditorSettings 值做一次性
-  就地迁移（push_warning 提示保存项目，遗留键不删）；`settings_changed` 继电器只对
-  **配置值相对上次中继的变化** retarget 诊断通道（显式 `service.install` 不被无关设置
-  写入拽回）；配置非法 fail-closed（安装回退默认值、retarget 保持现有通道）。
-  受影响章节：§3.6/§3.7/§4.1/§9 R22；`json_rpc_service_implementation.md` §4.4 已同步。
-  引擎锚点：`launcherSpawnsAndStopsOwnedServer` 等拉起三用例 + `diag_revalidate` 的
-  endpoint_retarget_* 步骤改写为项目设置驱动，6 个受影响用例全绿。
-- 2026-10-05 修订：Phase 10 后修复落地——(1) gdcc 诊断缓存读路径改为**过期可见**
-  （编辑期间旧诊断保持显示直至新鲜轮合并替换，§3.5/§4.2/§4.4 合同已同步）；
-  (2) 新增项目设置 `gdcc/sync/excluded_globs`（PackedStringArray glob，默认
-  `addons/gdcc/*`），诊断模块同步与 LSP 镜像三处入口统一排除，设置变更经
-  `settings_changed` 即时对账生效（§7 Phase 10 后修复节）。
-- 2026-09-27 修订：`launch_bad` 引擎测试断言接受平台分叉的两种 launcher 失败报告
-  （Windows 同步 `OS.create_process failed` / Unix-like fork 成功后子进程 execvp
-  失败早退，见 §3.7），修复 Linux/macOS CI。
-- Phase 0 验收结果（2026-09-23）：P0-A/B/C 全绿（`EditorAddonIntegrationProbeTest`
-  3/3 通过，无跳过）。`_init` 语义与 typed array 返回的探针结论已回填 §3.2/§2.3。
-  探针暴露并已修复两个 gdcc 后端缺陷（阻塞级，修复侧已含回归测试）：
-  1. 绑定包装器符号名冲突：`BindingData` 相等性区分 typed 容器元素类型，但 bind name
-     编码把所有 `GdArrayType`/`GdDictionaryType` 折叠为 `Array`/`Dictionary`，同类中两个
-     仅容器元素类型不同的方法（如 `Array[Dictionary]` 与 `Array[StringName]` 返回）生成
-     重复 C 符号。修复：bind name 编码嵌入容器元素类型、且容器元素段采用长度前缀
-     （`Array_<len>_<elem>`，`Dictionary_<klen>_<key>_<vlen>_<value>`；类型名自身可含
-     `_`，裸 `_` 拼接仍可有二义），泛型容器拼写不变，见
-     `CGenHelper.renderFuncBindTypeName`。
-  2. `ClassRegistry.getRefCountedStatus` 的 GDCC 类继承链遍历在遇到首个引擎祖先时
-     不查引擎元数据，直接落 NO：经引擎类间接继承 RefCounted 的 GDCC 类
-     （`extends ScriptExtension` / `ResourceFormatLoader` 等）被误判为非 RefCounted，
-     `ConstructInsnGen` 因此跳过 `gdcc_ref_counted_init_raw` 归一化，新建对象保持
-     未跟踪态（refcount=1, refcount_init=1）；`call_` 包装器打包时
-     `Variant(Object*)` 的 `init_ref` 对新对象是**收养**语义（净增 0，Variant 接管
-     初始创建引用，Godot 4.5 variant.cpp/ref_counted.cpp），随后的 consume 释放把
-     刚被收养的引用释放回 0——gdcc 方法向解释侧返回新建对象得到 null。修复：
-     遍历时用引擎元数据 `isRefcounted()` 判定首个引擎祖先（与
-     `ObjectReturnConsumptionLeakIntegrationTest` 钉住的"构造点 init_ref 归一化 +
-     包装器 consume 净零转移"既有设计一致）。该缺陷阻断一切"gdcc 方法返回新建
-     RefCounted 对象"的路径（含 `_create_script`）。
-- Phase 1 验收结果（2026-09-23，自动化项全绿，手动项待 §8.3）：
-  - `EditorAddonScriptLanguageAnalysisTest` 5/5 通过：全部 `.gd3`（语言/脚本/加载器/
-    保存器/常驻服务/客户端，共 6 个源）单模块 analyze+lowering 干净；全部编译源去注释
-    +去字符串内容后无 `await`；`plugin.gd`/`gdcc_dock.gd`/`server_launcher.gd` 解析
-    干净；两个安装出口（单/多平台）产物均 `reloadable = false`；无动态库产物的安装
-    抛 `IOException`（负例）。`plugin.cfg` 五字段由既有
-    `EditorAddonClientAnalysisTest` 覆盖，未重复。
-  - `RpcServerShutdownTest` 3/3 通过（dispatcher 层 `{}` + 幂等、进程内 HTTP 层
-    响应先于退出且退出动作恰好一次、真实子进程 200+body 后退出码 0 且端口关闭）；
-    `JsonRpcDispatcherTest` 路由数更新为 26；`RpcJsonCodecTest` 增补 `{}` wire 形状。
-  - `EditorAddonScriptLanguageEngineTest` 4/4 通过（无跳过）：`language`（语言注册、
-    加载/保存/重读/worker 线程加载往返、`_validate` valid、禁用/启用循环中语言实例
-    同一性）；`launch`（冷启动自动拉起 `gdcc serve`、ping 通过、禁用插件后进程退出）；
-    `launch_bad`（不存在可执行文件：报错不崩溃；报错行随平台分叉——Windows 同步
-    `OS.create_process failed`，Unix-like 为 fork 成功、子进程 execvp 失败（引擎输出
-    `Could not create child process`）后 launcher 报 `exited before accepting
-    connections`，见 §3.7）；`launch_none`（无命令无服务：被动失败，不拉起）。
-  - 既有回归：`EditorAddonIntegrationProbeTest` 3/3、`EditorAddonBootstrapEngineTest`
-    1/1（多源编译后仍绿）、`EditorAddonClientAnalysisTest` 与 RPC 全套无回归。
-- Phase 1 实现偏差（相对下文设计，均已按"事实源维护"口径回填）：
-  1. `_debug_*` 可表达虚函数**全部显式实现**为空答案（§2.2 C 档原计划跳过）：引擎在
-     任何脚本错误的打印路径上会对**每个**已注册语言调用
-     `_debug_get_current_stack_info`（ScriptLanguageExtension 是 required 虚函数，
-     缺省实现报 `ERR_PRINT_ONCE` 级错误）。`_debug_get_stack_level_instance`
-     （`void*`）与 `_profiling_*` 组仍跳过。
-- 探针结论（2026-09-23，P0 全绿）：typed array 返回可实现——
-  `ProbeLang._get_public_functions/_get_public_annotations`（`-> Array[Dictionary]`）
-  与 `ProbeScript._get_documentation/_get_members`（`-> Array[Dictionary]` /
-  `-> Array[StringName]`）通过 analyze+lowering 与 native compile；P0-C 运行时经
-  `found._get_public_functions()`/`script._get_documentation()`/`script._get_members()`
-  实调验证虚分发与空 typed array 往返（`typed_array_virtuals` 步骤）。
-   2. dock 的 host/port 输入持久化到 EditorSettings `gdcc/server/host|port`（计划只
-      写了启动命令一项）：拉起用例必须把端点导向测试空闲端口，否则会收养/碰撞开发机
-      6099 上的真实服务；顺带修正"每次重启编辑器重输端口"的体验缺口。服务的诊断
-      RPC 端点仍固定 127.0.0.1:6099，不与 dock 联动（~~§3.6 不变~~ **已由 Phase 5 取代**：
-      install 与 dock 同源读端点设置，见 Phase 5 验收记录）。
-      **2026-10 更新**：三个键已迁入项目级 ProjectSettings `gdcc/compilation_server/*`，dock 输入框
-      随之移除，引擎测试改写项目设置驱动（拉起用例的端口转向语义不变），详见 §3.7。
-  3. 引擎 harness 落地细节：headless 编辑器 + 注入 `addons/gdcc_test_driver` 驱动插件
-     （`plugin.cfg` + `driver_plugin.gd`，不随插件发布）；子进程配置目录经
-     `APPDATA`/`XDG_CONFIG_HOME`/`HOME` 重定向隔离，EditorSettings 写入不污染真实
-     用户配置；拉起命令在测试中为 `java -cp <测试 classpath> gd.script.gdcc.Main serve`
-     （自包含，不依赖预构建 jar），占位符替换路径与生产一致。
-  4. `GdccEditorService` Phase 1 只落地生命周期面（注册/注销/探针验证/端点回写/
-     `ensure_server_hook` 注入/`notify_filesystem_changed` 空操作接线）；诊断缓存与
-     查询接口属 Phase 3，未提前加桩。
-  5. `_preferred_file_name_casing`（enum 返回类型未经探针验证）与 loader/saver 的
-     可选虚函数（`_recognize_path`、`_get_dependencies`、`_get_resource_script_class`
-     等）未实现，基类默认行为安全。
-- Phase 1 评审记录（2026-09-23，review-expert-a + review-expert-c 并行评审，经三轮修复
-  复核至全部确认解决；修复后全部自动化用例复测通过）：
-  - 采纳并修复（高危/阻塞）：
-    1. `server.shutdown` 退出触发最终形态：handler 置 `AtomicBoolean` + **请求线程上的
-       ThreadLocal 服务标记**；HTTP 层仅在"实际调用了该方法的 exchange"写完并关闭后
-       触发退出（`consumeServingExchange`）——先收紧为"服务 exchange"的启发式快照仍
-       存在无关请求冒领窗口，评审复核后改为线程作用域标记。并发双 shutdown 的合同
-       收窄为：先完成写回者触发退出，另一并发调用方可能断连（双方请求同一退出，
-       结果等价）；顺序重复调用的幂等 `{}` 不变。
-    2. `server_launcher.gd` 所有权记录为按端点的列表，`shutdown_owned` 逐条处理且
-       不丢弃记录：RPC 预算按剩余均分，耗尽后进入带小额固定探测预算的 kill 兜底
-       （软上限；消除"首个服务卡死导致后续记录被跳过并清空"的所有权丢失回归）。
-    3. `_finish_head` 加 `_finishing` 守卫：回调重入 `ensure_running` 时只入队不启动。
-    4. `_send_shutdown_rpc` 累积响应体并按 `Content-Length` 校验完整读取。
-    5. `GdccScriptFormatSaver._save`：检查 `store_string` 布尔返回 + close 后显式
-       READ 重开 + `get_error` + 内容比对（`flush()` 不更新 `get_error`，
-       `get_file_as_string` 把读取失败与空文件混为 `""`，均已在注释钉死）；写失败
-       不再误报 OK。
-    6. `plugin.gd` 的 `install(...)` 移到 `auto_setup_module()` 之前，失败时
-       `_rollback_failed_enter_tree()` 完整回滚 dock/client/launcher 并恢复
-       `use_thread`。
-    7. `GdccScript._set_source_code` 置 `_valid = true`（有源码即有效，`_reload` 失败
-       才置回）。
-    8. `GdccScript` 页眉扫描只解析列 0 起始行；关键字边界为空格/制表符
-       （`_keyword_matches`）；同行 `class_name X extends Y` 的 `extends` 查找按
-       双侧空白边界扫描（`_find_keyword_index`，兼容制表符）。
-    9. `server_launcher._spawn` 返回 `[err, pid]`，空命令文本报 `ERR_INVALID_PARAMETER`
-       而非误报 `ERR_CANT_FORK`。
-  - 采纳并修复（测试质量）：安装器负例先创建真实非库文件再断言
-    `No dynamic library artifact`（原用例因文件不存在提前在 `Files.exists` 处失败，
-    未触达目标分支）。
-  - 驳回（附证据，评审已接受）："extends 覆盖 class_name"为误读（`extends` 分支写
-    `_base_type`，引擎测试两行式样例已实证）；busy 协调器防御性清零路径数学上正确
-    （迟到的 -1 被钳制且不触碰标志位），删除反而会重新引入禁用即泄漏全速模式的既有
-    bug。
-  - 新增引擎测试锚点：`save_bad_path`（坏路径保存返回非 OK）、`create_script_valid`
-    （`_create_script` + `_set_source_code` 后 `_is_valid`）、`header_scan_edges`
-    （制表符分隔 + 缩进干扰行 + 同行混合分隔）。新增单元测试
-    `servingExchangeMarkerIsScopedToTheRequestingThread`（ThreadLocal 服务标记的
-    线程作用域与单次消费）。
-  - 遗留项：R23（§9，运行期注销语言的引擎侧竞态崩溃，观测一次后未能复现）——
-    **2026-09-23 已确认**：禁用插件属低频操作，仅登记不特殊处理，保持"禁用即注销"
-    合同不变。
-  - 手动测试缺陷修复（2026-09-23）：创建资源对话框直接 `ClassDB.instantiate` 创建
-    `GdccScript`（绕过 loader/语言工厂的 `setup()`）导致 `_language` 为 null，推入
-    脚本编辑器时引擎对 `get_language()` 无判空解引用（`script_text_editor.cpp` 高亮/
-    校验路径），signal 11 崩溃。修复：`GdccScript._get_language()` 自愈回退——先查
-    已注册语言表（ACTIVE），再查常驻服务实例（UNINSTALLED，实例常驻不释放）；
-    `GdccEditorService` 新增 `get_language_instance()` 访问器。回归锚点：
-    `EditorAddonScriptLanguageEngineTest` 新增 `create_resource` 用例（模拟
-    CreateDialog→InspectorDock 序列：ClassDB 实例化 + 属性枚举 + 保存 +
-    `edit_resource`，外加禁用态下同路径不崩溃且语言仍可解析）。注：当时创建脚本
-    对话框不出现 GD3 是 R5 已知限制；当前补齐 GD3 行避免主题刷新越界，
-    Godot ≤ 4.6.0 保持禁用，> 4.6.0 允许选择（§2.1）。
-- Phase 2 验收结果（2026-09-23，自动化项全绿，手动项待 §8.3）：
-  - `EditorAddonScriptLanguageEngineTest` 7/7 通过（无跳过），新增三用例：
-    `lsp_connect`（退避重连吸收"插件先加载、LSP 后监听"窗口；端点强制断开后重连 +
-    插件禁用/启用循环后重新握手，均以 READY epoch 递增为证）；`lsp_validate`（降级
-    路径 valid+空、错误样例 `valid==false` 且首错行号=3 且每条含 `path`、干净样例
-    `valid==true`、警告样例五键齐全且 start_line=4、含非 BMP emoji 样例行/列锚定、
-    禁用态 `_validate` 安全应答）；`lsp_fifo`（g1/g2 背靠背发送后按 FIFO 分别归属，
-    经 per-generation 绑定历史断言 g1=错误/g2=空；`request_blocking` 的
-    `documentSymbol` 往返应答）。全套既有用例与
-    `EditorAddonScriptLanguageAnalysisTest`（7 个 `.gd3` 源）无回归。
-  - 实现偏差与实施期引擎事实修正（相对下文设计，已按事实源口径回填 §2.6/§3.4）：
-    1. URI 方言：服务端 `get_file_uri` 产出 `file:///` + 逐段 `uri_encode` 形式
-       （空 authority 规避 `file://E:` 被 parse_url 误判 host 而报 "nonlocal files"）。
-       客户端统一以 `GdccLspClient.path_to_uri` 生成该方言，服务端回显字节一致。
-    2. generation 等待断言从"等于"改为水位线"≥"并新增有界 per-generation 绑定历史
-       （`_diag_history`，每 URI 留 8 条）：两条通知可在单次读批内先后出队，相等断言
-       会被后一条覆盖而永假。
-    3. 诊断位置（4.5 实证，4.6 相同）：服务端 `update_diagnostics` 把所有诊断的 `character` 报为**错误行
-       首个非空白字符**（缩进的码点数），不携带 token 级精确列；UTF-16/码点分歧在该
-       路径不存在（全程码点计数），R11 锚定改为"多字节行不错位 + 缩进列正确"。
-    4. `use_thread` 运行期重启链路存在但不可脚本触发：服务端仅在
-       `NOTIFICATION_EDITOR_SETTINGS_CHANGED`（仅 C++ UI 路径发出，脚本不可达）时
-       重启监听。引擎验收改用"端点强制断开 + 插件禁用/启用"驱动重连；用户从编辑器
-       设置对话框改 `use_thread` 的引擎行为不变（§2.6）。
-- Phase 2 评审记录（2026-09-23，review-expert-a + review-expert-c 并行评审，修复后
-  全部自动化用例复测通过）：
-  - 采纳并修复：
-    1.（高）运行期启用翻转 `use_thread` 后 `_lsp_thread_mode` 误信设置值：引擎只在
-       C++ 通知路径重启监听，服务端仍主线程轮询，内联等待每次白等 150ms。修复：
-       plugin.gd 检测运行期翻转（`is_scanning()==false` 且发生翻转）置
-       `service.lsp_blocking_unsafe` 会话标记 + push_warning；`lsp_sync_and_wait`
-       在 READY 但线程不安全时仍发送同步、仅跳过等待（诊断经帧泵异步进缓存）。
-       新增 `lsp_runtime_enable` 引擎用例（gdcc 启动时禁用 → 运行期启用 → 阻塞被拒
-       且异步诊断浮现）锚定。
-    2.（中）`wait_diagnostics` 超时清空待确认队列 → 迟到通知会错绑到清空后发送的
-       下一代。修复：超时保留队列（服务端对每次同步恰好发布一次，FIFO 自对齐）；
-       断线仍全清。回归锚点 `fifo_timeout_realign`（零预算强制超时后 g3/g4 不交叉）。
-    3.（中）`request_blocking` 把断线误判为超时并二次 `_disconnect`，退避被翻倍
-       推后。修复：区分 aborted（连接已失，不再拆）与真超时（才拆连接）。
-    4.（中）`validate_clean` 在服务端尚未发布时因空缓存误过。修复：先
-       `lsp_sync_and_wait` 锚定本代已入账再断言；警告样例补 `code == 0` 断言。
-    5.（中）测试端口设置与服务端启动存在竞争（脚本改设置不重启服务）。修复：
-       harness 对携带 `lsp_port` 的用例注入 `--lsp-port` CLI 覆盖（引擎支持且优先于
-       EditorSettings），服务端端口在插件代码运行前钉死。
-    6.（低）didOpen/didChange 发送失败残留未发出的 generation：改为回滚队列项与
-       版本号并断连返回 -1。
-    7.（低）`Content-Length` 用 `to_int()` 会吞非法值：改 `is_valid_int()` 严格校验。
-    8.（低）`_validate` 文档注释与"超时用缓存"行为矛盾：注释已修正。
-    9.（低）`reconnect_drop` 只观测同步断开：补 `reconnect_attempts` 步骤断言对死
-       端点的失败重试有记录（`get_last_error` 非空）。
-  - 第二轮复核采纳并修复（复核确认第 1 轮修复方向，以下为新发现）：
-    1.（高）`is_scanning()` 不是服务端轮询模式的可靠代理：启动期翻转后禁用/再启用
-       会误闩 unsafe（服务端实为线程模式）；运行期启用但首扫未完会漏闩。改为翻转
-       瞬间的端口在听探测 + 常驻服务上的粘性 `lsp_blocking_unsafe`/`lsp_thread_primed`
-       记忆（§4.1 第 2 步）；`plugin.gd` 回滚仅在本次 primed 时清 primed；
-       `_exit_tree` 过时的"恢复会重启 LSP 服务"注释已修正。新增锚点：
-       `lsp_connect` 的 `blocking_safe_after_cycle`（循环后内联等待仍可用）、
-       `lsp_runtime_enable` 的 `blocking_refused` 改为断言标记为真且快速返回。
-    2.（中）`request_blocking` 截止边界竞态：`_drive_io()` 内断线恰跨 deadline 时仍
-       按超时二次拆连。修复：`_drive_io()` 后再判一次断线。
-    3.（中）`reconnect_attempts` 假阳性（"endpoint changed" 本身就非空）：改等
-       `connect*` 前缀的连接失败证据。
-    4.（低）`lsp_runtime_enable.editor_ready` 的 `_port_open` 只有 1.5s 余量：改为
-       30s 轮询。
-- Phase 3 验收结果（2026-09-26，自动化项全绿，手动项待 §8.3）：
-  - `EditorAddonDiagnosticsFixtureTest`（新增，4/4）：Java 侧钉死引擎测试所用 fixture
-    的前端诊断事实——路径式 `extends` 报 `sema.class_skeleton`（ERROR，锚定
-    `class_name` 行）；`@onready var camera = $Camera3D` 报
-    `sema.deferred_expression_resolution`（WARNING）+ `sema.compile_check`（ERROR）
-    配对（4 行 23 列）且 `includeLowering=false` 时后者不出现；两 fixture 同模块单轮
-    齐报；同名文件经 displayPath 独立键控。
-  - `EditorAddonScriptLanguageEngineTest` 新增 `gdcc_diag` 用例（18 步全绿）：
-    路径式 extends 在 LSP 静默下经 `_validate` 浮现 `[gdcc sema.class_skeleton]`
-    前缀错误；lowering fixture 的错误/警告配对按五键/行列映射；同名不同目录文件
-    诊断各自键控；编辑后旧版本缓存立即失效（版本门禁负例；**该语义已在 Phase 10 后
-    修复 1 中反转为"过期可见"**，此句仅为历史事实记录）；LSP 有错误时 gdcc
-    诊断不叠加（含 gdcc 缓存新鲜时仍抑制）；修复后下一轮缓存被替换、诊断消失；
-    busy ±1 在分析期间上报并排空（经 `busy_delta` 信号接入 Phase 1 协调器）；
-    预置同 ID 残留模块后重建恢复分析（-32001 路径）；删除/重命名后旧路径缓存与
-    服务端 VFS 条目均移除（`vfs.readFile` 返 -32005 为证）、新路径独立成轮；
-    端点指向快速失败的 HTTP 500 黑洞后经 `ensure_server_hook` 拉起重试并恢复。
-  - 回归：`EditorAddonScriptLanguageAnalysisTest`（含新调度器代码 analyze+lowering
-    干净）、`EditorAddonClientAnalysisTest`、`EditorAddonBootstrapEngineTest`、
-    `EditorAddonIntegrationProbeTest`、引擎测试全部既有用例无回归。
-- Phase 3 实现偏差与实施期实证（相对下文设计，按事实源口径记录）：
-  1. 引擎测试的停机坪端点改用**永远应答 HTTP 500 的黑洞服务器**：实证 Godot
-     `HTTPRequest` 对连接被拒端口会挂起至 30s 请求超时，快速失败使钩子路径可被
-     确定性断言。
-  2. lowering fixture 选型经实证调整：裸 `$Camera3D` 属性初始化会被 GDScript LSP
-     自身升级为错误（破坏"LSP 无错误"前提）；lambda、裸工具函数值读、`match`、
-     字典 for-in 在当前前端均已可 lowering（不再产生 compile_check）；最终采用
-     LSP 推荐写法 `@onready var camera = $Camera3D`——LSP 静默而 gdcc 仍阻断，
-     且天然携带 WARNING+ERROR 配对。
-  3. setup 阶段机增加 `_setup_session` 守卫：端点重定向瞬间可能存在旧在途 ping，
-     其应答不得被误消费为新一次 setup 的应答（阶段整数无法区分）。
-  4. 对账不采用磁盘内容覆盖 dirty 缓冲区路径（缓冲区权威，由下一 flight 上传）；
-     对账 put/delete 的完成归属依赖 RPC 客户端严格单飞串行（`_reconcile_order`
-     FIFO，无需 Callable.bind）。
-  5. busy 协调经 `busy_delta(delta)` **信号**接入 plugin.gd 协调器（信号是已探针的
-     编译→解释方向互操作形式）；模块未就绪且首次 setup 已有结论（服务缺席且无启动
-     命令）后不持有 busy，静默降级不打扰编辑器低功耗模式。
-  6. `gdcc_diagnostics_for` 仅按版本门禁返回原始诊断条目；行列映射、`[gdcc
-     <category>]` 前缀与五键警告形状在 `_validate` 侧完成（前端点位本来就是
-     1-based，与 LSP 分支的 +1 平移相反）。
-- Phase 3 评审记录（2026-09-26，review-expert-a + review-expert-c 并行评审，修复后
-  `gdcc_diag` 20 步与全部门禁复测通过）：
-  - 采纳并修复：
-    1.（高）删除已镜像文件只清本地态不防"页签复活"：仍打开页签的下一次 `_validate`
-       会把已删路径当新文件重新上传。修复：删除一律落墓碑（`_deleted_paths`），
-       `notify_source_changed` 对墓碑路径且磁盘不存在时返回 -1，墓碑在文件重新出现
-       时解除；flight 上传前再查一次墓碑关闭"删除与对账之间"的窗口。新增锚点步骤
-       `delete_with_dirty_buffer`（含服务端 `readFile` -32005 证据）。
-    2.（高）删除单独发生时不触发重分析，幸存文件的诊断（如消失的被继承
-       `class_name`）永不刷新。修复：对账中出现删除即置 `_analyze_all_pending`，
-       下一 flight 即使无脏路径也整模块分析。新增锚点步骤
-       `deletion_triggers_reanalysis`（provider/consumer 依赖断裂浮现错误）。
-    3.（高）`vfs.deletePath` 失败被乐观吞掉且不可重试，服务端残留僵尸文件污染后续
-       整模块分析。修复：仅 ok/-32005 视为删除成功，其余失败走 `_on_server_outage`
-       ——恢复时 `module.create` 命中 -32001 重建路径自然清空僵尸。
-    4.（高）服务离线期间旧缓存诊断仍可显示，违反 §4.4"离线仅剩 LSP 通道"。修复：
-       `gdcc_diagnostics_for` 增加 `_module_ready` 门。
-    5.（中）从未镜像的脏路径在删除后会被 flight 补传（对账只按镜像集合检测删除）。
-       修复：引入 `_disk_known` 区分"曾在盘"与"纯缓冲区未保存新文件"，前者消失即
-       删除+墓碑，后者不受影响。
-    6.（中）重定向瞬间旧在途 ping 的应答可能被误消费为新 setup 的应答（共享会话戳
-       无法区分先后两条 ping）。修复：ping 发送/完成单调计数对，先到的旧完成直接
-       丢弃。
-    7.（中）卸载瞬间在途 `module.create` 成功会造成孤儿模块。修复：create 完成时
-       若已非 ACTIVE 立即补发删除（同端点、队列仍在泵帧）。
-    8.（中）`analyze.run` 返回 RPC 成功但 `outcome != COMPLETED`（如元数据加载失败）
-       会被当作干净轮合并。修复：仅 COMPLETED 合并并清脏；失败轮按次数退避，连续
-       5 次后挂起调度直至下一次真实变更（push_warning 告知）。
-    9.（中）`module.create` 失败（ping 已成功）的重试不持有 busy，低功耗窗口会饿死
-       重试。修复：`_defer_setup_retry` 不再置 `_setup_concluded`。
-    10.（中）`ensure_server_hook` 原先在首次 ping 失败后才调用，而实证显示
-        `HTTPRequest` 对拒连端口会挂满 30s 请求超时。修复：模块未就绪时每个断供
-        窗口先走钩子（launcher 自带 ≤200ms TCP 快探）再 ping——同时落实 §3.5
-        "install 后首个 ping 之前先经钩子"的字面要求。
-    11.（低）-32002 删除失败缺少规格要求的日志：补 `push_warning`。
-    12.（低）测试加固：`lsp_error_suppresses_gdcc` 要求 gdcc 缓存新鲜且**非空**
-        （空缓存无法证明抑制）；警告断言补齐 `code == 0` 与 `end_line`；
-        `stale_module_rebuild` 改为版本升版后等新一轮（排除残留缓存假通过）；
-        `rename_reconciles` 补服务端旧路径 `readFile` -32005；`recovered_after_hook`
-        补恢复后的完整分析轮证据。
-  - 保留（自愈/自限，修复需较大异步改造，已评估暂不做）：
-    1. ~~端点重定向遗弃旧服务器模块~~ **已由 Phase 5 覆盖**（`retarget_rpc_endpoint`
-       前经一次性旧端点客户端串行队列删除，见 Phase 5 验收记录）；残余：编辑器在
-       清理在途时退出会留下旧端点模块（纯内存态，随旧服务进程退出消亡）。
-    2. 迟到的 ensure-hook 回调可影响替换会话的重试计时：影响仅为一次提前/推迟的
-       ping，下一次心跳自愈。
-    3. `busy_drained` 只观测服务侧信号而非协调器对 `OS.low_processor_usage_mode` 的
-       实际效果：协调器本身由 Phase 1 用例覆盖，此处仅锚定服务上报职责。
-  - 第二轮复核采纳并修复（复核确认第一轮修复方向，以下为新发现）：
-    1.（高）已被 flight 上传的纯缓冲区文件（从未落盘）会被下一次对账误判为"已删除"
-       而墓碑化——"已镜像"不是"曾在盘"的证据。修复：删除判定只认 `_disk_known`。
-    2.（高）`notify_source_changed` 解除墓碑时不恢复 `_disk_known`，导致同一文件在
-       下一次扫描前再删会被误认作纯缓冲区路径而被 flight 重新上传；flight 的墓碑守卫
-       原先还会先擦 `_sources`，反过来破坏对账的删除检测。修复：解除墓碑即恢复
-       `_disk_known`；flight 守卫只清脏标记与缓存、保留 `_sources` 并触发对账。
-    3.（中）hook 失败后下一 tick 仍会先 ping——对拒连端口白挂 30s 超时且占 busy。
-       修复：hook 失败即重置 `_ensure_attempted`，重试周期始终先走 launcher 的快探
-       （其自身 busy 上报保证低功耗窗口内帧泵不断），只有 hook 成功才发 ping。
-    4.（中）hook 无效（未注入）时首次 ping 失败永不置 `_setup_concluded`，busy
-       永久持有。修复：无钩子时 outage 直接结论化、静默降级。
-    5.（中）outage 保留诊断缓存，模块一就绪旧结果立即复活（可能已过时）。修复：
-       outage/重定向/卸载一律清空 `_gdcc_diagnostics`，恢复后由重镜像+重分析重建。
-    6.（低）挂起状态下删除仍可能无法触发重分析：置 `_analyze_all_pending` 时同步
-       解除挂起并清零失败计数。
-    7.（低）`delete_with_dirty_buffer` 未证明删除时确有脏工作：补
-       `notify_source_changed` 版本探针断言（同文本返回现有版本 2）。
-  - 第二轮复核未采纳项（附理由）：
-    1. "hook 失败后应保持未结论化以占住 busy"——驳回：无启动命令时服务长期缺席是
-       正常态，永久占 busy 会破坏 §4.4 静默降级；退避到期的重试在下一帧（用户活动
-       时）执行即可（第三轮复核确认 launcher 的 busy 只覆盖探测本身，不覆盖退避
-       窗口——该边界见第三轮保留项 1）。
-    2. "墓碑解除依赖 DirAccess 枚举未导入文件可能不可靠"——引擎测试实证反驳：
-       `rename_reconciles` 中运行时新写、从未导入的 `.gd3` 被对账正常发现；同时仍
-       采纳其加固建议（解除墓碑即恢复 `_disk_known`，见第 2 条）。
-  - 第三轮复核采纳并修复：
-    1.（高）hook 成功后 launcher 释放 busy 与服务发 ping 之间存在帧空窗：低功耗窗口
-       下 ping/create 链可能等不到下一帧。修复：hook 成功时 `_setup_concluded` 置回
-       false——launcher 的 busy 与服务的 busy 在回调内重叠交接，ping→create→首轮
-       对账全程有帧；失败后 outage 的 5s 退避最多再持有一个周期（hook 再失败即结论化
-        释放），不会永久占用。
-  - 第三轮复核保留项（已确认设计边界，写入注释）：
-    1. 服务缺席期间两次快速探测之间的退避不占 busy：完全空闲（无任何输入）的编辑器
-       里，到期的重试在下一帧（用户活动时）执行。这符合 §4.4 静默降级；"杀进程后
-       无任何输入也能自动拉起"不作为承诺——心跳检测本身也依赖帧，该边界已写入
-       `_on_ensure_ready` 注释。
-    2. 心跳在纯空闲时暂停：killed 服务的发现延迟到下一次编辑器活动；期间
-       `_validate` 可能短暂提供 kill 前的缓存（与 R17 的节拍级延迟同类）。不以
-       心跳新鲜度门控缓存读取——健康服务下空闲数秒就隐藏既有诊断更差。
-  - 第四轮复核采纳并修复：
-    1.（高）hook-first 存在漏洞：hook 启动当帧返回后，下一帧 `_ensure_attempted` 已为
-       true，会在 hook 仍在途时就发出 ping（对拒连端口挂满 30s 请求超时，架空
-       hook-first 且推迟 create）。修复：`_tick_setup` 在 `_hook_inflight` 期间直接
-       返回。
-    2.（中）hook 持续成功（端口可 TCP 连通）而 ping/create 持续失败时 busy 永不释放。
-       修复：setup 失败计数（setup ping/create/残留删除共用），达到 5 次上限即结论化
-       释放 busy，后续重试随活动帧进行。
-    3.（中）逐文件版本门禁不足：flight 中途任一源变化（含快照外文件）时，未变文件
-       仍会并入按旧模块状态算出的诊断。修复：flight 记录整模块版本戳（版本和 +
-       路径数），完成时不匹配即整轮丢弃并立即重飞（`_analyze_all_pending` 保留）。
-  - 第四轮复核后状态：待两名评审最终确认；全套（分析门禁 + fixture 锚定 + 引擎 8
-    用例含 `gdcc_diag` 21 步）已复测通过。
-  - 第五轮复核采纳并修复：
-    1.（高）hook 成功即清失败计数并强制未结论化，"TCP 可连但 RPC 永失败"循环永远
-       触不到上限。修复：hook 成功不再清零，且计数达上限后保持结论化。
-    2.（中）-32001 → 删除成功 → 立即重建无退避上限（矛盾服务器可致紧密循环）。
-       修复：同窗口第二次 -32001 改走 `_defer_setup_retry` 共享上限。
-    3.（中）outage 恢复丢失纯缓冲区（未落盘）文件：镜像清空后它们不再被重新上传。
-       修复：对账把"不在盘、非已知、非墓碑、未镜像、未脏"的 `_sources` 条目补标脏，
-       由下一 flight 重传。
-  - 第六轮复核采纳并修复：`_on_server_outage` 误清 setup 失败计数（上轮修复引入），
-    上限仍不可达。修复：outage 不清计数（清零只在 hook 失败/进入就绪/通道重置）。
-    新增引擎步骤 `hook_ok_ping_fail_capped`（hook 恒成功 + RPC 恒 500 的黑洞端点，
-    断言计数达上限后结论化且 busy 在本步骤内排空）。
-  - 第七轮复核采纳并修复：outage 无条件清 `_module_created`，瞬时故障后卸载会跳过
-    模块删除造成孤儿。修复：outage 保留创建标记（仅重定向/实际删除才清除）。
-  - 第七轮复核结论：review-expert-a 与 review-expert-c 均 **APPROVE**；最终全套（分析
-    门禁 + `EditorAddonDiagnosticsFixtureTest` 4/4 + 引擎 8 用例含 `gdcc_diag` 21 步）
-    复测通过。
-- Phase 4 验收结果（2026-09-27，自动化项全绿，手动项待 §8.3）：
-  - 实现按 §3.5 hub-and-spoke 配方落地：新增无状态子节点 `GdccCompletionService`
-    （`gdcc_completion_service.gd3`，文档同步/有界阻塞请求/响应透传；无 tick、无 busy
-    项、无关停钩子——整个流程是 `_complete_code` 内的一次内联有界泵，不占帧驱动
-    资源）；服务根新增 `request_completion(path, text, line, col)` 门面（前置守卫：
-    ACTIVE + LSP READY + `_lsp_thread_mode()`，失败一律 `{"ok": false}` 形状）与公开
-    共享助手 `lsp_uri_for(path)`（包装既有 `_path_to_uri`，与 `vfs_path` 同级）；
-    语言侧 `_complete_code` 负责哨兵定位/剔除、0-based 码点 (line, character) 计算与
-    LSP → 引擎选项映射（与 `_validate` 的"服务给裸数据、语言做映射"分工一致）。
-  - `EditorAddonScriptLanguageEngineTest` 新增 `lsp_completion` 用例（18 步全绿）：
-    `complete_degraded`（客户端未 READY → 降级字典）；`kind_mapping` /
-    `insert_text_priority`（映射表与 insert 文本优先级的白盒锚定——服务端发出哪些
-    kind 不可控，故映射合同直接钉死）；`call_hint_mapping`（SignatureHelp active
-    signature/parameter 与嵌套默认值的高亮片段白盒锚定）；`complete_keywords`（类体内标识符前缀 `f` 后
-    触发，`options` 非空且含 `func`，每项七键齐全（§2.2 必填键；
-    `matches` 为可选项，4.5 `script_language_extension.h` 以 `op.has("matches")`
-    守卫读取）且 `font_color`/`location` 类型值钉死、kind ∈ [0,9]）；
-    `complete_empty_context`（空行 → OK + 空选项的合法空结果，与降级形状区分）；
-    `complete_member`（`v.` 成员补全含 `x`）；`complete_call_hint`（真实 LSP
-    signatureHelp 往返，同文件函数第二参数的类型+默认值片段被 0xFFFF 对标记）；
-    `complete_cjk`（R11 残余锚定：emoji 在
-    光标同行之前且光标后有文本，码点误算会丢掉 `v.` 成员上下文而不再含 `y`）；
-    `complete_no_sentinel`（无哨兵 → 降级字典）；`fifo_survives_completion`（补全
-    重试在同一 URI 上积压的 generation 不破坏后续同步的按代绑定：新错误同步的
-    generation 水位等待迫使滞留代先出队，per-generation 历史恰绑定本代错误）；
-    `complete_disabled_safe`（禁用后常驻语言实例安全应答）；`validate_still_healthy`
-    （禁用/启用循环后 `_validate` 在新 URI 上照常浮现 LSP 错误）。
-  - 回归：`EditorAddonScriptLanguageAnalysisTest` 5/5（新 `.gd3` 经目录扫描自动纳入
-    整模块 analyze+lowering）、`EditorAddonClientAnalysisTest`、
-    `EditorAddonIntegrationProbeTest`、`EditorAddonBootstrapEngineTest`、
-    `EditorAddonDiagnosticsFixtureTest`、引擎测试全部 12 用例无回归。
-- Phase 4 实现偏差与实施期引擎事实修正（相对下文设计，按事实源口径回填 §4.3）：
-  1. **类体内纯空行不产生任何补全选项**（引擎事实，修正 §7 Phase 4 验收样例假设）：
-     `GDScriptParser.make_completion_context` 仅在光标落在某个 token 上时才赋上下文
-     （`gdscript_parser.cpp` 的 cursor_place 门禁），纯空行保持 `COMPLETION_NONE`，
-     `complete_code` 直接 break 返回空列表（`gdscript_editor.cpp`）——与 `.gd` 行为
-     逐字一致。关键字补全需要标识符前缀上下文（`COMPLETION_IDENTIFIER` →
-     `_find_identifiers` 注入关键字表），验收样例改为 `f<哨兵>`；空行行为保留为
-     "OK + 空 options"的边界锚点步骤 `complete_empty_context`。
-  2. kind 映射增补 `Snippet(15) → KIND_NODE_PATH(7)`：4.5 服务端实际发出的 kind 集合
-     经 `gdscript_text_document.cpp` 核实为 Text=1 / Method=2 / Variable=6 / Class=7 /
-     Property=10 / Enum=13 / Snippet=15（节点路径）/ File=17 / Constant=21 /
-     Event=23；§4.3 的 Function/Constructor/Field/EnumMember/Value 分支为规格容忍
-     兜底（该服务器不发出），原"其余→9"兜底会把节点路径错标为纯文本。
-  3. 引擎测试驱动 `DRIVER_PLUGIN` 文本超过 Java 单一字符串字面量 64KB class 文件
-     上限：拆为 `driverPluginCore()` + `driverPluginCompletion()` 两个方法返回的
-     文本块运行时拼接（方法调用非常量表达式，避免编译期折叠回原限制）。
-  - Phase 4 评审记录（2026-09-27，review-expert-a + review-expert-c 并行评审，修复后
-    复核双双 APPROVE）：
-    - 驳回（附 4.5 源码反证，评审已接受）："option 缺 `matches` 键会被引擎整条丢弃"
-      为误读——4.5 `script_language_extension.h` 的 `complete_code` 对 `matches` 的
-      读取由 `if (op.has("matches"))` 守卫（可选键），`ERR_CONTINUE` 强制键恰为七个，
-      与 §2.2 合同一致；实现与测试均不发 `matches`，行为正确。
-    - 采纳并修复：
-      1.（中）`fifo_survives_completion` 初版只断言"错误存在"且在禁用/启用循环之后
-         运行，无法观测补全流量对 generation FIFO 的污染。修复：步骤前移到循环之前，
-         在补全反复同步过的同一 URI 上用 LSP 客户端直接发错误同步，水位等待迫使滞留
-         代先出队，再断言 per-generation 历史恰绑定本代；第二轮复核进一步把本代错误
-         锚定到独占行（0-based 第 5 行）并同断 severity 与 `range.start.line`，排除
-         补全样例孤立 `f` 错误的冒充窗口。
-      2.（低）注释/测试把选项必填键误写为"八键"：§2.2 必填键实为七个（`matches`
-         可选）。修复：全部措辞改为七键并注明 `matches` 的引擎守卫出处；形状断言
-         增补 `font_color is Color` 与 `location == 1024` 类型钉死。
-      3.（低）补全子节点注释未覆盖请求超时路径：超时按客户端阻塞契约断连，滞留
-         generation 随死连接丢弃（服务端文档亦随之消亡，下一同步在新连接重开，无跨
-         连接错绑）。修复：注释如实补记该路径；不断连合同本身不变（既有设计，
-         `lsp_fifo` 的 `fifo_timeout_realign` 覆盖等待超时不清队列的对照路径）。
-  - Phase 3 后重构（hub-and-spoke 拆分，见 §3.5 架构段）评审采纳并修复：
-    1.（中）`_stale_deleted` 原在发出删除前置位：删除失败（-32002）后下一次 -32001
-       会被误判为"矛盾二次冲突"而跳过删除。修复：仅在删除**成功**后置位，失败路径
-       显式清零。
-    2.（高）ensure-hook 应答无归属判断：重定向后旧 hook 的迟到应答会改写新窗口状态
-       并清掉新 hook 的 `_hook_inflight`；而纯计数器方案在 teardown 补全后无法区分
-       迟到的真实应答。修复：tick 强制**全局单飞** hook（`_hook_sent == _hook_done`
-       才允许新 hook），使 `_setup_session` 窗口标记在在途期间不被覆写；teardown
-       （outage/重定向/卸载）只清 `_hook_inflight`，迟到应答由 session 守卫丢弃。
-    3.（中）hook 可能永不应答（插件停用时旧 launcher 丢弃待答队列不回呼），单飞设计
-       会因此死锁。修复：30s hook 超时（launcher 自身预算约 20s）按 hook 失败语义
-       放弃窗口并合成缺失的完成计数（`_hook_done = _hook_sent` + session 递增）。
-    4.（低）`service_shutdown` 未清心跳截止时间，同端口重装最多空等 5s。修复：置 0。
-    新增引擎步骤 `stale_hook_answer_dropped`（延迟 hook + 两次重定向，断言旧窗口迟到
-    应答不清新窗口的 in-flight 标志）与 `hook_pending_uninstall_recovers`（hook 待答
-    时卸载→重装→仅新 hook 回答→必须恢复就绪）。重构后 `gdcc_diag` 共 23 步，全套
-    复测通过。
-- 2026-09-27 手动测试发现与新增阶段（Phase 5–8 规划，经调研与评审复核落档）：
-  - 发现：编译并安装扩展后，编辑器出现伪错误 `Class "Test2" hides a native
-    class.`（error 级，不可抑制），且 gdcc 诊断完全不显示；卸载扩展后 gdcc 诊断
-    仍不显示。成因链：伪错误触发 `_validate` 的 LSP-error 抑制门禁（§4.2 第 3 步）
-    + 异步分析完成后无重校验通道（§4.4/§9 R17）+ service 的 RPC 端点硬编码与 dock
-    设置分叉且失败静默降级。
-  - 新增 Phase 5（诊断可见性修复）、Phase 6（编译期类元数据，编译器自动生成）、
-    Phase 7
-    （`class_name` 条件擦除——来源证明复用 Phase 6 的运行时元数据，**取代**磁盘
-    清单方案）、Phase 8（LSP workspace 镜像）；原 Phase 5（打磨）重编号为 Phase 9。
-  - 暂缓：gdcc 大纲通道 + 补全合并（Stage B）、全局类注册 + 成员内省虚函数
-    （Stage C）——见 §7 Phase 9 前的"暂缓项与已否决方案"。
-  - 已否决（评审复核，证据链见 §7 Phase 7 背景）：显示端过滤伪错误；全项目
-    `class_name` 合成改名。
-- Phase 5 验收结果（2026-09-27，自动化项全绿，手动项待 §8.3）：
-  - 实施三项：① scheduler 合并点以"写入前缓存未服务该版本"记录 newly-readable（同
-    诊断但版本前进亦计入），service 帧泵 `_pump_revalidation` 按"当前页签 + registry
-    版本 + 缓冲区文本逐字一致"门禁后发射**自有**信号 `revalidation_requested(path)`，
-    由解释型 `plugin.gd` 经 `call_deferred` 跳出泵栈、再对当前页签 CodeTextEditor 发射
-    `validate_script`（弹窗期间暂缓、关闭后次帧补发——弹窗判定用
-    `CodeEdit.get_code_completion_options()` 非空，与 4.5 的绘制条件
-    `code_completion_active && !options.is_empty()` 逐字等价）；② dock 状态区
-    （配置端点 vs 生效端点 / READY / 上轮分析时间 / 最近失败原因，1s 轮询只读镜像；
-    失败原因由 lifecycle 在 hook/ping/create/delete 失败点、scheduler 在 put/analyze/
-    非 COMPLETED 失败点记录，成功轮次清除）；③ 端点同源：plugin install 改读
-    `gdcc/compilation_server/host|port`，dock 提交手势（Enter/失焦）经
-    `service.retarget_rpc_endpoint` 走 §3.5 channel-reset（不重装语言、不断 LSP）。
-  - 实施期引擎事实修正（相对 §7 Phase 5 设计，按事实源口径）：
-    1. 4.5 `ScriptTextEditor.get_base_editor()` 直接返回 **CodeEdit**
-       （`script_text_editor.cpp:2150`），`validate_script` 信号在其父级
-       CodeTextEditor 包装上；目标经祖先查找获得（解释型插件中继侧）。
-    2. 设计写"service 直接 `emit_signal("validate_script")`"；实证该路径从帧泵调用栈
-       发起时不送达（§2.5 末条），最终形态为 service 自有信号 + 解释型插件 deferred
-       中继（见上一条状态记录）。
-    3. 引擎测试的弹窗驱动：caret 落在空 base 上下文会触发
-       `_filter_code_completion_candidates_impl` 直接 cancel（code_edit.cpp:3613），
-       故测试把 caret 置于词尾、探测选项以该词为前缀（`RvTargetProbe`）。
-  - 引擎测试新用例 `diag_revalidate`（14 步全绿）：`editor_opened`（页签打开与
-    CodeEdit 解析）、`signal_revalidates`（合并后无任何驱动输入即重校验：锚定为
-    合并检出后 45 帧内语言 `_validate` 调用计数前进。idle 歧义按方向区分排除：
-    clean→error 的 idle 是 1.5s、**晚于** 0.8s 防抖（`set_error_count` 切到 0.5s 只在
-    错误已显示之后），该步先 `_settle_past_idle` 让 idle 落地（其校验顺带推送版本），
-    再读基线；已有错误的步骤 idle 为 0.5s、严格早于 ≥0.8s 的合并，基线取在合并检出
-    之后即可——外加缓存内容复核）、`same_version_remerge_quiet`（负例：
-    idle 沉降后同版本重并计数器不动）、`new_version_same_diag_fires`（正例：同诊断
-    新版本必刷）、`non_current_tab_dropped`（负例：非当前页签不重校验）、
-    `popup_deferral`（弹窗暂缓计数器持平、关闭补发且诊断可显示）、
-    `endpoint_retarget_closed`（dock 提交死端点 → 通道重置 + 失败原因 + 状态区同步）、
-    `endpoint_retarget_recover`（恢复 READY）、`endpoint_persists_after_toggle`
-    （插件禁用/启用后 install 读设置同源）、`status_area`（恢复后状态区正确）。
-  - 实施期引擎实证与最终形态修正（2026-09-27 bisect，证据矩阵见 §2.5 末条）：gdcc
-    编译代码的 `Object.emit_signal` method-bind 外来发射，从 service 帧泵调用栈发起
-    时不送达任何连接（C++ 与脚本连接均不触发；同对象同信号从非泵直发栈或解释型
-    代码发起则正常）。最终形态改为 service 泵发射自有信号、解释型 plugin 经
-    `call_deferred` 中继 `validate_script`；观测锚定随之从"信号次序对"改为"合并检出
-    后语言 `_validate` 计数窗口前进"（计划验收本来指定的锚）。缺陷边界结论（曾用
-    一次性运行时探针确认，探针已随结论落档后移除）：编译代码对普通 Node 的
-    method-bind 发射在 runtime 上下文可送达——缺陷仅限编辑器泵调用栈。
-  - 评审记录（2026-09-27，review-expert-a + review-expert-c 并行评审，共四轮：
-    两轮采纳修复 + 中继化重设计 + 两轮复核，最终双双 **APPROVE**）：
-    采纳并修复：
-    1.（高）发射门禁只比 registry 版本不比缓冲区文本：用户在合并后、发射前键入时
-       registry 尚未前进，会空发一次读到空缓存的校验。修复：发射前逐字比对
-       `code_edit.get_text()` 与 registry 分析文本，不符即丢弃（该版本由 idle 节拍
-       正常接力）。
-    2.（中）`new_version_same_diag_fires`/`popup_deferral` 原用裸信号计数，idle 节拍
-       的发射可单独放行；且 popup 步缓冲区与待发版本不一致，补发校验读不到缓存。
-       修复：popup 步先令缓冲区与待发版本一致再强制弹窗，并补显示内容断言。（后续
-       中继化后，观测锚定最终定为"合并检出后 45 帧内 `_validate` 计数前进"窗口，正例
-       先 `_settle_past_idle` 排除 idle 节拍混入。）
-    3.（中）retarget 遗弃旧服务器上的私有模块（所有权标记随 channel reset 清除，
-       uninstall 无法回收）。修复：retarget 前经一次性旧端点客户端 fire-and-forget
-       删除（一次性旧端点客户端 + 串行清理队列，queue_free 自清理；快速连切不会跳过
-       中间端点的清理；切回某端点时丢弃其未发出的清理项，由既有 -32001 重建路径接管）。
-    4.（中）reconciler 的 put/delete 失败路径只 outage 不记录原因，状态区会显示
-       "not ready 但 Last failure: none"。修复：`notify_outage(reason)` 带原因参数，
-       reconciler/scheduler 传输失败统一经 lifecycle 记录（scheduler 自留非 COMPLETED
-       的分析失败）。
-    5.（中）lifecycle 的 `service_shutdown` 未清 `_last_failure`：失败中禁用再启用会
-       短暂显示上一会话的失败原因。修复：shutdown 清除。
-    6.（中）dock 端口输入无校验，`int("abc")==0` 会被提交并写入设置。修复：全数字
-       1..65535 校验，非法输入不落盘、不 retarget、记录到 dock 日志。
-    文档修正（评审指出）：§2.5 末条与 Phase 5 第 1 项已按实现期事实改写（祖先查找 +
-    中继两段式门禁）。
-    评审后追加发现（2026-09-27，实现期 bisect）：编译代码泵内外来信号发射不送达
-    （§2.5 末条缺陷实证）→ 最终形态为中继；测试观测锚定相应改为计数器窗口。
-    第三轮复核采纳并修复：
-    1.（中）中继 deferred 段只复核页签：一帧间用户可能又键入或打开弹窗。修复：信号
-       携带 `(path, version)`，插件 deferred 段经 `should_still_revalidate` 复核全部门
-       禁（含 outage/retarget 后的缓存新鲜度/就绪度），弹窗刚开则重新入队。
-    2.（中）retarget 发生在旧端点 `module.create` 在途时，成功回调因会话过期被丢弃，
-       旧服务器留下无所有权记录的模块。修复：lifecycle 记录 create 的发送端点，过期
-       成功应答经 `enqueue_orphan_cleanup` 向**发送端点**补登记删除。
-    3.（中）状态区"最近失败"按来源优先级而非时间：scheduler 的分析失败可陈压过
-       outage 后的恢复。修复：scheduler 的 `on_module_outage` 清除陈旧分析失败原因
-       （outage 原因是更新的事实）。
-    4.（低）状态区"配置端点"读的是输入框草稿而非已存设置。修复：改读 EditorSettings。
-    第三轮复核保留（有界残余/待确认项）：
-    - retarget 时共享 RPC 客户端的**未发出**队列请求在发送时按当时地址拼 URL，可能
-      落到新服务器：不止 module-not-found——排队的 `module.create` 可能在新服务器上
-      真的建成同 id 模块，而过期回调按记录的**入队端点**登记清理（向无此模块的端点
-      发送，空操作）。边界：模块 id 按项目哈希+pid 作用域，错误端点上的残留模块随其
-      进程退出消亡，且下次回访该端点时由既有 -32001 重建路径自愈；不影响编辑器数据
-      正确性。彻底隔离（按端点/会话分客户端，或请求携带真实分发端点贯穿完成回调）
-      属较大改造，留待后续阶段评估（未阻塞本阶段）。
-    - 切回某端点时若其清理**在途**（已发出），迟到删除可能命中刚重建的模块：表现为
-      一次瞬时 outage，经既有 outage→重建路径自愈；队列项已在切回时丢弃（见上）。
-    - 文档口径修正：§3.6 第 3 步与 §3.5 install 步骤的端点描述、Phase 1 偏差第 2 条
-      标记取代、状态节 idle 时序表述（clean→error 1.5s 晚于防抖、有错误 0.5s 早于
-      合并）。
-  - 回归：`EditorAddonScriptLanguageAnalysisTest` 5/5、
-    `EditorAddonDiagnosticsFixtureTest` 4/4、`EditorAddonClientAnalysisTest`、
-    `EditorAddonIntegrationProbeTest`、`EditorAddonBootstrapEngineTest`、引擎测试
-    全部 13 用例（含新 `diag_revalidate`）无回归。
-- Phase 6 验收结果（2026-09-28，自动化项全绿，手动项无——计划定为引擎覆盖）：
-  - 新增 `CClassMetadataSupportTest`（4/4）：元数据 JSON 全键形状（format/
-    source_res_path/source_path/source_name/module/compiled_at/version）、
-    `source_res_path` 仅 `res://` 形态产出、`source_path` 缺省省略、嵌套类
-    `source_name` 点号路径、转义矩阵（引号/反斜杠/换行/制表符/CJK/非 BMP emoji/
-    Windows 路径 JSON→C 双层）经"渲染→C 反转义→JSON 解析"逐字往返；C 体的惰性
-    解析+缓存+深拷贝返回锚点。
-  - 新增 `ApiCompileClassMetadataTest`（2/2，RecordingCompiler 管线级）：entry.c 逐类
-    （含嵌套 `MetaOuter__sub__Inner`）恰一个访问器、JSON 内容与 putFile 事实一致、
-    entry.h 静态绑定形状 `0_arg_ret_Dictionary_static` 携带
-    `GDEXTENSION_METHOD_FLAG_STATIC`；无 absolutePath 的重传保留既有 provenance
-    （与 displayPath 同规则）。
-  - `RpcJsonCodecTest`/`ApiVirtualFileSystemTest` 增补：`absolutePath` 可选绑定、缺省
-    null、空白串 -32602 路径负例。
-  - 前端 `_gdcc_` 成员级保留前缀落入既有
-    `FrontendSyntheticPropertyHelperSupport.RESERVED_PREFIXES`（与类级
-    `_gdcc_coro_state_` 同族），`FrontendClassSkeletonTest` 新增
-    `buildRejectsReservedGdccInternalPrefixButKeepsBoundaryNamesAlive`：signal/var/func
-    全灭（含精确的 `_gdcc_get_metadata` 冲突名），边界名 `_gdcc`/`_gdccx` 保留，诊断
-    文案 `reserved gdcc-internal prefix`；合成函数经既有
-    `validateFileScopeSymbolsDisjoint` 函数循环自动纳入（prepare 期合成先于该校验）。
-  - 引擎侧读回在 `class_name_erasure` 用例（见 Phase 7）的 `metadata_readback`/
-    `metadata_inner_and_cache` 步覆盖：`ClassDB.class_call_static` 读回与编译期事实
-    逐字一致（含 source_path 指向 case 项目副本）、嵌套类自描述、返回字典深拷贝
-    隔离（注入污染不渗透缓存）。
-- Phase 6 实现偏差与实施期事实修正（相对上文设计，按事实源口径记录）：
-  1. `source_name` 不经 canonical 反推（`__sub__` 虽为保留序列可逆，但实现选择了更显式
-     的通道）：前端骨架构建期把点号源级名直接写入 `LirClassDef.sourceClassName`
-     （顶层 = relation `sourceName`，嵌套沿 inner 链拼点号），codegen 只读该字段；LIR
-     XML 装载的类无此字段，回退 canonical 名（仅测试夹具路径，生产不经 XML）。
-  2. C 体返回**深拷贝**而非计划未言明的浅拷贝：载荷自身含嵌套 `gdcc` 子字典，浅拷贝
-     共享子表会让调用方污染共享缓存（引擎测试 `metadata_inner_and_cache` 锚定）。
-  3. 合成时机在 `CCodegen.prepare`（`CGenHelper` 收集绑定形状之前），并幂等：管线夹具
-     会对同一 module 二次 prepare，重复合成会触发 `validateFileScopeSymbolsDisjoint`
-     冲突（实施期 `ApiCompilePipelineTest` 暴露，已加 `hasFunction` 守卫）。
-  4. `compiled_at` 使同一模块两次编译的 entry.c 不再逐字节相等——
-     `CCodegenEngineMethodBindHeaderTest` 的名称稳定性全等断言改为归一化该字段后比较
-     （该断言的本意是符号名稳定，时间戳是唯一已知变动字段）。
-  5.  plumbing 落点：`vfs.putFile` 加可选 `absolutePath`（`RpcParams`/`API`/`ModuleState`/
-     `VfsNode`/`SourceSnapshot`/`CompileTaskRunner.SourceSnapshot`），codegen 经
-     `CodegenContext.sourceFileFacts`（键 = 与 `LirClassDef.sourceFile` 同规约的 logical
-     路径文本）取回；CLI 填规范化绝对输入路径（`GdccCommand` 复用既有 `hostPath`），
-     addon 三处上传（scheduler flight / reconciler / dock）填
-     `ProjectSettings.globalize_path(path)`。
-- Phase 7 验收结果（2026-09-28，自动化项全绿，手动项待 §8.3；经 review-expert-a +
-  review-expert-c 四轮并行评审/复核，最终双双 APPROVE）：
-  - 引擎测试新用例 `class_name_erasure`（15 步全绿，Zig+GODOT_BIN 门控）：每 case 独立
-    编译 fixture 扩展（`Gd3Phase7Subject` + 嵌套类，source_path 指向 case 项目副本——
-    每套件一次的 addon 编译产出无法提供该 provenance 匹配；fixture 手动写
-    `reloadable = true` 的 .gdextension 以支持真实装卸——它不注册 ScriptLanguage，
-    反重载规则不适用），双双写入 `extension_list.cfg`。步骤：`metadata_readback`/
-    `metadata_inner_and_cache`（Phase 6 引擎验收）、`admission_matrix`（白盒七项）、
-    `rewrite_forms`（两种行形式 + 双向映射 + CJK + 陷阱组）、`analysis_ready`、
-    `validate_no_hides_error`、`editor_opened`、`decision_flip`（备忘清空 + **LSP 文档
-    版本前进的重同步锚定** + 重校验计数前进）、`edit_shows_gdcc_not_hides`、
-    `flip_to_no_erasure`/`flip_back_to_erasure`（`GDExtensionManager.unload_extension`/
-    `load_extension` 驱动的**真实双向准入翻转**）。
-  - 回归：`EditorAddonScriptLanguageAnalysisTest`、`EditorAddonClientAnalysisTest`、
-    `EditorAddonBootstrapEngineTest`（rpc_driver 的 put_file 改 5 参）、
-    `EditorAddonIntegrationProbeTest`、`EditorAddonDiagnosticsFixtureTest`、
-    `RpcCompileHttpIntegrationTest`（新增 absolutePath-only 上传的 RPC 级锚定）、引擎
-    测试全部用例无回归。
-- Phase 7 实现偏差与实施期事实修正（相对上文设计，按事实源口径记录；评审轮修订见下方
-  评审记录）：
-  1. 编辑驱动必须经真实编辑器缓冲区（`code_edit.set_text`）：打开页签会被编辑器自身
-     以缓冲区文本重校验，驱动侧直接 `_validate` 的异文本会被下一次编辑器校验覆盖回
-     磁盘文本——版本震荡饿死合并（与 Phase 5 用例同惯例）。实施期
-     `edit_shows_gdcc_not_hides` 首轮失败（mirrored=3、live=2）即此，改为缓冲区内编辑
-     + idle 沉降推版本。
-  2. `lsp_safe_text` 返回视图字典（text/erased/erase_line/removed_prefix）+ 两个映射
-     helper（`lsp_safe_forward_position`/`lsp_safe_reverse_column`）；映射只影响同行
-     extends 形式的该行尾部列（独立行形式等长空白零漂移）。
-  3. 决策翻转的信号面从单一 `extensions_reloaded` 扩为三个（评审修复第 4 条）；白盒
-     可观察性经 `erasure_memo_size()` 与 `GdccLspClient.document_version_for`。
-  4. 准入的路径比较双侧归一化为 `/` 形态（Windows 下 globalize 与编译期绝对路径的
-     反斜杠分歧）。
-  5. 扫描器为行级迷你词法器（无 RegEx 依赖）：字符串状态携带（分隔符, 是否三引号），
-     理解转义对、`#` 注释、`"""`/`'''` 两种三引号、**普通字符串跨物理行**（评审第三轮
-     阻塞项，4.5 tokenizer + `r_strings.gd` 实证）。R25 残余收窄为词法近似的极端角落；
-     根治仍待编译器引用区间输出。
-  6. `should_still_revalidate` 的 gdcc 缓存新鲜门禁对"纯 LSP 重同步"场景保持不变：gdcc
-     通道离线时翻转后的显示刷新依赖编辑器自身节拍（诊断数据面已在重同步后更新），
-     该边界与第三轮复核保留项 2（心跳节拍）同类。
-  7. 验收后结构重构（2026-09-28）：Phase 7 全部逻辑从 `gdcc_editor_service.gd3` 抽出为
-     子节点 `gdcc_class_name_eraser.gd3`（hub-and-spoke 同构）：视图变换/双向映射/扫描
-     器/准入探测/备忘/三个 GDExtensionManager 信号监听全在子节点；service 保留
-     `lsp_safe_text`/`lsp_safe_forward_position`/`lsp_safe_reverse_column`/
-     `erasure_memo_size` 四个 facade 委托（语言与既有测试的调用面不变）与翻转的编辑器
-     侧重同步 `resync_current_document_lsp()`（依赖编辑器上下文/registry/LSP/重校验
-     队列）；卸载延迟重同步经 `_on_diag_frame` 在 `_pump_revalidation` 前调用子节点
-     `process_deferred_resync()`。
-- Phase 7 评审记录（2026-09-28，review-expert-a + review-expert-c 并行评审，修复后复核）：
-  - 采纳并修复：
-    1.（中，c）注释/图标字符串内的 `extends` 会被自由搜索误当基类（如
-       `class_name X # extends Node`）。修复：class_name 行尾部改为**顺序解析**
-       （名称 → 可选图标字符串（转义感知跳过）→ 位置锚定的 extends），不再全文搜索；
-       新增注释尾（正例：整行空白擦除 + 基类取下一行）与图标字符串陷阱锚点。
-    2.（中，c）`"""` 奇偶翻转可被注释内的标记骗入**不安全方向**（注释翻转→真字符串
-       提前"闭合"→字符串内容里的列 0 class_name 被当声明而擦改字符串）。修复：行级
-       迷你词法器（`_line_leaves_multiline_open`/`_multiline_remainder_open`）理解
-       单双引号转义、`#` 注释与 `"""`，逐行推进状态；新增对抗序列锚点（t_adv 不擦除）。
-       文档原"只抑制"表述已随实现修正。
-    3.（中，c）`source_res_path` 经当前项目 globalize 的回退无法证明同项目来源（同
-       类名+同 res 相对路径的第三方扩展会误判）。修复：**删除回退**，准入要求编译期绝对
-       `source_path`（§7 Phase 6 item 3 的兜底句由此作废——Phase 6/7 同批发版，不存在
-       只有 res 标签的存量产物）。
-    4.（中，c）备忘失效只挂 `extensions_reloaded`，漏掉单独 `load_extension`/
-       `unload_extension`（走 `extension_loaded`/`extension_unloading`）。修复：三信号
-       全接；unloading（类集合变化**前**触发）只清备忘不重同步（类消失后伪错误不可能
-       存在），loaded/reloaded 清备忘+重同步+重校验。
-    5.（中，a）`JsonRpcMethodRegistry` 的"无 displayPath 走三参"捷径会丢弃只传
-       `absolutePath` 的请求。修复：两字段均缺才走三参；API 5 参的 displayPath 放宽为
-       可空（VFS 回退规则不变）。锚点：`ApiCompileClassMetadataTest`
-       （absolutePath-only 元数据）+ `RpcCompileHttpIntegrationTest`（RPC 级）。
-    6.（中，a）`sourceFileFacts` 键与 `LirClassDef.sourceFile` 的归一化比诊断重映射少
-       一层 trim。修复：两侧统一走 `FrontendDiagnostic.sourcePathText` /
-       `DiagnosticSourcePathRemapper.logicalPathKey`。
-    7.（低，a）`gdcc_classdb_class_call_static` 失败分支丢弃已构造的 `result` Variant
-       （引擎 `gdextension_object_method_bind_call` 对 r_return 总是 placement 构造，
-       4.5 gdextension_interface.cpp 已核实）——共享 helper 的真实（ albeit 廉价：失败
-       时为 nil）契约违背，已补 `godot_Variant_destroy(&result)`。
-  - 驳回/保留（附理由）：
-    1.（a 建议）intrinsic 体的静态缓存加 call_once、失败不闩锁——编辑器消费路径在主
-       线程（脚本发起的 ClassDB 静态调用），竞争代价最多一次重复解析；闩锁永久化是
-       有意选择：字面量由编译器生成且经测试验证可解析，失败重试无收益。已写入
-       `CClassMetadataSupport.renderAccessorBody` 注释。
-    2.（a 建议）const/enum 也纳入 `_gdcc_` 拒绝——既有 `RESERVED_PREFIXES` 机制对
-       const/enum 本就同样不覆盖（与 `_field_*` 同边界）；const/enum 不产生 ClassDB
-       方法或 C 文件级符号，与合成访问器无碰撞面。保持边界一致。
-    3.（c 中）超时回退的旧代诊断按**当前**视图反映射，擦除形态在两代间变化时擦除行
-       的列可能瞬偏一拍——成立条件是（LSP 等待超时）∧（同/异行形式变化）∧（该行有
-       诊断）三者同时命中，属一拍级、自愈的显示偏移；且"陈旧诊断位置引用旧文本"是
-       `_validate` 既有合同（stale beats none）的同类边界。根治需按代绑定视图
-       （客户端已有 `_diag_history`，但 `_validate` 读缓存处不暴露代）——记入 R25 同类
-       残余，不在本阶段做结构性改造。
-  - 第二轮复核（复核一：c 仍要求修复；复核二：a **APPROVE**）采纳并修复：
-    1.（阻塞，c）`'''` 三单引号多行串与转义闭合（`\"""`）仍会让扫描器过早离开字符串而
-       擦改字符串内容（4.5 `gdscript_tokenizer.cpp` 已核实：两种引号皆可成三引号多行串，
-       闭合需未转义三连）。修复：多行状态携带分隔符（34/39），闭合扫描
-       `_find_unescaped_triple` 逐字符跳过反斜杠转义对；新增 `t_single3`/`t_esc` 陷阱锚点。
-    2.（中，c）独立 `extends` 行空基类/纯注释尾会回退为隐式 `RefCounted` 默认（中途编辑
-       的未完成声明可能误准入）。修复：`_parse_extends_line` 对该形态标
-       `base_resolvable = false`（同行形式本已如此）；锚点
-       `t_empty_base`（fixture 的 RefCounted 嵌套类，默认本可匹配）+ 正例对照
-       `t_inner_ok`。
-    3.（中，c）单独卸载只清备忘不恢复视图：当前页签的 LSP 文档保持擦除态直到下次编辑
-       （class_name 缺失降低补全/符号上下文）。修复：`extension_unloading` 置延迟标志，
-       次帧（卸载已在 GDExtensionManager 内同步完成）经 `_resync_current_document_lsp`
-       恢复原始视图并重校验；翻转两步均断言 LSP 文档版本前进。
-    4.（中，a 复核新发现）同一 GDExtension 契约下兄弟路径的同类问题：
-       `godot_fixed_binding.c` 的 `godot_Object_call` 失败路径与
-       `engine_method_binds.h.ftl` 的 call helper 错误路径都不销毁已被引擎 placement
-       构造的返回 Variant（模板注释"must not destroy"与 4.5 源相反）。修复：错误分支
-       先 `godot_Variant_destroy`；模板在调用后立即置 `ret_initialized = true`（cleanup
-       统一销毁），注释改写；`CCodegenEngineMethodBindHeaderTest` 的注释锚点同步更新。
-  - 第二轮复核保留项（c 确认可接受）：超时旧代诊断的反映射列偏移非严格"一拍自愈"——
-    持续超时下偏移可持续到新诊断到达；维持不改（成立需超时∧形态变化∧擦除行有诊断），
-    记入 R25。
-  - 第三轮复核（c 仍要求修复；a 对兄弟路径修复 PARTIAL→本轮新发现）采纳并修复：
-    1.（阻塞，c）**普通（非三引号）字符串也可跨物理行**（4.5 tokenizer 的字符串读取循环
-       从不把换行当终止符，`r_strings.gd` 的 r-string 跨行样例实证）——此前"未闭合即到
-       行尾"会让下一行被当代码。修复：字符串状态携带（分隔符, 是否三引号）二元组，
-       行外走查 `_line_string_state`、行内续扫 `_string_remainder_state`、单引号闭合
-       `_find_unescaped_char`；新增 `t_raw_span`/`t_plain_span` 跨行陷阱锚点。
-    2.（阻塞，a）`godot_fixed_binding.c` 是 `FixedGodotBindings` 的**生成产物**——手改会
-       被 `generate-fixed` 覆盖，且 `FixedGodotBindingsTest` 原断言锁定"错误路径不得销毁"
-       的旧契约。修复：改生成器（错误分支补 `godot_Variant_destroy(&result)`）+ 翻转测试
-       断言（错误路径恰销毁一次、成功路径不销毁），并以 `GodotBindingTool generate-fixed`
-       重新生成检入产物（与手改 diff 归零）。
-    3.（中，a）`gdcc_helper.h` 的 `godot_Variant_call` 失败路径同类遗漏（
-       `gdextension_variant_call` 同样总是先构造 r_return）——补销毁。
-    4.（中，c）翻转步骤只断言文档版本前进，重发错误文本也能假通过。修复：LSP 客户端
-       记录每 URI 最近发送文本（`_sent_texts`，随 didOpen/didChange/关闭/断连维护）+
-       `debug_sent_text` 观察口；卸载后断言发送的是**原文**、加载后是**擦除视图**。
-  - 第三轮复核后状态：待两名评审最终确认；`class_name_erasure` 15 步、门禁与回归全套
-    复测通过。
-  - 第四轮复核（2026-09-28，两名评审对第三轮修复的最终确认）：
-    - c 补充修复（第三轮唯一 WARNING）：`extends ,` 空 token 未标 unresolvable——
-      `_parse_base_token_into` 现对空 token 置 `base_resolvable = false`；锚点
-      `t_empty_token`（对照 `t_inner_ok`）。
-    - a 补充收紧（第三轮唯一 SUGGESTION）：`FixedGodotBindingsTest` 的"恰销毁一次"由
-      contains 改为计数断言。
-    - a 附随文档修正：`doc/gdcc_c_backend.md` 与
-      `doc/module_impl/backend/godot_binding_implementation.md` 中"error path 不得
-      destroy"的旧契约表述已改写为与引擎一致（总是构造、每路恰销毁一次）。
-    - **最终结论：review-expert-a 与 review-expert-c 双双 APPROVE。**
-- Phase 8 验收结果（2026-09-28，自动化项全绿，手动项待 §8.3）：
-  - 实施按 §7 Phase 8 落地：新增常驻子节点 `GdccWorkspaceMirror`
-    （`gdcc_workspace_mirror.gd3`），服务根接线（install 构建块、`service_tick` 于
-    scheduler 之后、`busy_wanted` 聚合项、`notify_filesystem_changed` 同源转发、
-    `service_shutdown`、访问器与页头清单）；reconciler 新增公共包装
-    `project_gd3_files()` 供镜像复用同一磁盘遍历（"镜像直接复用"的设计意图）。
-  - 镜像语义：LSP READY epoch 变化即全量重放（清 `_mirrored` 与发送队列并重扫）；
-    文本经 Phase 7 `lsp_safe_text` 在发送时求值（决策翻转不会带出陈旧视图）；
-    registry 路径按内容版本逐帧比对（无 syscall），纯磁盘路径仅在事件驱动扫描时
-    比对文本；每帧 8 条发送预算；发送失败清空队列由 epoch 重放接管（不重复入队）。
-    评审后加固：待发送队列为 FIFO(队头索引+摊销压缩)+字典结构且 sync 意图不携带
-    文本——出队时经 `_resolve_current_text` 重解析（`_disk_seen` 已消失且通过关闭
-    决策的路径直接判失、registry 优先、磁盘兜底、双双缺失即丢弃），close 意图
-    发送时同样重判（文件已复现或保留规则成立则改排 sync），排队期间的新编辑/
-    删除/复建/页签开合永远不会带出陈旧内容、复活已删文件或误关已恢复文件；
-    镜像自维护 `_disk_seen` 磁盘来源与 `_disk_texts` 末次磁盘文本（registry 的
-    disk-known 被模块门控、dirty 语义是"待分析"而非"未保存编辑"，均不可用作
-    判据），关闭决策统一走 `_should_close`：**任一已打开页签持有该路径**（服务
-    新门面 `is_path_open_in_editor`，页签自己的 `_validate` 会持续刷新 LSP 副
-    本）、registry 文本与末次磁盘文本**确实不一致**（真正的未保存编辑）、或镜像
-    从未在磁盘见过该路径（纯缓冲区新文件）时保留，其余删除一律 didClose；共享
-    客户端被其他功能外部关闭的镜像文档经逐帧 `document_version_for` 核对自愈重开；
-    `busy_wanted` 计入未处理的 READY epoch，且客户端新增 `ready_advanced` 信号在
-    READY 跃迁沿即时触发 `refresh_busy`（低功耗窗口内重放不被饿死）。
-  - 共享客户端契约修订（评审后）：`close_document` 的 didClose 发送失败与
-    didOpen/didChange 同款——断连重建（原先无条件擦除本地态会让客户端/服务端
-    打开集静默分叉）；线程模式复探测的探针文档改到 `res://.godot/` 下（点目录不
-    入双方扫描，根除与真实项目文件撞路径的类别）。
-  - 实现偏差（相对 §7 Phase 8 设计，按事实源口径记录）：镜像不依赖 reconciler 的
-    磁盘采用结果——reconciler 的采用被模块就绪门控，无 gdcc 服务时 registry 永远
-    学不到未打开文件，而跨文件 hover/定义必须在无 gdcc 服务时可用；故镜像自行做
-    事件驱动磁盘扫描（复用 reconciler 的遍历函数），纯磁盘路径直接读盘且永不标脏。
-  - `EditorAddonScriptLanguageEngineTest` 新增 `lsp_workspace` 用例（14 步全绿）：
-    `mirror_waits_for_ready`（负例：客户端指向死端口时无任何 didOpen）；
-    `mirror_initial_sync`（未打开的 `.gd3` 进入服务端文档集——`documentSymbol` 返回
-    其方法名，另有客户端发送文本探针钉住所发内容）；`mirror_buffer_wins`
-    （未保存缓冲区经 `notify_source_changed` 覆盖磁盘文本）；`mirror_disk_refresh`
-    （磁盘变更经 filesystem_changed 扫描刷新，新符号服务端可见）；
-    `mirror_delete_close`（删除后 didClose，客户端打开态归零）；
-    `mirror_tombstone_recreated`（模拟 tombstone 残留 + 文件复建：30 帧静默窗口内
-    LSP 文档版本不得前进，钉死每帧 close→sync 转换循环）；
-    `validate_budget_during_bulk`（40 文件批量同步期间持续计时 `_validate` 直至镜像
-    队列排空——逐次 < 400ms（客户端 150ms 内联等待水位线 + 调度/解析余量），
-    `budget_overlap` 证明测量横跨 drain，末尾逐个确认 40 个 URI 全部镜像——错误
-    仍锚定第 3 行，通知洪峰不破坏 generation 绑定）；`mirror_reconnect_replay`
-    （强制断连重连后 epoch 递增，全量重放且缓冲区文本仍为准）。
-  - 回归：`EditorAddonScriptLanguageAnalysisTest` 全绿（新 `.gd3` 经目录扫描自动
-    纳入整模块 analyze+lowering）。
-- Phase 9 `_lookup_code` 历史验收结果（2026-09-28；2026-10-14 起按 Godot >= 4.6.0 恢复）：
-  - 实施：新增无状态子节点 `GdccLookupService`（`gdcc_lookup_service.gd3`：全量同步
-    + hover/definition 各 200ms 有界阻塞；hover 先答——悬浮是更高频路径，
-    definition 腿失败降级为 hover-only，hover 腿失败整体降级）；服务根
-    `request_lookup` 门面（ACTIVE + READY + thread-mode 守卫，与 completion 同款）
-    与 `lsp_path_from_uri`（客户端 `path_from_uri` 方言逆映射 + `localize_path`）；
-    语言侧 `_lookup_code` 负责哨兵定位（4.5 全部编辑器调用路径均经
-    `get_text_with_cursor_char`/`get_text_for_symbol_lookup` 携带 0xFFFF 哨兵）、
-    无哨兵整词回退（跳过注释尾）、0 基码点行列计算、Phase 7 视图前向映射与
-    LSP → 引擎 LookupResult 字典映射（当时为"服务给裸数据、语言做映射"分工）；
-    临时禁用时，映射与无哨兵词定位等 lookup 专用辅助函数迁至
-    `GdccLookupService`；恢复后哨兵定位、码点行列计算及 Phase 7 前向映射也由
-    该类的 `lookup_code` 负责，语言入口仅做服务可用性检查和委托。Godot < 4.6.0
-    在同步文档前降级，不发出符号查询。
-  - 关键引擎事实（4.5 源码核实）：适配器强制 `result` 与 `type` 两键（缺一即
-    ERR_UNAVAILABLE）；`LookupResultType` 枚举 SCRIPT_LOCATION=0…LOCAL_VARIABLE=10；
-    hover/definition 本身不提供结构化符号 kind，早期因此统一用 LOCAL_VARIABLE
-    承载 `description`，但这会把类/函数等错误显示为局部变量。2026-10-14 改为
-    documentSymbol/nativeSymbol 分类：CLASS_* tooltip 从帮助缓存读取文档，忽略
-    LookupResult.description；LOCAL_* 才消费该字段。`location` 为 1 基
-    （引擎以 `location - 1` 跳转）；跨文件目标必须附 `script` 资源，否则引擎会在
-    当前页签内跳行。评审后收紧 OK 判定：description 为空**且** definition 不可
-    导航（目标不出项目、无有效起始行、或跨文件 Script 加载失败）时一律降级——
-    不允许"无提示也不可跳转"的假成功；返回范围的列不做 Phase 7 反向映射（契约
-    只消费行号，擦除两形态均不改变行数，已钉入 `_lookup_result` 注释）。
-  - 实现偏差与实证（按事实源口径记录）：跨文件解析**只**经 path-based extends
-    工作——4.5 服务器的全局类名解析读引擎 ScriptServer 表，`.gd3` 类不入表（该
-    注册属暂缓的 Stage C `_get_global_class_name`）；extends 路径经解析器依赖
-    加载解析，由 Phase 8 镜像的 didOpen 供数。负例步骤 `lookup_class_name_gap`
-    把 class_name 跨文件降级钉为该边界的文档化锚点。
-  - `EditorAddonScriptLanguageEngineTest` 新增 `lsp_lookup` 用例（15 步全绿）：
-    `lookup_degraded`（客户端未 READY 的同步拒绝）；`lookup_whitebox`（hover
-    文本抽取覆盖 MarkupContent/旧 MarkedString 各形、首个可用 Location 覆盖
-    bare/array/LocationLink 各形、URI 方言往返、整词回退的边界/注释尾/后缀碰撞）；
-    `lookup_local_method`（同文件：OK、type 4、description 非空、location 3、
-    无 `script` 键）；`lookup_cross_file`（path-extends 继承方法：provider Script
-    资源 + 路径 + location 3）；`lookup_class_name_gap`（负例，见上）；
-    `lookup_cjk`（emoji 在哨兵前仍解析，R11 码点锚）；`lookup_unknown_symbol` 与
-    `lookup_class_name_gap`（两个负例均为三段式：服务端分析器报出的"标识符未
-    声明"错误证明文档已解析且符号未解析（documentSymbol 对含错误文档不返符号，
-    实施期实证）、raw 响应双腿 ok（`definition_ok`）+空结果、对已核实 raw 响应
-    白盒断言 `_lookup_result` 降级 + 端到端降级补充）；`lookup_no_sentinel_fallback`
-    （无哨兵整词回退仍 OK）；`lookup_disabled_safe`（禁用后常驻语言安全应答）。
-  - 回归：`EditorAddonScriptLanguageAnalysisTest` 全绿（期间暴露并修复一处
-    前端限制：`String.join` 仅支持 `PackedStringArray` 重载，普通 Array 报
-    NO_APPLICABLE_OVERLOAD）。
-- Phase 9 `_auto_indent_code` 验收结果（2026-09-28，自动化项全绿，手动对照待 §8.3）：
-  - 实施：**逐字镜像** 4.5 GDScript 参考算法
-    （`GDScriptLanguage::auto_indent_code`，gdscript_editor.cpp）于语言类内：嵌套
-    完全由前行非空非注释行的前导空白宽度栈推导（不看冒号/括号——计划条文"冒号
-    后增缩进等最小规则"是松描述，参考实现即最小规则本身）；`from_line` 起各行
-    重写为 缩进单元×栈深 + 去空白内容；空行与 `#` 注释行逐字节透传且不入栈；
-    退阶落在两个栈宽度之间时按引擎"not right but gets the job done"怪癖压为新
-    一级；`from_line > to_line` 病态区间触发引擎提前 break 怪癖（输出恒等）。
-    缩进单元经服务门面 `editor_indent_unit()` 镜像
-    `GDScriptLanguage::_get_indentation`（`indent/type` 选 Spaces 时按
-    `indent/size` 重复空格，否则单个制表符；未安装时恒为制表符——引擎非编辑器
-    分支）。契约级约束已钉入注释：适配器把虚函数返回**无条件**写回缓冲区，实现
-    缺失/失败会清空用户代码，故实现必须是全函数。
-  - `EditorAddonScriptLanguageEngineTest` 新增 `auto_indent` 用例（8 步全绿，无需
-    LSP）：`indent_tabs_basic`（空白栈嵌套→制表符精确输出）；
-    `indent_blank_comment_preserved`（注释行自带缩进不加深后续行、空栈退阶落
-    0）；`indent_dedent_stack_quirk`（6 空格落在 [4,8] 之间→深度 2 的怪癖锚）；
-    `indent_from_line_gate`（from_line 前原文保留但仍喂栈）；`indent_spaces_setting`
-    （`indent/type`/`size` 切换为空格单元并复原）；`indent_inverted_range`
-    （from>to 恒等负例）。
-- Phase 8+9 评审记录（2026-09-28，review-expert-a + review-expert-c 并行评审，修复后
-  全套 6 类 34 项复测通过）：
-  - 采纳并修复：
-    1.（高，a/c 共识）镜像 didClose 与共享文档冲突及删除检测不可靠：打开页签未
-       登记、脏缓冲区、模块离线时的保留规则缺失；待发送队列可携带陈旧文本或复活
-       已删文件；共享客户端被外部 close 不可感知。修复：`_should_close` 统一关闭
-       决策（任一打开页签持有/脏缓冲区/纯缓冲区均保留，服务新门面
-       `is_path_open_in_editor`）；镜像自维护 `_disk_seen` 磁盘来源（registry 的
-       disk-known 被模块门控不可靠）；sync 意图出队时经 `_resolve_current_text`
-       重解析（registry 优先、磁盘兜底、双缺失即丢弃并转关闭决策）；外部 close
-       经逐帧 `document_version_for` 核对自愈重开。
-    2.（中，c）无效 definition 产出"无提示也不可导航"的假 OK。修复：先判可用性
-       再定 OK（详见 `_lookup_code` 验收记录的收紧条目）。
-    3.（中，c）READY epoch 未处理期间 busy 空窗（低功耗窗口内重放可被饿死）。
-       修复：`busy_wanted` 计入未处理 epoch。
-    4.（中，c）批量建队线性去重 O(N²)。修复：FIFO+字典 O(1) 结构；扫描对新路径
-       不再预读文本（统一出队时解析）。
-    5.（中，a）`close_document` 不检查 didClose 发送失败，客户端/服务端打开集可
-       静默分叉。修复：与 didOpen/didChange 同款断连重建契约；线程复探测探针
-       文档改到 `res://.godot/` 下（点目录不入双方扫描，根除撞路径类别）。
-    6.（中，a/c 共识）两个 lookup 负例与批量预算步断言空泛（基础设施失败也能
-       通过）。修复：负例改两段式（服务门面直连请求证明 ok+空结果 + 语言降级
-       形状）；预算步收紧到逐次 < 400ms（150ms 水位线 + 余量）并补批量镜像
-       完成证据。
-  - 驳回（附证据，评审复核时已接受）："擦除 `class_name X extends Y` 行的
-    definition 列未反向映射"不构成缺陷——LookupResult 契约只消费行号
-    （`_lookup_symbol`/`goto_line_centered` 以 `location - 1` 跳行，无任何列
-    消费路径），而擦除两种形态（等长空白/同行前缀移除）均不改变行数，列偏移无
-    观测效应；已在 `_lookup_result` 注释钉明。
-  - 保留（较大架构改造，待确认后另行安排）：超大项目下的可续跑目录遍历与分帧
-    漂移读盘——当前每次扫描事件在单帧内完成目录遍历与已镜像纯磁盘文件的文本
-    比对，典型项目可接受。
-  - 第二轮复核采纳并修复（两名评审独立复核上述修复后提出，全套 6 类 34 项复测
-    通过）：
-    1.（高，a/c 共识）已入队的 close 发送时不再重判：同内容复建或页签后开会
-       被误关且自愈接不上（`_mirrored` 已擦除）。修复：close 意图出队时重判
-       （文件复现或保留规则成立→改排 sync）。
-    2.（中，c）`registry.is_dirty` 语义是"待分析"而非"未保存编辑"，离线时
-       未编辑文件会永久保留。修复：镜像维护 `_disk_texts` 末次磁盘文本，未保存
-       编辑判据改为 registry 文本 ≠ 末次磁盘文本。
-    3.（中，c）`_resolve_current_text` 仅凭 registry 项可复活已删文件。修复：
-       `_disk_seen` 已消失且通过关闭决策的路径先行判失。
-    4.（中，c）`remove_at(0)` 出队使批量重放 O(N²)。修复：队头索引消费 + 摊销
-       压缩。
-    5.（中，a/c 共识）负例仍无法区分 definition 腿失败与服务端未解析；批量步
-       未覆盖完整 drain。修复：lookup 服务响应新增 `definition_ok` 观测键；两个
-       负例改三段式（文档已解析且符号未解析——以服务端分析器报出的"标识符未
-       声明"错误为证（documentSymbol 对含错误文档不返符号，此为实施期实证）、
-       双腿 ok+空结果、语言降级）；批量步持续计时 `_validate` 直至镜像队列排
-       空（`budget_overlap` 证明测量横跨 drain），并逐个确认 40 个 URI 全部镜像。
-    6.（中，c）READY 跃迁沿无 busy 重算（低功耗下多等一帧）。修复：客户端新增
-       `ready_advanced` 信号，服务接入 `refresh_busy`；epoch 比较保留为状态兜底。
-  - 第三轮复核（2026-09-28）：review-expert-a **APPROVE**（无遗留）；review-expert-c
-    提出两项中危，修复后复核 **APPROVE**：
-    1.（中）tombstone 残留与文件复建交错：reconciler 的 tombstone 解除被模块门控，
-       离线期间复建文件会让逐帧 tombstone 分支与出队重判互相打架——close 入队、
-       发送时改 sync、下一帧再入队，每帧一次全量 didChange。修复：逐帧 tombstone
-       分支先查磁盘存在性，存在即落入正常 heal/漂移流程。行为锚点：
-       `lsp_workspace` 新增 `mirror_tombstone_recreated` 步骤（模拟 tombstone 后
-       30 帧静默窗口内 LSP 文档版本不得前进），`lsp_workspace` 现为 14 步。
-    2.（中）负例的语言层降级可能来自第二次请求的基础设施失败而非映射结果。修复：
-       对已核实的 raw 响应直接白盒断言 `_lookup_result` 产出双键降级形状，端到端
-       调用保留为补充。
-  - 第三轮复核附随修正（c 最终确认时指出）：状态区与 Phase 8 记录的 `lsp_workspace`
-    步数与批量步口径已按实际断言更正（14 步、逐个确认 40 个 URI）。
-  - **最终结论：review-expert-a 与 review-expert-c 双双 APPROVE；全套 6 类 34 项
-    （含引擎 17 用例）复测通过、零跳过。**
+- 状态：事实源维护中
+- 更新日期：2026-10-18
 - 范围：
-  - `src/editor_addon/addons/gdcc/**`（新增 `.gd3` 源文件 + `server_launcher.gd` +
-    `plugin.gd`/`gdcc_dock.gd` 接线）
-  - `src/main/java/gd/script/gdcc/rpc/**`（新增 `server.shutdown` RPC 方法，§2.8）
-  - `doc/module_impl/api/json_rpc_service_implementation.md`（同步登记 `server.shutdown`）
-  - `src/test/java/gd/script/gdcc/rpc/**`（安装器与测试增补）
-  - `src/test/resources/**`（探针与引擎驱动 fixture）
+  - `src/editor_addon/addons/gdcc/**`（编译型 `.gd3` 源 + 解释型 `.gd` 接线 + 插件配置/
+    翻译/图标）
+  - `src/main/java/gd/script/gdcc/rpc/**` 与 `api/**`（`server.shutdown`、`module.copy`、
+    `vfs.putFile` 的 `absolutePath` 等服务端配套）
+  - `src/main/java/gd/script/gdcc/backend/**`（`_gdcc_get_metadata` 合成与类元数据通道）
+  - `src/test/java/gd/script/gdcc/**`（编辑器集成测试与锚定测试）
+  - `src/test/resources/editor_addon_probe/**`（自举探针 fixture）
 - 直接事实源：
-  - `doc/module_impl/api/json_rpc_service_implementation.md`（RPC 方法面、`.gd3` 客户端约束、
-    自举测试模式）
-  - `doc/module_impl/api/rpc_api_implementation.md`（`analyze.run` 合同）
+  - `doc/module_impl/api/json_rpc_service_implementation.md`（RPC 方法面、`.gd3` 客户端
+    约束、自举测试模式）
+  - `doc/module_impl/api/rpc_api_implementation.md`（`analyze.run` / `module.copy` 合同）
   - `doc/module_impl/common_rules.md`
   - `src/main/resources/extension_api_451.json`（Godot 4.5.1 绑定元数据，签名事实源）
   - Godot 4.5 分支源码（见 §2 各节引用）
 - 明确非目标：
   - `.gd3` 的运行时执行、调试器、性能分析、重构工具、`.gd3` 间的脚本继承。
-  - 把 `plugin.gd` / `gdcc_dock.gd` 迁移为 gdcc 编译目标（沿用
+  - 把 `plugin.gd` / `gdcc_dock.gd` 等解释型脚本迁移为 gdcc 编译目标（沿用
     `json_rpc_service_implementation.md` 的非目标约定）。
   - 非编辑器（导出模板）环境下注册本语言；本功能产出的 GDExtension 仅在编辑器内使用。
   - 自研 LSP 服务端；这里只做 LSP 客户端。
@@ -1067,54 +48,71 @@
 1. Godot 编辑器 FileSystem 面板把 `.gd3` 显示为脚本资源，双击在内置脚本编辑器中打开，
    可编辑、可保存（纯文本往返）。
 2. 脚本编辑器对 `.gd3` 提供错误/警告标注：优先采用引擎 GDScript 解析结果（经编辑器内建
-   LSP 服务），GDScript 侧无错误时叠加 gdcc 前端 `analyze.run` 的诊断（合并显示）。
-3. 代码补全代理到 GDScript LSP（承担大部分补全能力）。
-4. 自动缩进已实施；悬浮/符号查找（`_lookup_code`）在 Godot >= 4.6.0 代理到 LSP，
-   旧版本因资源路径接管风险返回 `ERR_UNAVAILABLE`；
-   全局类名与脚本模板仍为后续打磨项。
-5. gdcc 编译服务未在目标端口侦听时，可按**用户配置的启动命令**自动拉起
-   `gdcc serve`；插件卸载/编辑器退出时正确关闭**由本插件拉起**的服务进程
-   （外部启动的服务绝不触碰）。未配置启动命令时保持现有"被动连接、失败即报错"
-   行为不变（§3.7）。
-6. 全部新代码为 `.gd3`，与 `gdcc_rpc_client.gd3` 同一模块（`gdcc_for_editor`）编译进同一
-   GDExtension 库；遵守该客户端的全部自举约束（无 `await`、无协程等，见 §5）。
-   唯一例外是 `server_launcher.gd`（解释型 GDScript）：dock 在 gdcc 语言注册前就
-   需要使用它，与 `plugin.gd`/`gdcc_dock.gd` 同理不迁入编译目标。
+   LSP 服务），GDScript 侧无错误时叠加 gdcc 前端 `analyze.run` 的诊断（合并显示，§4.2）。
+3. 代码补全与参数提示代理到 GDScript LSP（§4.3）。
+4. 自动缩进逐字镜像 4.5 GDScript 参考算法（§4.8）；悬浮/符号查找（`_lookup_code`）在
+   Godot >= 4.6.0 代理到 LSP，旧版本因浅层脚本接管资源路径的引擎缺陷返回
+   `ERR_UNAVAILABLE`（§4.6）；成员大纲经异步 `documentSymbol` 提供（§4.7）；全局类名
+   注册暂缓（§9 Stage C）。
+5. gdcc 编译服务未在目标端口侦听时，按**用户配置的启动命令**自动拉起 `gdcc serve`；
+   插件卸载/编辑器退出时正确关闭**由本插件拉起**的服务进程（外部启动的服务绝不触碰）。
+   未配置启动命令时保持"被动连接、失败即报错"行为（§3.7）。
+6. 编辑器内一键 Build：`module.copy` 复制诊断模块为一致快照、编译副本、部署动态库到
+   项目 `bin/` 并生成/更新 `bin/gdcc.gdextension`，经引擎扫描持久化并加载/重载（§4.9）。
+7. 编译服务器安装向导：探测/安装 JRE、安装发布版/预览版/本地编译器、写入启动命令并
+   安全替换在跑服务（§3.10）。
+8. 全部语言集成代码为 `.gd3`，与 `gdcc_rpc_client.gd3` 同一模块（`gdcc_for_editor`）
+   编译进同一 GDExtension 库；遵守该客户端的全部自举约束（§5）。例外（解释型 `.gd`）：
+   `plugin.gd`、`gdcc_dock.gd`、`gdcc_project_manager.gd`、`gdcc_build_toolbar.gd`、
+   `server_launcher.gd`、`gdcc_syntax_highlighter.gd`、`gdcc_setup_dialog.gd`——理由分别
+   是"语言注册前就需要"（plugin/dock/launcher/manager/toolbar）、编辑器专有基类不可被
+   编译类继承（高亮器，§5）、依赖信号 `await` 协程与 EditorFileSystem/GDExtensionManager
+   （manager/向导）。
 
 ### 1.2 总体架构
 
 ```text
 Godot 编辑器
-├── plugin.gd（解释型 GDScript，已有）
+├── plugin.gd（解释型 GDScript）
 │     └── _enter_tree:
-│           ├── 在 SceneTree 根下查找/验证常驻节点 GdccEditorService（身份不符则
-│           │   fail-closed 放弃，零副作用，先于任何设置改动；§3.6）
-│           ├── 设置 network/language_server/use_thread = true（LSP 线程模式硬前提；
-│           │   记录原值，卸载时恢复；该设置退出编辑器时会被引擎持久化，见 §2.6）
-│           ├── install(...)（失败回滚并恢复 use_thread）→ 连接 filesystem_changed
-│           ├── server_launcher.gd（解释型 GDScript，新增）：按配置的启动命令拉起
-│           │   gdcc serve、记录 PID，退出时仅关闭自己拉起的进程（§3.7）
-│           ├── gdcc_project_manager.gd (Node)：独立项目操作/编译部署节点与 RPC 客户端
-│           │   ├── gdcc_dock.gd：单行状态与可清空输出的底部视图
-│           │   └── gdcc_build_toolbar.gd：标题栏 Build 与参数弹出窗口，共享管理器
-│           └── （延迟一帧）EditorFileSystem.scan() —— 仅运行期启用插件时
-├── gdcc_for_editor GDExtension（gdcc 编译产物，本计划扩展；安装为 reloadable = false）
-│     ├── GdccRpcClient            （已有，异步 HTTP JSON-RPC → gdcc serve :6099）
-│     ├── GdccEditorService (Node) 进程级常驻单实例（§3.5）：语言/加载器/保存器的注册与
-│     │                            注销、诊断缓存、私有诊断模块生命周期、gdcc 异步分析
-│     │                            调度（防抖 + 单飞 + 版本校验，经服务专用 RPC 客户端）、
-│     │                            LSP 连接管理
+│           ├── 常驻节点 GdccEditorService 就位与身份核验（fail-closed，先于任何设置改动）
+│           ├── 暂存并设置 network/language_server/use_thread = true（LSP 线程模式硬前提；
+│           │   卸载时恢复原值；该设置退出编辑器时被引擎持久化，§2.6）
+│           ├── 注册项目设置 schema 与旧键迁移（gdcc/compilation_server/* 等，§3.6）
+│           ├── 低功耗 busy 协调器初始化（单一写入者，§3.5）
+│           ├── server_launcher.gd（解释型）：按配置拉起/关闭 gdcc serve（§3.7）
+│           ├── gdcc_project_manager.gd（解释型 Node）：共享项目操作（§3.8）
+│           │     ├── gdcc_dock.gd：底部单行状态 + 只读输出视图
+│           │     └── gdcc_build_toolbar.gd：标题栏 Build 按钮与设置弹出窗
+│           ├── install(...)（失败完整回滚并恢复 use_thread）→ 连接 filesystem_changed
+│           │   与 ProjectSettings.settings_changed 转发
+│           ├── "编辑器"菜单挂"安装 GDCC 编译服务器"入口（§3.10）
+│           ├── 注册 gdcc_syntax_highlighter.gd 并为已开页签接力应用（§3.9）
+│           └── 仅运行期启用时 call_deferred 触发 EditorFileSystem.scan()
+├── gdcc_for_editor GDExtension（gdcc 编译产物；安装为 reloadable = false，§6）
+│     ├── GdccRpcClient            异步 HTTP JSON-RPC → gdcc serve（默认 127.0.0.1:6099）
+│     ├── GdccEditorService (Node) 进程级常驻单实例（§3.5）：注册中枢与功能协调
+│     │     （hub-and-spoke 子节点：GdccModuleLifecycle / GdccFileReconciler /
+│     │       GdccDiagScheduler / GdccSourceRegistry / GdccDiagCache /
+│     │       GdccCompletionService / GdccLookupService / GdccClassNameEraser /
+│     │       GdccWorkspaceMirror / GdccOutlineService）
 │     ├── GdccScriptLanguage (ScriptLanguageExtension)
 │     │     ├── _validate       → LSP 诊断（线程模式下有界同步等待 ≤150ms）
 │     │     │                     + 缓存的 gdcc 诊断合并（异步产生，§4.4）
 │     │     ├── _complete_code  → 0xFFFF 哨兵定位光标 → LSP completion（≤400ms）
-│     │     └── _lookup_code    → Godot >= 4.6.0：hover/definition + 可选符号检查（各 ≤200ms）；旧版降级
+│     │     │                     + signatureHelp（≤200ms，§4.3）
+│     │     ├── _lookup_code    → Godot >= 4.6.0：hover/definition + 可选符号检查
+│     │     │                     （各 ≤200ms）；旧版降级（§4.6）
+│     │     └── _auto_indent_code → 逐字镜像 GDScript 参考算法（§4.8）
 │     ├── GdccScript (ScriptExtension, _can_instantiate() == false)
 │     ├── GdccScriptFormatLoader (ResourceFormatLoader，_load 纯加载、线程安全)
 │     ├── GdccScriptFormatSaver  (ResourceFormatSaver)
-│     └── GdccLspClient (Node)   最小 LSP 客户端：StreamPeerTCP → GDScript LSP
-│                                  （默认 127.0.0.1:6005，线程模式下服务端独立线程轮询）
-└── gdcc serve（已有）             analyze.run → gdcc 前端诊断；
+│     ├── GdccLspClient (Node)   最小 LSP 客户端：StreamPeerTCP → GDScript LSP
+│     │                          （默认 127.0.0.1:6005，线程模式下服务端独立线程轮询）
+│     ├── GdccMarkdownToBbcode (RefCounted 静态)   LSP Markdown → 文档 BBCode（§4.6）
+│     └── GdccInstallService (Node) + GdccInstallUtil (RefCounted 静态)（安装向导，§3.10；
+│         由 gdcc_setup_dialog.gd 直接持有，不挂在服务树下）
+└── gdcc serve                     analyze.run / module.copy / compile.* 等；
                                    可外部常驻，或由 server_launcher 按配置拉起/关闭（§3.7）
 ```
 
@@ -1137,9 +135,10 @@ Godot 编辑器
 
 ---
 
-## 2. Godot 4.5 集成点事实核查（已验证）
+## 2. Godot 集成点事实核查
 
-以下结论均已对照 Godot 4.5 分支源码或本仓库 `extension_api_451.json` 核实。
+以下结论均已对照 Godot 4.5 分支源码或本仓库 `extension_api_451.json` 核实；标注其他
+版本处按标注核验。
 
 ### 2.1 ScriptLanguage 注册
 
@@ -1160,8 +159,8 @@ Godot 编辑器
   `plugin.gd` 在注入图标前为已有对话框补齐 GD3 行，并在注销后移除该行，按
   `ScriptServer` 的末项换位规则保留其他语言与选中项。通过首项不翻译的 `GDScript`
   定位语言选择器，避免依赖会本地化的 accessibility name；Godot 版本升级需复核该结构。
-  GD3 行仅在 Godot ≤ 4.6.0 时禁用，旧版本创建入口继续使用 dock；> 4.6.0 允许
-  在原生对话框选择 GD3，不额外实现或验证原生创建流程（§9 R5）。
+  GD3 行在 Godot ≤ 4.6.0 禁用（创建入口走 dock 按钮或文件面板外创建），> 4.6.0
+  允许在原生对话框选择 GD3（§10 R5）。
 
 ### 2.2 ScriptLanguageExtension 合同
 
@@ -1174,26 +173,28 @@ Godot 编辑器
 - A 档（显式实现，决定核心体验与日志干净）：`_get_name`、`_get_type`、`_get_extension`、
   `_get_recognized_extensions`、`_get_reserved_words`、`_is_control_flow_keyword`、
   `_get_comment_delimiters`、`_get_string_delimiters`、`_validate`、`_validate_path`、
-  `_create_script`、`_supports_builtin_mode`（返回 false，见 §3.2）、
-  `_can_inherit_from_file`、`_handles_global_class_type`、`_thread_enter`、
-  `_thread_exit`、`_init`（no-op，语义见 §3.2）、`_finish`（no-op）、`_frame`（no-op）、
-  `_has_named_classes`（4.5 已废弃但 required，返回 false）、`_find_function`、
-  `_make_function`、`_can_make_function`、`_open_in_external_editor`、
-  `_overrides_external_editor`、`_is_using_templates`、`_supports_documentation`、
+  `_create_script`、`_supports_builtin_mode`（返回 false）、`_can_inherit_from_file`、
+  `_handles_global_class_type`、`_thread_enter`、`_thread_exit`、`_init`（no-op，
+  语义见 §3.2）、`_finish`（no-op）、`_frame`（no-op）、`_has_named_classes`
+  （4.5 已废弃但 required，返回 false）、`_find_function`、`_make_function`、
+  `_can_make_function`、`_open_in_external_editor`、`_overrides_external_editor`、
   `_add_global_constant`、`_add_named_global_constant`、`_remove_named_global_constant`、
   `_reload_all_scripts`、`_reload_scripts`、`_reload_tool_script`。
 - B 档（功能实现）：`_complete_code`、`_lookup_code`、`_auto_indent_code`、
-  `_get_global_class_name`、`_make_template`、`_get_built_in_templates`、
-  `_get_doc_comment_delimiters`（非 required）、`_preferred_file_name_casing`
-  （非 required）。
+  `_make_template`、`_get_doc_comment_delimiters`（非 required）已实现；
+  `_get_global_class_name` 返回 `{}`（暂缓，§9 Stage C）；`_get_built_in_templates`
+  返回空列表、`_is_using_templates` 返回 false；`_preferred_file_name_casing`
+  （非 required）未实现，基类默认行为安全。
 - C 档（跳过，接受默认值与可能的 `ERR_PRINT_ONCE`）：`_profiling_*` 全部与
   `_debug_get_stack_level_instance`（返回 `void*` / 接收
   `ScriptLanguageExtensionProfilingInfo*`，gdcc 无法表达；调试/性能分析本就在非目标内，
-  这些路径不会被触发）。**修正（Phase 1 实施期发现）**：其余 `_debug_*` 与
-  `_get_public_functions`、`_get_public_annotations`、`_get_public_constants` 全部
-  显式实现为空答案——引擎的脚本调试器在任何脚本错误的打印路径上会对**每个**已注册
-  语言调用 `debug_get_current_stack_info`（typed array 返回可实现，见下方探针结论），
-  跳过会污染编辑器日志。
+  这些路径不会被触发）。**注意**：其余 `_debug_*` 与 `_get_public_functions`、
+  `_get_public_annotations`、`_get_public_constants` 全部显式实现为空答案——引擎的
+  脚本调试器在任何脚本错误的打印路径上会对**每个**已注册语言调用
+  `debug_get_current_stack_info`（required 虚函数，缺省实现报 `ERR_PRINT_ONCE` 级
+  错误），跳过会污染编辑器日志；typed array 返回可实现已经探针验证
+  （`_get_public_functions() -> Array[Dictionary]` 等签名经 analyze+lowering、native
+  compile 与运行时实调往返验证）。
 
 关键 Dictionary 契约（逐字来自 `core/object/script_language_extension.h`，4.5）：
 
@@ -1202,10 +203,10 @@ Godot 编辑器
 | 键 | 类型 | 说明 |
 |---|---|---|
 | `valid` | bool | 缺省视为 false |
-| `errors` | Array[Dictionary] | 每项必须含 `line:int`、`column:int`、`message:String`；`path:String` 在本计划中**必填**（缺省时 `ScriptTextEditor` 会把错误归入"依赖脚本错误"而非当前文件，见 §4.2） |
+| `errors` | Array[Dictionary] | 每项必须含 `line:int`、`column:int`、`message:String`；`path:String` 在本集成中**必填**（缺省时 `ScriptTextEditor` 会把错误归入"依赖脚本错误"而非当前文件，见 §4.2） |
 | `warnings` | Array[Dictionary] | 每项必须含 `start_line:int`、`end_line:int`、`code:int`、`string_code:String`、`message:String`，缺任一键被引擎丢弃 |
-| `functions` | PackedStringArray | `validate_functions=true` 时读取 LSP 异步符号缓存，格式 `方法名:1基行号`；内部类方法为 `Inner.method:行号` |
-| `safe_lines` | PackedInt32Array | 可选，本计划不提供 |
+| `functions` | PackedStringArray | `validate_functions=true` 时读取本集成的大纲缓存，格式 `方法名:1基行号`；内部类方法为 `Inner.method:行号`（§4.7） |
+| `safe_lines` | PackedInt32Array | 可选，本集成不提供 |
 
 `_complete_code(code, path, owner) -> Dictionary`：
 
@@ -1214,7 +215,7 @@ Godot 编辑器
 | `result` | int(Error) | 缺失时引擎按 `ERR_UNAVAILABLE` 处理 |
 | `force` | bool | 必填 |
 | `call_hint` | String | 必填（可为 `""`） |
-| `options` | Array[Dictionary] | 每项**必填**：`kind:int`、`display:String`、`insert_text:String`、`font_color:Color`、`icon`（可为 null）、`default_value`（可为 null）、`location:int`；可选 `matches:PackedInt32Array`（成对） |
+| `options` | Array[Dictionary] | 每项**必填**：`kind:int`、`display:String`、`insert_text:String`、`font_color:Color`、`icon`（可为 null）、`default_value`（可为 null）、`location:int`；可选 `matches:PackedInt32Array`（成对；4.5 `script_language_extension.h` 以 `op.has("matches")` 守卫读取） |
 
 `_lookup_code(code, symbol, path, owner) -> Dictionary`：必填 `result:int(Error)`、
 `type:int(LookupResultType)`；可选 `class_name`、`class_member`、`description`、
@@ -1234,20 +235,28 @@ Godot 编辑器
 
 - `_can_instantiate() -> bool`：恒 `false`（`.gd3` 从不实例化）。
 - `_get_language() -> ScriptLanguage`：返回进程级唯一的 `GdccScriptLanguage` 实例
-  （§3.5）。
+  （§3.5）。**自愈回退**：创建资源对话框直接 `ClassDB.instantiate` 创建 `GdccScript`
+  会绕过 loader/语言工厂的 `setup()`，使 `_language` 为 null，而引擎在脚本编辑器
+  高亮/校验路径上对 `get_language()` 无判空解引用（`script_text_editor.cpp`，实测
+  signal 11 崩溃）。因此 `_get_language()` 在字段为空时先查 `ScriptServer` 已注册
+  语言表（ACTIVE），再查常驻服务持有的实例（UNINSTALLED；实例常驻不释放）。
 - `_has_source_code() -> bool` → true；`_get_source_code()/_set_source_code(code)`：
-  内存字符串字段。
+  内存字符串字段。`_set_source_code` 置 `_valid = true`（有源码即有效，`_reload`
+  失败才置回）。
 - `_reload(keep_state: bool) -> int(Error)`：按 `_load` 传入的路径重读文件、更新
   `_source` 与解析缓存字段。**不触发**任何分析/调度（线程安全，见 §2.4）。
 - `_is_valid() -> bool`：加载/校验状态。
 - `_is_tool() -> bool`：恒 `false`（避免编辑器尝试执行）。
 - `_get_instance_base_type() -> StringName`：解析 `extends` 行，缺省 `&"RefCounted"`。
 - `_get_global_name() -> StringName`：解析 `class_name` 行，缺省空。
+  页眉扫描只解析列 0 起始行；关键字边界为空格/制表符；同行 `class_name X extends Y`
+  的 `extends` 查找按双侧空白边界扫描（兼容制表符）。
 - `_get_base_script() -> Script`：null。`_inherits_script(script) -> bool`：false。
   `_instance_has(object) -> bool`：false。
-- `_get_doc_class_name() -> StringName`、`_get_documentation()`：初始为空；lookup 成功后
-  承载按声明类名（缺省为路径）命名的 LSP 脚本文档缓存，源文本变化时清空。typed array 可表达已由
-  探针证实（§2.2 C 档结论）。`_get_class_icon_path()` 返回插件脚本图标路径。
+- `_get_doc_class_name() -> StringName`、`_get_documentation()`：承载符号查找发布的
+  LSP 脚本文档缓存（按声明类名命名，缺省为路径，§4.6）；源文本变化时清空资源侧
+  当前缓存，但保留上次发布的类名/文档快照，供编辑器线程在源更新通知或重新发布时
+  清除帮助缓存中的全部旧类（含内部类）。`_get_class_icon_path()` 返回插件脚本图标路径。
 - `_has_method/_has_static_method/_has_script_signal` → false；
   `_has_property_default_value` → false、`_get_property_default_value` → null
   （required，显式实现避免日志噪音）；`_get_method_info` → `{}`（required，同理）；
@@ -1258,11 +267,10 @@ Godot 编辑器
 - 跳过（`void*` 签名 gdcc 无法表达，基类默认返回 nullptr，与
   `_can_instantiate() == false` 自洽）：`_instance_create`、
   `_placeholder_instance_create`、`_placeholder_erased`。残留风险：`.gd3` 被误挂载到
-  节点时编辑器拿不到占位实例（§9 R7）。
-- 跳过（`TypedArray[StringName]`/`TypedArray[Dictionary]` 返回类型的 override 支持已
-  由探针验证可实现，见本节上方与 §2.2 C 档的探针结论；默认空列表行为安全）：
-  `_get_members`、`_get_constants`、`_get_script_method_list`、
-  `_get_script_property_list`、`_get_script_signal_list`。实现期补为显式空实现。
+  节点时编辑器拿不到占位实例（§10 R7）。
+- 显式空实现（`TypedArray[StringName]`/`TypedArray[Dictionary]` 返回类型的 override
+  支持已经探针验证；默认空列表行为安全）：`_get_members`、`_get_constants`、
+  `_get_script_method_list`、`_get_script_property_list`、`_get_script_signal_list`。
 
 ### 2.4 ResourceFormatLoader / ResourceFormatSaver
 
@@ -1275,8 +283,8 @@ Godot 编辑器
 惯例（`CACHE_MODE_REUSE` 用 `ResourceLoader.get_cached_ref`，`CACHE_MODE_REPLACE*`
 用 `take_over_path`）。保存器核心虚函数：`_save(resource, path, flags) -> int(Error)`、
 `_recognize(resource) -> bool`、`_get_recognized_extensions(resource) -> PackedStringArray`。
-可选虚函数（`_get_resource_uid`、`_recognize_path`、`_get_dependencies`、`_set_uid`）
-在实现阶段对照 4.5 XML 补验。
+可选虚函数中本集成实现了 `_get_resource_uid`（恒 -1）；`_recognize_path`、
+`_get_dependencies`、`_get_resource_script_class` 等未实现，基类默认行为安全。
 
 两条硬性约束：
 
@@ -1284,8 +292,8 @@ Godot 编辑器
    （`core/io/resource_loader.cpp` 的 threaded load 路径）。实现必须是纯加载：
    只用入参 `path`/`original_path` 与 `FileAccess` 读文件、创建并填充 `GdccScript`，
    不调用 `get_path()`（引擎在 `_load` 返回后才绑定路径）、不触碰任何 Node/服务/缓存。
-2. **依赖注入**：loader/saver 由 `GdccEditorService` 创建时经 `setup(language)` 注入
-   语言实例，禁止依赖单例或静态字段。
+2. **依赖注入**：loader 由 `GdccEditorService` 创建时经 `setup(language)` 注入
+   语言实例，禁止依赖单例或静态字段；saver 无注入（`_save` 只用入参）。
 
 ### 2.5 脚本编辑器集成
 
@@ -1295,96 +303,98 @@ Godot 编辑器
   `_code_complete_script()` 调用 `complete_code(...)`；符号跳转/悬浮调用
   `lookup_code(...)`。语法高亮**不**来自语言的分隔符接口：脚本编辑器按脚本语言名匹配
   已注册 `EditorSyntaxHighlighter` 的 `_get_supported_languages()`（仅当资源不是 Script
-  时才退回扩展名匹配），因此 `.gd3` 需要自带高亮器实现（2026-10-05 起为
-  `gdcc_syntax_highlighter.gd`，见 §3.9）。
+  时才退回扩展名匹配），因此 `.gd3` 需要自带高亮器实现（`gdcc_syntax_highlighter.gd`，
+  见 §3.9）。
 - `_validate_script()` 的触发点（4.5 实测）：页签启用（`enable_editor`）、
   `reload_text()`（外部重载）、编辑器 idle 定时器超时
   （`CodeTextEditor._text_changed_idle_timeout`，one-shot，由文本变更或
   `CodeTextEditor.validate_script()` 重启）。没有**公开的**主动重校验 API：
-  `validate_script()` 方法未绑定到脚本层（当时据此判定 gdcc 诊断只能等校验节拍；
-  Phase 5 改为经下一条的 `validate_script` 信号通道主动触发，见 §4.4 与 §9 R17）。
-  错误计数为 0 时 idle 间隔 `text_editor/completion/idle_parse_delay`（默认 1.5s），
-  有错误时 `idle_parse_delay_with_errors_found`（默认 0.5s；`set_error_count` 在有
-  错误显示时切换过去，`code_editor.cpp:1733-1737`）。
-- 主动重校验通道（Phase 5 采用，4.5 源码核实 + 实施期缺陷实证）：`CodeTextEditor`
-  注册了 `validate_script` 信号（`code_editor.cpp:1857`），`ScriptTextEditor` 将其连到
+  `validate_script()` 方法未绑定到脚本层；本集成经下一条的 `validate_script` 信号
+  通道主动触发重校验（§4.5）。错误计数为 0 时 idle 间隔
+  `text_editor/completion/idle_parse_delay`（默认 1.5s），有错误时
+  `idle_parse_delay_with_errors_found`（默认 0.5s；`set_error_count` 在有错误显示时
+  切换过去，`code_editor.cpp:1733-1737`）。
+- 主动重校验通道（4.5 源码核实 + 缺陷实证）：`CodeTextEditor` 注册了
+  `validate_script` 信号（`code_editor.cpp:1857`），`ScriptTextEditor` 将其连到
   `_validate_script()`（`script_text_editor.cpp:2672`）。发射目标注意两点：(1)
-  `get_base_editor()` 直接返回内层 **CodeEdit**（`script_text_editor.cpp:2150`），信号在
-  其**父级** CodeTextEditor 包装上，须从 base editor 向上找第一个
-  `has_signal("validate_script")` 的祖先再发射；(2) **缺陷实证（2026-09-27 引擎测试
-  bisect）**：gdcc 编译代码经 `Object.emit_signal` method-bind 对外来对象发射，从
-  service 的 `SceneTree.process_frame` 泵调用栈发起时**任何连接都收不到**（同对象
+  `ScriptTextEditor.get_base_editor()` 直接返回内层 **CodeEdit**
+  （`script_text_editor.cpp:2150`），信号在其**父级** CodeTextEditor 包装上，须从
+  base editor 向上找第一个 `has_signal("validate_script")` 的祖先再发射；(2) **缺陷
+  实证**（引擎测试 bisect）：gdcc 编译代码经 `Object.emit_signal` method-bind 对外来
+  对象发射，从 `SceneTree.process_frame` 泵调用栈发起时**任何连接都收不到**（同对象
   id、信号已注册、调用无错误返回但不触发；同一调用从非泵直发栈发起则正常，自有信号
-  `.emit()` 从泵发起也正常）。故最终形态：service 泵在门禁通过后发射**自有**信号
-  `revalidation_requested(path)`（泵上下文可达解释型监听，`busy_delta` 同款），解释型
-  `plugin.gd` 先 `call_deferred` 跳出泵栈、再在消息队列帧发射 `validate_script`。
-  该信号接线属编辑器内部契约而非公开 API 承诺，Godot 升级时重验（§9 R17/R24）。
+  `.emit()` 从泵发起也正常；编译代码对普通 Node 的 method-bind 发射在 runtime 上下文
+  可送达——缺陷仅限编辑器泵调用栈）。故最终形态：service 泵在门禁通过后发射**自有**
+  信号 `revalidation_requested(path, version)`（泵上下文可达解释型监听），解释型
+  `plugin.gd` 先 `call_deferred` 跳出泵栈、再在消息队列帧发射 `validate_script`
+  （§4.5）。该信号接线属编辑器内部契约而非公开 API 承诺，Godot 升级时重验（§10
+  R24）。
 - 光标位置传递机制：请求补全/查找时，编辑器把光标位置以哨兵字符
   `String.chr(0xFFFF)` 插入源码（`scene/gui/code_edit.cpp`），语言实现需自行定位并
   剔除；GDScript 解析器以同一哨兵确定补全上下文
   （`modules/gdscript/gdscript_parser.cpp`）。`validate` 的入参文本**不含**哨兵。
 - 左侧成员大纲来自 `ScriptEditor._update_members_overview()` →
-  `ScriptTextEditor.get_functions()` → `ScriptLanguage.validate(..., r_functions)`，不是
-  `ScriptExtension._get_script_method_list()`。原生 GDScript 的
+  `ScriptTextEditor.get_functions()` → `ScriptLanguage.validate(..., r_functions)`，
+  不是 `ScriptExtension._get_script_method_list()`。原生 GDScript 的
   `get_function_names_recursively()` 只列出类方法与静态函数，递归内部类并使用点限定名；
   不显示变量、信号、常量、属性访问器或函数体内 lambda。编辑器把 `name:line` 中的
   1 基行号减一作为跳转位置，且只有 `valid=true` 时更新缓存；有错误时保留旧大纲。
   源码依据：Godot 4.6.3 的
   [`gdscript_editor.cpp:133–143`](https://github.com/godotengine/godot/blob/4.6.3-stable/modules/gdscript/gdscript_editor.cpp#L133-L143)
   与 [`script_text_editor.cpp:126–140`](https://github.com/godotengine/godot/blob/4.6.3-stable/editor/script/script_text_editor.cpp#L126-L140)。
-- `.gd3.uid`：4.4+ 编辑器会为脚本生成 `.uid` 伴生文件，对本计划无害。
+- `.gd3.uid`：4.4+ 编辑器会为脚本生成 `.uid` 伴生文件，对本集成无害。
 
 ### 2.6 GDScript LSP 服务（编辑器内建）
 
 - `GDScriptLanguageServer` 是随 GDScript 模块注册的编辑器插件
   （`modules/gdscript/register_types.cpp`，编辑器构建时挂到 `EditorNode`），
-  在 `EditorNode::is_editor_ready()` 之后才开始监听——**晚于插件 `_enter_tree`**，
+  在 `EditorNode::is_editor_ready()` 之后才开始监听——**晚于**插件 `_enter_tree`，
   客户端必须重试连接（§4.1）。默认 `127.0.0.1:6005`（EditorSettings
   `network/language_server/remote_host` / `remote_port`，命令行 `--lsp-port` 可覆盖，
   覆盖值无法运行时查询）。
 - **线程模式（硬前提）**：`network/language_server/use_thread` 默认 `false`，此时
   服务端只在主线程帧通知里 `poll()`；`_validate`/`_complete_code` 同在主线程执行，
   若在其中阻塞等待响应，服务端永远得不到执行机会，必然超时且每次冻结编辑器。
-  因此本计划要求把该设置置为 `true`（插件 `_enter_tree` 早于服务启动，正常启动
-  路径生效）。注意两点实测行为：
+  因此本集成把该设置置为 `true`（插件 `_enter_tree` 早于服务启动，正常启动路径
+  生效）。两点实测行为：
   1. `EditorSettings.set_setting` 后**退出编辑器时引擎会自动持久化**该设置
      （`EditorSettings::destroy()` 调 `save()`）——不存在"会话级"设置。因此插件必须
      在卸载时恢复用户原值（§4.1），并在文档与 dock 状态中明示这一改动。
   2. 服务端在运行期监听该设置变化并自动重启监听（`gdscript_language_server.cpp`
      `NOTIFICATION_EDITOR_SETTINGS_CHANGED` 分支比对 `network/language_server` 组后
-     `stop(); start()`），因此运行期启用插件不需要重启编辑器，我们的重连逻辑会接管
-     新监听。**实施期修正（Phase 2 实证）**：该通知只由 C++ UI 路径
-     （`EditorSettings::notify_changes()`，设置对话框等）发出，`set_setting` 不触发，
-     脚本无法驱动服务端运行期重启；引擎测试改用端点强制断开 + 插件禁用/启用覆盖
-     客户端重连路径（用户从设置对话框修改的引擎行为不变）。
+     `stop(); start()`），因此运行期启用插件不需要重启编辑器，重连逻辑会接管
+     新监听。**但该通知只由 C++ UI 路径**（`EditorSettings::notify_changes()`，设置
+     对话框等）发出，`set_setting` 不触发，脚本无法驱动服务端运行期重启；运行期翻转
+     的门禁见 §4.1 第 2 步（`lsp_blocking_unsafe` / `lsp_thread_primed`）。
 - 协议为标准 LSP（`Content-Length` 帧头 + JSON-RPC）。已实现方法含 `initialize`、
-  `textDocument/didOpen|didChange|didClose|completion|signatureHelp|hover|definition|references|
-  rename|documentSymbol` 等；诊断由服务端经 `textDocument/publishDiagnostics` 推送，
-  但默认只发给最近初始化的那个客户端（`LSP_MAX_CLIENTS=8`，`notify_client` 默认
-  目标是 `latest_client_id`）：外部 LSP 客户端（如 VSCode）并存时诊断可能发给别人，
-  此时按超时降级到缓存（§9 R14）。
-- **URI 方言（Phase 2 实证）**：服务端 `get_file_uri` 产出 `file:///` + 逐段
-  `uri_encode`（空 authority 形式；`file://E:/...` 会被 `get_file_path` 的
-  `parse_url` 把盘符误判为 host 而报 "nonlocal files"）。客户端必须按同一方言生成
-  URI（`GdccLspClient.path_to_uri`），服务端回显字节一致。
-- **诊断位置（Phase 2 的 4.5 实证，4.6 相同）**：`update_diagnostics` 把每条诊断的 `character` 报为
-  错误行**首个非空白字符**位置（缩进的码点数，`range.end` 覆盖整行去空白内容），
-  不携带 token 级精确列；全程码点计数，无 UTF-16/码点分歧（§9 R11 在诊断路径不
-  显化；补全路径的 `character` 同样按码点索引行文本）。
-  Godot 4.7 的 [PR #114185](https://github.com/godotengine/godot/pull/114185) 改为报告
-  真实 token 范围，`GodotPosition.to_lsp()` 直接将原始字符串行列各减一，仍按码点而非
-  UTF-16 单元计数。客户端映射不变；`validate_cjk_columns` 分别锚定旧版缩进列 5 与
-  4.7 在 emoji 后的未闭合字符串起始引号列 19（UTF-16/字节误计会得到 20/22）。
+  `textDocument/didOpen|didChange|didClose|completion|signatureHelp|hover|definition|
+  references|rename|documentSymbol` 等；诊断由服务端经 `textDocument/publishDiagnostics`
+  推送，但默认只发给最近初始化的那个客户端（`LSP_MAX_CLIENTS=8`，`notify_client`
+  默认目标是 `latest_client_id`）：外部 LSP 客户端（如 VSCode）并存时诊断可能发给
+  别人，此时按超时降级到缓存（§10 R14）。
+- **URI 方言（实证）**：服务端 `get_file_uri` 产出 `file:///` + 逐段 `uri_encode`
+  （空 authority 形式；`file://E:/...` 会被 `get_file_path` 的 `parse_url` 把盘符
+  误判为 host 而报 "nonlocal files"）。客户端必须按同一方言生成 URI
+  （`GdccLspClient.path_to_uri`），服务端回显字节一致。
+- **诊断位置（4.5 实证，4.6 相同）**：`update_diagnostics` 把每条诊断的 `character`
+  报为错误行**首个非空白字符**位置（缩进的码点数，`range.end` 覆盖整行去空白内容），
+  不携带 token 级精确列；全程码点计数，无 UTF-16/码点分歧（§10 R11 在诊断路径不显化；
+  补全路径的 `character` 同样按码点索引行文本）。Godot 4.7 的
+  [PR #114185](https://github.com/godotengine/godot/pull/114185) 改为报告真实 token
+  范围，`GodotPosition.to_lsp()` 直接将原始字符串行列各减一，仍按码点而非 UTF-16
+  单元计数。客户端映射不变；回归锚定分别覆盖旧版缩进列与 4.7 在 emoji 后的未闭合
+  字符串起始引号列（UTF-16/字节误计会得到不同的值）。
 - `initialize` 结果中 `capabilities.textDocumentSync` 在 4.5 是**对象**
   `{openClose, change: 1, willSave, willSaveWaitUntil, save}`（`change == 1` 即全量
   同步），不是整数 `1`；握手校验必须两种形状都接受（§3.4）。
 - 该 LSP 是 GDScript 专用：`didOpen` 不检查扩展名/`languageId`（固定填
   `"gdscript"`），单文件解析与诊断对 `.gd3` URI 可用；但 workspace 索引只收 `.gd`，
-  跨文件符号/类缓存解析对 `.gd3` 天然受限（§9 R1）。
+  跨文件符号/类缓存解析对 `.gd3` 天然受限——由 LSP workspace 镜像（§7.3）补齐
+  数据面。
 - 工作区校验：服务端的 `rootUri`/`rootPath` 不匹配时不会拒绝服务，而是发
   `gdscript_client/changeWorkspace` 自定义通知并继续为本进程项目服务；客户端应以该
   通知 + `ProjectSettings.globalize_path("res://")` 判定是否连错编辑器实例，不能从
-  `initialize` 返回值读取工作区（§9 R2）。
+  `initialize` 返回值读取工作区（§10 R2）。
 
 ### 2.7 gdcc 侧既有基础
 
@@ -1392,51 +402,48 @@ Godot 编辑器
   为 `result.diagnostics.diagnostics[]`（外层是快照对象，不是裸数组），条目字段
   `{severity, category, message, sourcePath, range}`，`sourcePath`/`range` 可空，
   `range` 含 `startByte/endByte` 与 1-based 的 `start/end{line,column}`
-  （`json_rpc_service_implementation.md` §2.2/§4.4，编解码测试
-  `RpcJsonCodecTest` 可佐证）。`analyze.run` 是同步整模块分析，在模块门闩上与其他
-  编译/分析串行；服务端没有 analyze 取消/超时 API。
+  （`json_rpc_service_implementation.md`，编解码测试 `RpcJsonCodecTest` 可佐证）。
+  `analyze.run` 是同步整模块分析，在模块门闩上与其他编译/分析串行；服务端没有
+  analyze 取消/超时 API。
 - `includeLowering=false` 只跑共享语义管线；`includeLowering=true` 额外执行
   compile-only 门禁（`sema.compile_check`）与 lowering——仅前者会漏掉"GDScript 合法
-  但 gdcc 无法编译"的错误（`ApiAnalyzeTest` 有实证）。编辑器诊断目标是提前暴露真实
-  编译失败，故默认使用 `includeLowering=true`（可配置，见 §3.5）。
+  但 gdcc 无法编译"的错误。编辑器诊断目标是提前暴露真实编译失败，故默认使用
+  `includeLowering=true`（服务字段 `analyze_include_lowering`）。
 - 编辑器插件使用 `GdccRpcClient` 挂起对象 + `process_frame` 帧泵。私有诊断模块由
-  `GdccEditorService` 独占创建/删除并自动同步；共享项目管理器的 `auto_setup_module`
-  只确保服务可达并宣布诊断模块 ID，不创建第二个诊断模块。Build 经 `module.copy`
-  建立隔离编译快照，诊断模块不承载编译任务，避免门闩冻结和 VFS 互相清空（§4.4）。
+  `GdccEditorService` 独占创建/删除并自动同步；共享项目管理器不创建第二个诊断模块
+  （`auto_setup_module` 只确保服务可达并宣布诊断模块 ID）。Build 经 `module.copy`
+  建立隔离编译快照，诊断模块不承载编译任务，避免门闩冻结和 VFS 互相清空（§4.9）。
 - gdcc 注册多类、engine virtual 严格签名校验（frontend+backend 双层，frontend 在
   analyze 阶段即拒绝错误签名）已具备：签名写错会在 gdcc 编译期报错，是签名合同的
-  回归测试；但 analyze+lowering 不覆盖 C 代码生成与链接，故 Phase 0 另设 native
-  compile 探针（§5、§7）。
+  回归测试；但 analyze+lowering 不覆盖 C 代码生成与链接，故自举探针另设 native
+  compile 与运行时冒烟级别（§8.1/§8.2）。
 
-### 2.8 gdcc 服务进程管理（已核实）
+### 2.8 gdcc 服务进程管理
 
-- 服务端启动形态：`java -jar build/libs/gdcc-0.0.2.jar serve [--host H] [--port P]
-  [--max-request-bytes N]`（`Main.java:12-23` 路由到 `RpcServeCommand.java:36-46,
-  85-94`；`--host` 缺省 `127.0.0.1`、`--port` 缺省 `6099`、`0` 为临时端口）。JAR
-  为普通 JAR + 旁置 `lib/`（manifest `Class-Path`），启动命令的工作目录或 jar 路径
-  必须保证 `lib/` 相对可达（`build.gradle.kts:159-169`）。
-- 协议方法表 25 个方法中**没有**服务级 shutdown（`json_rpc_service_implementation.md`
-  方法表与 `JsonRpcMethodRegistry.java:64-174` 一致）；notification 只是 HTTP 204
-  不退出进程（`JsonRpcDispatcher.java:87-89,161-167`）。进程级优雅停止依赖 JVM
-  shutdown hook：`server.close()` + `API.close()`（取消在途编译、最长约 30s 等待
-  runner，`RpcServeCommand.java:65-82`、`JsonRpcServer.java:82-91`、`API.java:39-51,
-  442-491`）。
-- 因此"正确关闭"必须新增 **`server.shutdown() -> {}` RPC 方法**（本计划的服务端任务，
-  Phase 1）。时序合同（现有写回路径决定，违反即死锁）：dispatcher 同步调用 handler，
+- 服务端启动形态：`java -jar build/libs/gdcc-<version>.jar serve [--host H] [--port P]
+  [--max-request-bytes N]`（`Main.java` 路由到 `RpcServeCommand.java`；`--host` 缺省
+  `127.0.0.1`、`--port` 缺省 `6099`、`0` 为临时端口）。JAR 为普通 JAR + 旁置 `lib/`
+  （manifest `Class-Path`），启动命令的工作目录或 jar 路径必须保证 `lib/` 相对可达。
+- 服务级关停由 **`server.shutdown() -> {}` RPC 方法**承担（协议方法表见
+  `json_rpc_service_implementation.md`；notification 形态（无 `id`）同样执行 handler
+  并触发退出，只是客户端收到 204 而非 200+body——等待方两种形态都接受）。
+  时序合同（现有写回路径决定，违反即死锁）：dispatcher 同步调用 handler，
   **handler 返回后** HTTP 层才 `sendResponseHeaders` + 写 body，`try (exchange)` 在
-  `handle` 返回前关闭连接（`JsonRpcHttpHandler.java:63-72`）。因此方法 handler
-  **只做**两件事：用 `AtomicBoolean` 保证只登记一次退出意图（幂等，重复调用返回
-  相同结果）、返回 `{}`。`JsonRpcHttpHandler` 在该 exchange 写完且
+  `handle` 返回前关闭连接（`JsonRpcHttpHandler.java`）。因此方法 handler **只做**两件
+  事：用 `AtomicBoolean` 保证只登记一次退出意图（幂等，重复调用返回相同结果）、返回
+  `{}`；退出意图经**请求线程上的 ThreadLocal 服务标记**归属到"实际调用了该方法的
+  exchange"（防无关请求冒领）。`JsonRpcHttpHandler` 在该 exchange 写完且
   try-with-resources close 之后检查标志位，**启动一条不属于请求 executor 的平台
   线程**调用 `System.exit(0)`，然后自己正常返回。三条禁令：禁止在方法 handler 内
   启动退出线程；禁止在请求线程上直接 `System.exit`——即使 exchange 已 close，
   JDK `HttpServer.stop(0)` 会等待 handler 返回，hook 的
   `stop(0)`/`executor.close()` 与尚未返回的请求线程互相等待死锁；禁止用 sleep 赌
   写回完成。exit 后由既有 hook 完成优雅收尾（`server.close()` + `API.close()`，
-  在途编译取消并最长约 30s 等待 runner）。仅靠 `OS.kill` 不够：Windows 上它是
-  `TerminateProcess`，**不会**执行 JVM shutdown hook。验收必须打真实
+  在途编译取消并最长约 30s 等待 runner）。并发双 shutdown 的合同：先完成写回者触发
+  退出，另一并发调用方可能断连（双方请求同一退出，结果等价）。仅靠 `OS.kill` 不够：
+  Windows 上它是 `TerminateProcess`，**不会**执行 JVM shutdown hook。验收必须打真实
   `POST /rpc`：读到 200 与 body 之后进程才退出（退出码 0），只断言 dispatcher
-  返回值的单测无效。
+  返回值的单测无效（回归锚点 `RpcServerShutdownTest`）。
 - Godot 4.5 进程 API（`extension_api_451.json:179748` 起）：
   `OS.create_process(path: String, arguments: PackedStringArray, open_console: bool
   = false) -> int`（返回 PID，失败为负值）；`OS.kill(pid: int) -> Error`；
@@ -1454,8 +461,9 @@ Godot 编辑器
 
 ## 3. 组件设计
 
-全部位于 `src/editor_addon/addons/gdcc/`，`@tool`、带 `class_name`，与
-`gdcc_rpc_client.gd3` 同约束（§5）。模块 VFS 写入路径沿用 `/src/<文件名>.gd3`。
+全部位于 `src/editor_addon/addons/gdcc/`，`@tool`、带 `class_name`，编译型 `.gd3` 与
+`gdcc_rpc_client.gd3` 同约束（§5）。模块 VFS 写入路径保留 addon 相对路径
+（`/src/gdcc_script.gd3`、`/src/util/gdcc_install_util.gd3` 等）。
 
 ### 3.1 `gdcc_script.gd3` — `GdccScript extends ScriptExtension`
 
@@ -1464,12 +472,15 @@ Godot 编辑器
 （创建时由 `setup(language)` 注入）。方法按 §2.3 清单实现；`class_name`/`extends`
 解析用行扫描（按 `\n` 分行 + 前缀匹配），不引入 RegEx 依赖。`_reload` 只重读文件并
 更新上述字段，不触发任何分析调度（§2.4 线程安全约束同样适用于此）。
+`_get_language()` 带自愈回退（§2.3）。另承载符号查找发布的文档缓存
+（`set_lookup_documentation` / `published_lookup_documentation` /
+`lookup_documentation_source` / `clear_lookup_documentation`，§4.6）。
 
 ### 3.2 `gdcc_script_language.gd3` — `GdccScriptLanguage extends ScriptLanguageExtension`
 
 字段：`_service: GdccEditorService`（由 `setup(service)` 注入；由于二者同为进程级
 常驻实例（§3.5），该引用在整个编辑器会话内有效）。实现清单（签名与 4.5 元数据严格
-一致；A/B 档全集见 §2.2）：
+一致；A/B/C 档全集见 §2.2）：
 
 ```gdscript
 func _get_name() -> String:            return "GD3"
@@ -1485,7 +496,7 @@ func _validate(script: String, path: String, validate_functions: bool,
         validate_errors: bool, validate_warnings: bool, validate_safe_lines: bool) -> Dictionary
 func _validate_path(path: String) -> String:          return ""
 func _create_script() -> Object                       # GdccScript.new() + setup(self)
-func _supports_builtin_mode() -> bool: return false   # 不允许场景内建 .gd3 脚本（§9 R7）
+func _supports_builtin_mode() -> bool: return false   # 不允许场景内建 .gd3 脚本（§10 R7）
 func _supports_documentation() -> bool: return false
 func _can_inherit_from_file() -> bool:  return false
 func _handles_global_class_type(type: String) -> bool: return type == "GdccScript"
@@ -1495,9 +506,10 @@ func _make_function(class_name: String, function_name: String,
 func _can_make_function() -> bool:      return false
 func _open_in_external_editor(script: Script, line: int, column: int) -> int  # ERR_UNAVAILABLE
 func _overrides_external_editor() -> bool: return false
-func _complete_code(code: String, path: String, owner: Object) -> Dictionary
-func _lookup_code(code: String, symbol: String, path: String, owner: Object) -> Dictionary
-func _auto_indent_code(code: String, from_line: int, to_line: int) -> String
+func _complete_code(code: String, path: String, owner: Object) -> Dictionary   # §4.3
+func _lookup_code(code: String, symbol: String, path: String, owner: Object) -> Dictionary  # §4.6
+func _auto_indent_code(code: String, from_line: int, to_line: int) -> String   # §4.8
+func _make_template(template: String, class_name: String, base_class_name: String) -> Script  # §4.8
 # 以下为显式 no-op/空实现（消除 required 虚函数的 ERR_PRINT_ONCE，语义上无可做之事）：
 func _init() -> void / _finish() -> void / _frame() -> void
 func _thread_enter() -> void / _thread_exit() -> void
@@ -1508,31 +520,36 @@ func _remove_named_global_constant(name: StringName) -> void
 func _reload_all_scripts() -> void
 func _reload_scripts(scripts: Array, soft_reload: bool) -> void
 func _reload_tool_script(script: Script, soft_reload: bool) -> void
-func _is_using_templates() -> bool:     return false    # Phase 9 前
-func _get_global_class_name(path: String) -> Dictionary # Phase 9
+func _is_using_templates() -> bool:     return false
+func _get_built_in_templates(object: StringName) -> Array[Dictionary]  # 空列表
+func _get_global_class_name(path: String) -> Dictionary  # {}（暂缓，§9 Stage C）
 ```
 
-`_init` 语义结论（2026-09-23 探针证实，P0 全绿）：gdcc 把 `func _init() -> void`
-建模为类构造钩子（骨架层固定 `void _init(...)`），同时后端按名字匹配把它注册为
-`ScriptLanguageExtension._init` 的 engine virtual 分发（`checkVirtualMethod` 走名称
-查找）；`() -> void` 签名与元数据一致，两条路径兼容，无需省略该 override。探针
-`ProbeLang` 定义 `_init() -> void` 后 analyze+lowering、native compile 与运行时
-（`ClassDB.instantiate` + `Engine.register_script_language`）全部通过。注意语义边
-界不变：语言注册晚于 `ScriptServer::init_languages()`，引擎不会对本语言调用
-`init()`；构造钩子形参默认值仍不支持（frontend 既有约束）。
+`_init` 语义结论（探针证实）：gdcc 把 `func _init() -> void` 建模为类构造钩子（骨架层
+固定 `void _init(...)`），同时后端按名字匹配把它注册为 `ScriptLanguageExtension._init`
+的 engine virtual 分发（`checkVirtualMethod` 走名称查找）；`() -> void` 签名与元数据
+一致，两条路径兼容，无需省略该 override。注意语义边界不变：语言注册晚于
+`ScriptServer::init_languages()`，引擎不会对本语言调用 `init()`；构造钩子形参默认值
+仍不支持（frontend 既有约束）。
 
 ### 3.3 `gdcc_script_format_loader.gd3` / `gdcc_script_format_saver.gd3`
 
 按 §2.4 实现。`_load` 用入参路径读文件、创建 `GdccScript` 并 `setup(language)`、
-填充 `_source` 后返回；缓存模式按参考实现惯例处理。`_save` 用
-`FileAccess.open(path, WRITE)` 写回 `resource.get_source_code()`（先
-`as GdccScript` 守卫，失败返回 `ERR_INVALID_PARAMETER`）。
+填充 `_source` 后返回；缓存模式按参考实现惯例处理（`CACHE_MODE_REUSE` 先查
+`get_cached_ref`，`CACHE_MODE_REPLACE*` 用 `take_over_path`）。`_save` 用
+`FileAccess.open(path, WRITE)` 写回 `resource.get_source_code()`（先 `as GdccScript`
+守卫，失败返回 `ERR_INVALID_PARAMETER`），并做完整写后校验：检查 `store_string` 布尔
+返回、close 后显式 READ 重开 + `get_error` + 内容比对（`flush()` 不更新
+`get_error`，`get_file_as_string` 把读取失败与空文件混为 `""`）；写失败不误报 OK。
+saver 仅在写盘和读回校验均成功后记录项目脚本的最近保存时间（`last_script_save_time`，
+供构建状态提示 §3.8 使用）；未保存输入、其他资源保存、失败保存及文件系统扫描不更新
+此记录。
 
 ### 3.4 `gdcc_lsp_client.gd3` — `GdccLspClient extends Node`
 
 最小 LSP 客户端，`StreamPeerTCP` 实现，与 `GdccRpcClient` 同款帧泵纪律：
 
-- `setup(host: String, port: int)`；状态机
+- `start(host: String, port: int)` 启动连接（`stop()` 断开）；状态机
   `DISCONNECTED / CONNECTING / READY / DEGRADED`。连接采用**有上限指数退避重试**
   （LSP 服务在编辑器 ready 后才监听，插件加载时立即连接大概率被拒，见 §2.6）；
   断开/服务重启后同样重连。DEGRADED 可恢复，不进入终态 FAILED。
@@ -1541,7 +558,8 @@ func _get_global_class_name(path: String) -> Dictionary # Phase 9
   接受 `change == 1`；其余（增量/未知）置 DEGRADED 并告警。监听
   `gdscript_client/changeWorkspace` 通知，与本项目根不符时置 DEGRADED（连错实例）。
 - 帧解析：累积 `PackedByteArray` 缓冲，扫描 `Content-Length: N\r\n\r\n` 边界后
-  `JSON.parse_string`；不完整帧保留到下次。
+  `JSON.parse_string`；`Content-Length` 用 `is_valid_int()` 严格校验（`to_int()`
+  会吞非法值）；不完整帧保留到下次。
 - 通知路由：`textDocument/publishDiagnostics` → 按 URI 写入诊断缓存。4.5 服务端
   通知**不含 `version` 字段**（`GDScriptWorkspace::publish_diagnostics` 只写
   `uri` + `diagnostics`），但服务端对每次 `didOpen`/`didChange` 都同步解析并恰好
@@ -1551,22 +569,35 @@ func _get_global_class_name(path: String) -> Dictionary # Phase 9
   generation 追加到队尾；收到通知时弹出队首并与之绑定（"发送后首个通知属于当前
   generation"的简单规则在旧通知仍在途时是错的，必须用队列）；队列为空时收到的
   通知属服务端主动产生，不得推进任何等待水位；**断线**清空该连接全部待确认
-  generation（Phase 2 评审修正：超时**不清空**——服务端在存活连接上对每次
-  didOpen/didChange 恰好发布一次（本段上文），迟到的通知会弹出自己的 generation，
-  FIFO 自行对齐；若超时清空，迟到通知反而会错绑到清空后发送的下一代）。
-  `_validate` 的同步等待即等待本次发送的 generation 出队——**水位线语义（Phase 2
-  实证修正）**：出队按 FIFO 递增，等待断言为"已出队水位 ≥ 目标 generation"（相等
-  断言会在两条通知同批读出时被后一条覆盖而永假）；另保留每 URI 最近 8 条
-  generation→诊断 绑定历史（`_diag_history`）供回溯断言与后续相位。
+  generation；**超时不清空**——服务端在存活连接上对每次 didOpen/didChange 恰好
+  发布一次，迟到的通知会弹出自己的 generation，FIFO 自行对齐；若超时清空，迟到
+  通知反而会错绑到清空后发送的下一代。发送失败回滚队列项与版本号并断连返回 -1。
+  `_validate` 的同步等待即等待本次发送的 generation 出队——**水位线语义**：出队按
+  FIFO 递增，等待断言为"已出队水位 ≥ 目标 generation"（相等断言会在两条通知同批
+  读出时被后一条覆盖而永假）；另保留每 URI 最近 8 条 generation→诊断 绑定历史
+  （`_diag_history`）供回溯断言。
 - 请求/响应：`_send_request(method, params) -> int(id)` + `_pending: Dictionary`；
   `request_blocking(method, params, timeout_msec: int) -> Dictionary`：在调用线程内
   以非阻塞 `poll()` + `Time.get_ticks_msec()` 截止循环驱动读写分发，直到目标 id
   返回或超时；遵守 §1.2 的阻塞形态约束（禁 blocking mode、禁 `OS.delay_msec`、
   超时断连）。**仅当服务端为线程模式时合法**（安装时校验 EditorSettings，§4.1）。
-  `_in_blocking` 置位期间帧泵直接返回，避免重入。
+  断线（aborted）与真超时区分：连接已失不再二次拆连（退避不被翻倍推后），真超时
+  才拆连接；`_drive_io()` 后再判一次断线以消除截止边界竞态。`_in_blocking` 置位
+  期间帧泵直接返回，避免重入。
+- 异步请求面（供成员大纲 §4.7）：`request_async` / `take_response` /
+  `cancel_request` 使用既有帧驱动收包；读取挂起状态不轮询 socket，也不阻塞。
+  `ready_advanced` 信号在 READY 跃迁沿发射（服务接入 `refresh_busy`，低功耗窗口
+  内重放不被饿死）；该信号从泵栈发射对解释型监听是投递安全的。
 - 文档同步：`open_document(uri, text)` / `change_document(uri, text)`（全量，
   版本号递增）/ `close_document(uri)`；URI 为服务端方言 `file:///<逐段 uri_encode
-  的绝对路径>`（`path_to_uri`，§2.6）。
+  的绝对路径>`（`path_to_uri` / `path_from_uri`，§2.6）。`close_document` 的
+  didClose 发送失败与 didOpen/didChange 同款——断连重建（无条件擦除本地态会让
+  客户端/服务端打开集静默分叉）。线程模式复探测的探针文档放在 `res://.godot/`
+  下（点目录不入双方扫描，避免与真实项目文件撞路径）。
+- 可观察性（测试与门禁用）：`document_version_for(uri)`（LSP 文档版本前进断言，
+  如擦除决策翻转的重同步）、`debug_sent_text(uri)`（每 URI 最近发送文本
+  `_sent_texts`，随 didOpen/didChange/关闭/断连维护；翻转断言要求卸载后发送的是
+  原文、加载后是擦除视图）。
 
 ### 3.5 `gdcc_editor_service.gd3` — `GdccEditorService extends Node`
 
@@ -1575,38 +606,46 @@ func _get_global_class_name(path: String) -> Dictionary # Phase 9
 实例同理保留，仅注销对外注册并断开连接。已加载的 `GdccScript` 与仍打开的编辑器
 页签会持续持有语言实例（`script.get_language()` 随 `validate()` 继续被调），
 常驻设计使这些引用始终有效；重新启用时**复用同一语言实例**重新注册，杜绝第二份
-`GD3` 语言或悬空 `_service`（§9 R15）。状态机 `ACTIVE / UNINSTALLED`，
-UNINSTALLED 下所有对外入口早退（`_validate` 返回 `{"valid": true}`，补全返回降级
-字典）。
+`GD3` 语言或悬空 `_service`（§10 R15）。状态机 `ACTIVE / UNINSTALLED`，
+UNINSTALLED 下所有对外入口早退（`_validate` 返回 `{"valid": true, "functions":
+PackedStringArray()}`，补全/查找返回降级字典）。
 
-**内部架构（hub-and-spoke，Phase 3 后重构落地）**：根节点只负责生命周期、调度与
-子节点协作——基础设施（常驻 RPC/LSP 客户端子节点、端点配置）、帧泵
-（`_on_diag_frame` 以固定顺序 tick 各功能子节点：lifecycle → reconciler →
-scheduler，最后统一 `refresh_busy`）、协调广播（`broadcast_module_ready` /
-`broadcast_module_outage` / `notify_content_changed`，生产者与消费者解耦）、
-`busy_delta` 的唯一边沿发射（轮询各子节点 `busy_wanted()` 聚合）、LSP 通道门面与
-对外公共 API 门面。功能切片拆为常驻子节点（`install` 首调创建、永不释放）：
-`GdccModuleLifecycle`（私有模块建删/心跳/outage 恢复/setup 失败上限）、
-`GdccFileReconciler`（磁盘↔VFS 文件集合对账）、`GdccDiagScheduler`（单飞
-upload+analyze 链、镜像版本、失败退避、结果合并）、`GdccSourceRegistry`（内容真值表
-/脏跟踪/墓碑）、`GdccDiagCache`（版本门禁诊断缓存）、`GdccCompletionService`（无状态
-补全与 signature-help 切片，无 tick/busy/关停挂接）、`GdccClassNameEraser`（Phase 7 擦除：视图变换 +
-准入备忘 + GDExtensionManager 翻转监听；翻转的编辑器侧重同步/重校验机制留在根上，
-`lsp_safe_text` 等语言门面为根到子节点的委托）。子节点经根访问器
-（`rpc_client()`/`lifecycle()`/`registry()`/`cache()`/`reconciler()`/`scheduler()`）
-与共享工具（`response_ok`/`response_error_code`/`vfs_path`）协作；因 gdcc bootstrap
-MVP 不含自定义基类 `extends`，功能协议（`bind_service`/`service_tick(now)`/
-`busy_wanted()`/`on_module_ready`/`on_module_outage`/`on_content_changed`/
-`service_shutdown`/`service_reset_channel`）按约定实现而非继承。新增功能（如代码
-补全）= 新子节点脚本 + install 中一个构造块 + 一个访问器 + 视需要的 tick 行、
-`refresh_busy` 聚合项与广播/关停/重置挂接，
-不改动既有子节点逻辑。
+**内部架构（hub-and-spoke）**：根节点只负责生命周期、调度与子节点协作——基础设施
+（常驻 RPC/LSP 客户端子节点、端点配置）、帧泵（`_on_diag_frame` 以固定顺序 tick 各
+功能子节点：lifecycle → reconciler → scheduler → mirror →（eraser 延迟重同步）→
+outline，随后统一 `_pump_revalidation`，最后 `refresh_busy`）、协调广播
+（`broadcast_module_ready` / `broadcast_module_outage` / `notify_content_changed`，
+生产者与消费者解耦）、`busy_delta` 的唯一边沿发射（轮询各子节点 `busy_wanted()` 聚合：
+lifecycle/reconciler/scheduler/mirror/outline）、LSP 通道门面与对外公共 API 门面。
+功能切片为常驻子节点（`install` 首调创建、永不释放）：
+
+| 子节点 | 职责 |
+|---|---|
+| `GdccModuleLifecycle` | 私有模块建删/心跳/outage 恢复/setup 失败上限 |
+| `GdccFileReconciler` | 磁盘↔VFS 文件集合对账（含排除 glob 与临时纳入，§7.4） |
+| `GdccDiagScheduler` | 单飞 upload+analyze 链、镜像版本、失败退避、结果合并 |
+| `GdccSourceRegistry` | 内容真值表/脏跟踪/墓碑/disk-known |
+| `GdccDiagCache` | 过期可见的诊断缓存（§4.4） |
+| `GdccCompletionService` | 无状态补全 + signature-help 切片（无 tick/busy/关停挂接） |
+| `GdccLookupService` | 无状态符号查找切片（`_lookup_code`，§4.6） |
+| `GdccClassNameEraser` | `class_name` 条件擦除：视图变换/准入备忘/GDExtensionManager 翻转监听（§7.2） |
+| `GdccWorkspaceMirror` | LSP workspace 镜像（§7.3） |
+| `GdccOutlineService` | 成员大纲：帧泵异步 `documentSymbol` 缓存（§4.7） |
+
+子节点经根访问器（`rpc_client()`/`lifecycle()`/`registry()`/`cache()`/`reconciler()`/
+`scheduler()` 等）与共享工具（`response_ok`/`response_error_code`/`vfs_path`）协作；
+因 gdcc bootstrap MVP 不含自定义基类 `extends`，功能协议（`bind_service`/
+`service_tick(now)`/`busy_wanted()`/`on_module_ready`/`on_module_outage`/
+`on_content_changed`/`service_shutdown`/`service_reset_channel`）按约定实现而非继承。
+新增功能 = 新子节点脚本 + install 中一个构造块 + 一个访问器 + 视需要的 tick 行、
+`refresh_busy` 聚合项与广播/关停/重置挂接，不改动既有子节点逻辑。
 
 - `install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
   rpc_host: String, rpc_port: int) -> int(Error)` —— ACTIVE 状态下重复调用幂等早退
   （但仍把 host/port 写回客户端，见下）。首次调用时创建语言/加载器/保存器/LSP 客户
-  端并 `setup(...)` 互注，同时创建**服务专用**的 `GdccRpcClient` 子节点（常驻；与
-  dock 持有的客户端分属两条 HTTP 队列，诊断分析不会饿死 dock 的进度轮询，§4.4）。
+  端（语言经 `setup(self)`、加载器经 `setup(language)` 注入；保存器只构造不注入），
+  同时创建**服务专用**的 `GdccRpcClient` 子节点（常驻；与
+  项目管理器持有的客户端分属两条 HTTP 队列，诊断分析不会饿死构建进度轮询，§4.4）。
   **每次** `install`（含禁用后重启用）都把四个端点参数写回对应客户端字段，禁止只在
   首建时赋值。注册按 语言→加载器→保存器 顺序逐步记录成功状态，任一步失败即逆序
   回滚已注册项、置 UNINSTALLED、返回错误码；`plugin.gd` 收到失败后立即恢复
@@ -1623,10 +662,10 @@ MVP 不含自定义基类 `extends`，功能协议（`bind_service`/`service_tic
   信号转发给服务；服务维护已镜像路径集合，对账时计算新增/修改/删除差异：删除与
   重命名旧路径先 `vfs.deletePath`，新增/修改走 `put_file`，然后才安排分析。
   对账与防抖共用同一调度泵。**纳入范围受 `gdcc/sync/excluded_globs` 项目设置约束**
-  （Phase 10 后修复 2，见 §7 Phase 10 后修复节）：命中排除 glob 的路径视同"不在
-  项目集合内"——扫描不返回它，已镜像的它按删除路径对账出模块；**例外：打开页签
-  中的排除文件临时纳入**（缓冲区即内容真源），页签关闭后由节流检查触发对账移出。
-- `uninstall()`：停防抖调度并丢弃 `_dirty` 与在途分析回调 → 断 LSP → 移除
+  （§7.4）：命中排除 glob 的路径视同"不在项目集合内"——扫描不返回它，已镜像的它
+  按删除路径对账出模块；**例外：打开页签中的排除文件临时纳入**（缓冲区即内容真源），
+  页签关闭后由节流检查触发对账移出。
+- `uninstall()`：停防抖调度并丢弃脏标记与在途分析回调 → 断 LSP → 移除
   loader/saver → `unregister_script_language` → 删除私有诊断模块 → 状态置
   UNINSTALLED。**不释放任何常驻对象**；UNINSTALLED 下所有对外入口与内部调度器、
   `notify_source_changed` 一律早退（专用 RPC 客户端虽常驻但不再被使用，迟到响应
@@ -1642,77 +681,88 @@ MVP 不含自定义基类 `extends`，功能协议（`bind_service`/`service_tic
   可能跳过迭代，`process_frame` 不发射、`HTTPRequest` 不推进（既有事实源
   `json_rpc_service_implementation.md` §6.3）。诊断调度恰恰在"用户停键 800ms"后
   触发，必须继承 dock 的同款缓解：低功耗开关由 plugin.gd 统一协调（**单一写入者**，
-  dock 改为只向 plugin.gd 上报 busy ±1，不再直写 `OS.*`；协调器 **Phase 1 即落地**，
-  dock 与 server_launcher 首批接入，服务的诊断调度在 Phase 3 接入）——
-  总计数 0→1 时保存进入前的原值并置 `false`，1→0 或 `uninstall` 时恢复**该原值**
-  （不写死 `true`，以免覆盖用户原本的设置）；dock 在 `_exit_tree` 仍有 busy 时须先
-  归零。实现期验证替代方案：低功耗模式下 `Timer` 是否仍唤醒，若成立可改用它驱动
-  防抖而避免触碰全局开关。
+  dock 改为只向 plugin.gd 上报 busy ±1，不再直写 `OS.*`；协调器由管理器、launcher
+  与诊断调度共用）——总计数 0→1 时保存进入前的原值并置 `false`，1→0 或
+  `uninstall` 时恢复**该原值**（不写死 `true`，以免覆盖用户原本的设置）；dock 在
+  `_exit_tree` 仍有 busy 时须先归零。
 - gdcc 诊断通道：私有模块，模块 ID 含项目根哈希与进程 ID 以防多编辑器实例共享同一
   `gdcc serve` 时互相删除：`gdcc_editor_diagnostics_<projectRootHash>_<pid>`
-  （`OS.get_process_id()`，列入探针）。`install` 时懒创建（首个 `server.ping` 成功
-  后 `module.create`）；`module.create` 返回 `-32001`（同 ID 残留，例如上次进程
-  崩溃未清理）时先 `module.delete` 再重建——ID 内含 pid，同 ID 必属本进程残留，
-  不会误删他人模块；删除因模块门闩占用失败则记日志并推迟重试。`uninstall` 时仅
-  删除自己成功创建的模块。
+  （`OS.get_process_id()`）。`install` 时懒创建（首个 `server.ping` 成功后
+  `module.create`）；`module.create` 返回 `-32001`（同 ID 残留，例如上次进程崩溃
+  未清理）时先 `module.delete` 再重建——ID 内含 pid，同 ID 必属本进程残留，不会
+  误删他人模块；删除因模块门闩占用失败（-32002）则记日志并推迟重试。`uninstall`
+  时仅删除自己成功创建的模块。端点重定向前经一次性旧端点客户端串行队列做
+  fire-and-forget 删除（快速连切不会跳过中间端点的清理；切回某端点时丢弃其未发出
+  的清理项，由既有 -32001 重建路径接管）；`module.create` 在途时发生重定向的过期
+  成功应答经 `enqueue_orphan_cleanup` 向**发送端点**补登记删除。
 - 分析参数：`analyze_include_lowering: bool = true`（§2.7）。
 - VFS 映射合同：`res://a/b.gd3` → VFS 路径 `/src/a/b.gd3`，`put_file` 必须携带
   `displayPath = "res://a/b.gd3"`（`analyze.run` 诊断的 `sourcePath` 依赖
   displayPath 回映；缺省会得到 VFS 逻辑路径，缓存将键不上）。
-- 诊断缓存：`_gdcc_diagnostics: Dictionary`（`res://` 路径（displayPath）→ 条目数组 +
-  内容版本号），`_dirty: Dictionary`（路径 → 最新待分析文本/版本）。
+- 诊断状态分散在两个子节点（§3.5 表）：`GdccSourceRegistry` 持有内容真值表
+  `_sources`（`res://` 路径 → `{text, version}`）与 `_dirty`（路径 → 待分析版本）、
+  墓碑与 `_disk_known`；`GdccDiagCache` 持有 `_entries`（`res://` 路径（displayPath）→
+  `{version, items}`），读取过期可见（§4.4）。
 - 供 `GdccScriptLanguage` 查询的接口（签名为合同，§4.2 依赖之）：
   `lsp_diagnostics_for(path) -> Array`；
   `notify_source_changed(path, text) -> int`（内容未变：返回现有版本、**不升版**；
   内容变化：版本 +1 并标脏；非项目路径返回 -1 不跟踪。**排除路径不拒绝**——notify
-  只在文件有打开页签时发生，构成临时纳入（排除规则与临时纳入的完整语义见
-  §7 Phase 10 后修复 2））；
-  `gdcc_diagnostics_for(path, version) -> Array`（**Phase 10 后修复 1 起改为
-  "过期可见"**：缓存中有该路径的条目即返回（可能是编辑前旧版本的分析结果），直到
-  新一轮分析合并将其替换；version 不再门控读取，新鲜度由 `is_version_current`
-  探针单独观测。旧合同"仅版本一致才返回"会让编辑器在防抖+分析窗口内把既有错误
-  整体清空，见 §7 Phase 10 后修复 1）；
-### 3.6 `plugin.gd` 接线变更
+  只在文件有打开页签时发生，构成临时纳入，§7.4）；
+  `gdcc_diagnostics_for(path, version) -> Array`（**过期可见**：缓存中有该路径的条目
+  即返回（可能是编辑前旧版本的分析结果），直到新一轮分析合并将其替换；version 不再
+  门控读取，新鲜度由 `is_version_current` 探针单独观测，§4.4）；
+  `outline_functions(path, source) -> PackedStringArray`（大纲缓存读取，只登记需求
+  不发网络请求，§4.7）。
 
-`_enter_tree` 增加（解释型 GDScript，可直接用编辑器 API）：
+### 3.6 `plugin.gd` 接线
 
-1. 常驻节点就位：`get_tree().root.get_node_or_null("GdccEditorService")`，命中时必须
+`_enter_tree`（解释型 GDScript，可直接用编辑器 API；同步顺序，LSP 与 gdcc 模块为
+异步就绪，不阻塞注册）：
+
+1. 注册翻译域（§3.11）。
+2. 常驻节点就位：`get_tree().root.get_node_or_null("GdccEditorService")`，命中时必须
    `is GdccEditorService` 校验身份，类型不符则 `push_error` 并放弃安装（fail-closed，
    绝不创建第二个常驻节点或第二份语言实例）；不存在则 `GdccEditorService.new()` +
-   命名 + `add_child` 到根。**此步先于任何设置改动**，放弃路径无需恢复现场。
-2. 读取并暂存 `network/language_server/use_thread` 原值；为 false 则置 true
-   （持久化副作用与恢复义务见 §2.6/§4.1）。
-3. 读取 `network/language_server/remote_host` / `remote_port`（缺省 127.0.0.1/6005）；
-   gdcc RPC 端点读 `gdcc/compilation_server/host|port`（缺省 127.0.0.1:6099，2026-10 起为
-   **项目级设置** project.godot，经 Project Settings 对话框编辑；插件的
-   `settings_changed` 继电器把 host/port 编辑经 `retarget_rpc_endpoint` 切换——只对
-   **配置值相对上次中继的变化**触发，显式 `service.install` 不会被无关设置写入拽回）。
-4. 初始化低功耗 busy 协调器（计数 0，此时**不触碰** `OS.low_processor_usage_mode`；
+   命名 + `add_child` 到根。**此步先于任何设置改动**，放弃路径无需恢复现场（仅回滚
+   翻译注册）。
+3. 读取 LSP 端点（`network/language_server/remote_host`/`remote_port`，缺省
+   127.0.0.1/6005）；暂存并设置 `network/language_server/use_thread = true`（持久化
+   副作用与恢复义务见 §2.6/§4.1）。
+4. 注册项目设置 schema（`gdcc/compilation_server/host|port|launch_command`、
+   `gdcc/sync/excluded_globs`、`gdcc/build/optimization_level|strict_mode|
+   c_compiler_kind`）并做旧键一次性迁移（§3.7 配置项）；配置非法时 fail-closed
+   回退默认值并 push_error。
+5. 初始化低功耗 busy 协调器（计数 0，此时**不触碰** `OS.low_processor_usage_mode`；
    仅登记保存/恢复逻辑，首个 busy 0→1 时才保存原值并置 `false`，§3.5）。协调器
    必须先于任何 `ensure_server_hook` 调用存在。
-5. 创建 `server_launcher.gd` 实例并挂为子节点（§3.7），其 busy 上报指向协调器；
+6. 创建 `server_launcher.gd` 实例并挂为子节点（§3.7），其 busy 上报指向协调器；
    创建项目专用 RPC 客户端和 `GdccProjectManager` 节点，将 launcher/service/协调器
-   注入管理器；dock 只持有管理器引用，不再管理请求、模块或 busy。host/port/启动命令
-   全部来自项目设置，dock 只读显示 configured/effective 端点与 auto-launch 指示。
-6. 调用 `install(...)` 并检查返回的 Error，失败时恢复 `use_thread` 原值并向用户报告。
-   同时把 `server_launcher.ensure_running` 作为 `ensure_server_hook` 注入服务（§3.5）。
-   成功后调用管理器 `auto_setup_module()`，创建共享管理器的标题栏 Build 控件并重排到
-   `EditorRunBar` 左侧；失败则释放 dock、管理器、客户端和 launcher。
-7. 连接 `EditorInterface.get_resource_filesystem().filesystem_changed` → 转发服务的
-   对账调度（重复启用时先 `is_connected` 检查，仅连接一次；§3.5）。
-8. 不直接调 `EditorFileSystem.scan()`：首次启动时本插件在首次扫描的 `init_plugins()`
+   注入管理器；创建 dock 并挂到底部面板。dock 只持有管理器引用，不管理请求、模块
+   或 busy（§3.8）。
+7. 注入 `ensure_server_hook`（`server_launcher.ensure_running`）并连接服务的
+   `busy_delta`/`revalidation_requested`/`outline_revalidation_requested` 信号
+   （中继形态见 §4.5）；调用 `install(...)` 并检查返回的 Error，失败时
+   `_rollback_failed_enter_tree()` 完整回滚 dock/管理器/客户端/launcher 并恢复
+   `use_thread`。成功后调用管理器 `auto_setup_module()`，创建共享管理器的标题栏
+   Build 控件并重排到 `EditorRunBar` 左侧（§3.8），挂"编辑器"菜单的安装向导入口
+   （§3.10），注册语法高亮器并为当前页签接力应用（§3.9）。
+8. 连接 `EditorInterface.get_resource_filesystem().filesystem_changed` → 转发服务的
+   对账调度（重复启用时先 `is_connected` 检查，仅连接一次）；连接
+   `ProjectSettings.settings_changed` → 全量转发（4.5 无 `get_changed_settings`，
+   插件无法按 key 过滤）：host/port 变化经 `retarget_rpc_endpoint` 切换诊断通道
+   （只对**配置值相对上次中继的变化**触发，显式 `service.install` 不会被无关设置
+   写入拽回；配置非法 fail-closed 保持现有通道），排除 glob 变化触发对账（§7.4）。
+9. 不直接调 `EditorFileSystem.scan()`：首次启动时本插件在首次扫描的 `init_plugins()`
    阶段进入树，同步 scan 会重入首次扫描；且 loader 注册后外层扫描本就会识别 `.gd3`。
-   仅当编辑器已就绪后手动启用插件时，用 `call_deferred` 延迟触发一次 scan。
+   仅当编辑器已就绪后手动启用插件时（`is_scanning() == false`），用 `call_deferred`
+   延迟触发一次 scan。
 
 `_exit_tree`：断开事件转发连接 → 释放标题栏及 dock → 管理器核验并清理构建占用、
-残余 busy 计数归零 →
-`uninstall()`（常驻节点保留；其中删除私有模块仍需服务在线）→ 恢复 `use_thread`
-原值（脚本恢复不会重启引擎 LSP 服务，仍必须发生在本客户端已断开、语言已注销之后，
-顺序不可颠倒，§2.6、§4.1）→ **最后** `launcher.shutdown_owned()` 关闭本插件拉起的
-服务（§3.7，须在 uninstall 之后，否则模块删除失去服务端）。项目管理器负责 busy 上报，
-dock 保留 gdcc 诊断通道连接状态、上次诊断及上次成功构建的相对时间指示。
-状态行不再展示 configured/effective 端点、auto-launch 或最近失败文本；配置仍来自
-项目设置，端点与失败详情仍可通过 `diag_channel_status()` 查询。
+残余 busy 计数归零 → `uninstall()`（常驻节点保留；其中删除私有模块仍需服务在线）→
+恢复 `use_thread` 原值（脚本恢复不会重启引擎 LSP 服务，仍必须发生在本客户端已断开、
+语言已注销之后，顺序不可颠倒，§2.6、§4.1；离开前若服务端尚未开始监听需撤销
+`lsp_thread_primed`）→ **最后** `launcher.shutdown_owned()` 关闭本插件拉起的服务
+（§3.7，须在 uninstall 之后，否则模块删除失去服务端）。
 
 ### 3.7 `server_launcher.gd` — 编译服务拉起与关闭（解释型 GDScript）
 
@@ -1720,130 +770,336 @@ dock 保留 gdcc 诊断通道连接状态、上次诊断及上次成功构建的
 项目管理器在 gdcc 语言注册之前就持有它。形态为 `Node`，由 plugin.gd 创建并挂为
 子节点，项目管理器与 `GdccEditorService` 共用同一实例（拉起是单飞操作，需要单点协调）。
 
-- 配置：**项目级设置** `gdcc/compilation_server/launch_command`（String，默认 `""` = 不自动拉起，
-  保持纯被动连接行为）。2026-10 起由 EditorSettings 迁入 ProjectSettings
-  （project.godot）：端点与启动命令属于"项目使用哪台编译服务"的配置，应随项目
-  版本化并共享给协作者（与排除 glob `gdcc/sync/excluded_globs` 同一先例）。plugin.gd
-  在 `_enter_tree` 用 `set_initial_value` + `add_property_info` 注册 schema（端口
-  RANGE 提示 1..65535），并对 2026-10 前的机器级 EditorSettings 值做**一次性就地
-  迁移**（仅当项目从未自定义该键且 EditorSettings 值非默认时播种到内存，push_warning
-  提示保存项目；遗留 EditorSettings 键保留不删，便于降级回退）。launcher 每次拉起前
-  重新读取（不缓存），项目设置对话框的编辑对下次拉起即生效。机器相关的可执行文件
-  路径若不便提交，可把命令留空、改用外部启动的服务（被动连接行为不变）。
-  host、port、launch_command 统一使用 `gdcc/compilation_server/*`。旧项目的
-  `gdcc/server/host`、`gdcc/server/port`、`gdcc/server/launch_command` 在对应新键不存在时
-  迁入，随后移除旧项目键；新旧键并存时保留新键。迁移先于默认值注册，提示用户保存项目。
-  没有项目配置时，旧机器级值仍从原来的 `gdcc/server/*` EditorSettings 键播种。
+- 配置：**项目级设置** `gdcc/compilation_server/launch_command`（String，默认 `""` =
+  不自动拉起，保持纯被动连接行为）、`gdcc/compilation_server/host|port`。端点与启动
+  命令属于"项目使用哪台编译服务"的配置，随项目版本化并共享给协作者（与排除 glob
+  `gdcc/sync/excluded_globs` 同一先例）。plugin.gd 在 `_enter_tree` 用
+  `set_initial_value` + `add_property_info` 注册 schema（端口 RANGE 提示 1..65535）。
+  **旧键迁移**：旧项目键 `gdcc/server/host|port|launch_command` 在对应新键不存在时
+  迁入并随后移除旧项目键（新旧并存时保留新键）；迁移先于默认值注册，迁移发生时
+  push_warning 提示保存项目。没有项目配置时，旧机器级 EditorSettings `gdcc/server/*`
+  值仍从原键播种（遗留 EditorSettings 键保留不删，便于降级回退）。launcher 每次
+  拉起前重新读取（不缓存），项目设置对话框的编辑对下次拉起即生效。机器相关的可执行
+  文件路径若不便提交，可把命令留空、改用外部启动的服务（被动连接行为不变）。
 - 命令模板：支持 `{host}` / `{port}` 占位符，拉起前替换为目标端点；典型值使用 zig
   启动器 `gdcc serve --host {host} --port {port}`（zig 启动器原样转发参数给 jar，
-  `json_rpc_service_implementation.md` §2.5；非 PATH 安装时写启动器的完整路径，如
+  `json_rpc_service_implementation.md`；非 PATH 安装时写启动器的完整路径，如
   `D:/tools/gdcc/gdcc.exe serve --host {host} --port {port}`）。
   解析规则为空白分词 + 双引号成组（无 shell 展开、无管道；首 token 为可执行文件，
   其余为参数）。无占位符时按原样执行（服务须自行监听目标端点）。命令文本是用户
-  显式配置的本地命令，以编辑器权限执行，文档明示其信任边界。
+  显式配置的本地命令，以编辑器权限执行，信任边界见 §10 R22。
 - `ensure_running(host: String, port: int, on_ready: Callable) -> void` —— 全程异步
   （`_process` 轮询驱动，不在主线程阻塞），完成时回调
   `on_ready(err: int, spawned_by_us: bool)`。**低功耗活性**：`_process` 在编辑器
-  低功耗模式下会停帧（§3.5）；launcher **不自备**全局开关快照（双写入者会与 dock
-  的既有快照互相覆盖：launcher 把对方写的 `false` 当原值保存、恢复时互相踩踏），
-  而是在 ensure 开始到回调完成期间向 plugin.gd 的 busy 协调器上报 ±1——协调器
-  Phase 1 即落地，dock 与 launcher 首批接入（§3.5/§3.6）。
+  低功耗模式下会停帧（§3.5）；launcher **不自备**全局开关快照（双写入者会互相
+  覆盖：把对方写的 `false` 当原值保存、恢复时互相踩踏），而是在 ensure 开始到回调
+  完成期间向 plugin.gd 的 busy 协调器上报 ±1（§3.5/§3.6）。
   1. 探测：`StreamPeerTCP` 连接目标端点并短轮询（≤200ms）；已可连接 →
      回调 `OK, false`（**外部服务**，本会话绝不关闭它）。
-  2. 拒绝连接且启动命令为空 → 回调 `ERR_CANT_CONNECT`（现状行为不变）。
+  2. 拒绝连接且启动命令为空 → 回调 `ERR_CANT_CONNECT`（被动行为不变）。
   3. 本会话已为目标端点拉起过且 `OS.is_process_running(pid)` → 直接进入等待就绪。
      否则按模板 `OS.create_process(exe, args)`：返回值 ≤ 0 → 回调 `ERR_CANT_FORK`
-     （Windows 同步失败路径：CreateProcessW 直接拒绝不存在的可执行文件）；成功则把
-     `{pid, host, port}` 记录追加进 `_spawned` 列表（按端点追踪本会话拉起的每个进程），
-     回调排队期间的其他调用者共享同一单飞操作。
+     （Windows 同步失败路径：CreateProcessW 直接拒绝不存在的可执行文件）；空命令文本
+     报 `ERR_INVALID_PARAMETER` 而非误报 `ERR_CANT_FORK`。成功则把 `{pid, host, port}`
+     记录追加进 `_spawned` 列表（按端点追踪本会话拉起的每个进程），回调排队期间的
+     其他调用者共享同一单飞操作。
   4. 等待就绪：周期性重新探测端口，最长 15s；超时且进程仍存活 → `OS.kill` 回收
      本次拉起并回调 `ERR_TIMEOUT`；进程已早退 → 回调 `ERR_CANT_CONNECT` 并在日志
      给出检查启动命令的提示（Unix-like 的不存在可执行文件路径落在这里：fork 已
      成功，子进程 execvp() 失败，引擎打印 `Could not create child process` 并
      SIGKILL 子进程，`is_process_running` 的下次轮询观察到早退）。
-- `shutdown_owned() -> void`（plugin `_exit_tree` 最后一步，§4.1）：逐条处理 `_spawned`
-  中的记录，仅当记录的 `pid > 0` 且 `OS.is_process_running` 时执行。这是 §1.2 主线程阻塞禁令的
-  **唯一豁免**：`_exit_tree` 期间帧泵可能不再运行，必须用非阻塞 `poll()` +
-  `Time.get_ticks_msec()` 截止的有界循环（≤2s），禁用 `_process` 等待与
-  `OS.delay_msec`。流程：一次性发送 `server.shutdown` RPC——**收到响应即完成**
-  （退出已被触发，shutdown hook 会在后台完成 `API.close()` 的收尾，编辑器退出不
-  等待它，绝不硬切在途编译）；RPC 不可达/超时才考虑 `OS.kill`，且 kill 前必须再
+- `shutdown_owned() -> void`（plugin `_exit_tree` 最后一步）：逐条处理 `_spawned`
+  中的记录（不丢弃记录），仅当记录的 `pid > 0` 且 `OS.is_process_running` 时执行。
+  这是 §1.2 主线程阻塞禁令的**唯一豁免**：`_exit_tree` 期间帧泵可能不再运行，必须用
+  非阻塞 `poll()` + `Time.get_ticks_msec()` 截止的有界循环（≤2s），禁用 `_process`
+  等待与 `OS.delay_msec`。流程：一次性发送 `server.shutdown` RPC——**收到响应即
+  完成**（退出已被触发，shutdown hook 会在后台完成 `API.close()` 的收尾，编辑器退出
+  不等待它，绝不硬切在途编译）；RPC 预算按剩余记录均分，耗尽后进入带小额固定探测
+  预算的 kill 兜底（软上限）；RPC 不可达/超时才考虑 `OS.kill`，且 kill 前必须再
   探测记录的端点仍在接受 TCP 连接（证明我们的服务进程仍存活并持有端口，防 PID
-  复用误杀，§9 R19）；端口已关闭则跳过 kill 只记日志。完成后清空状态。编辑器
+  复用误杀，§10 R19）；端口已关闭则跳过 kill 只记日志。完成后清空状态。编辑器
   异常退出（崩溃）走不到此路径，孤儿进程由下次会话的端口探测自然"收养"为外部
   服务（只连不关），安全。
 - 所有权不变量：**只关闭本会话自己 `create_process` 拉起的 PID**；探测先于拉起，
-  永不认领已在侦听的服务。PID 复用的残余风险记入 §9 R19。
-- 向导交互式替换使用 `stop_owned_async(host, port)`，只向本会话记录的旧端点发送有超时的
-  `server.shutdown`，通过独立 RPC client 等待完整响应，不使用退出阶段的阻塞轮询。
-  成功确认后移除该 PID 的跟踪，允许 JVM 在后台完成收尾；失败保留记录供退出阶段重试。
-  外部端点直接跳过，其他已拥有端点不受影响；项目管理器在整个替换期间持有 busy。
+  永不认领已在侦听的服务。PID 复用的残余风险记入 §10 R19。
+- 向导交互式替换使用 `stop_owned_async(host, port)`：只向本会话记录的旧端点发送有
+  超时的 `server.shutdown`，通过独立 RPC client 等待完整响应，不使用退出阶段的
+  阻塞轮询。成功确认后移除该 PID 的跟踪，允许 JVM 在后台完成收尾；失败保留记录供
+  退出阶段重试。外部端点直接跳过，其他已拥有端点不受影响；项目管理器在整个替换
+  期间持有 busy（§3.10）。
 
-### 3.8 文件与构建接线
+### 3.8 共享项目管理与视图（`gdcc_project_manager.gd` / `gdcc_dock.gd` / `gdcc_build_toolbar.gd`）
 
-- `EditorAddonProjectInstaller`：收集 `addons/gdcc/*.gd3` 全部源文件写入模块 VFS
-  （替换当前单文件常量，探针文件不进插件目录、不纳入收集）；**所有**安装出口
-  （`buildNative`/`buildAllPlatform`/测试安装）统一后处理
-  `gdcc_for_editor.gdextension`，把 `reloadable = true` 改写为 `false`（§6）。
-- 解释型 `.gd`（`plugin.gd`、`gdcc_dock.gd`、`gdcc_project_manager.gd`、
-  `gdcc_build_toolbar.gd`、`server_launcher.gd`、`gdcc_syntax_highlighter.gd`）
-  不进编译模块、不上面向世界清单，由 `plugin.gd`
-  `preload` 直接引用。
-- `buildAddonNative` / `buildAddonAllPlatform` Gradle 任务不变。
-- 分发入口：`./gradlew buildAddonAllPlatform --args=--package --no-daemon --info --console=plain`。
-  独立编译 Windows x86_64、Linux x86_64、Linux AArch64、macOS AArch64 四套 **Release** 库，
-  不覆盖源码目录的手工安装；生成 `build/distributions/gdcc_editor_addon.zip`。
-  ZIP 仅包含 `src/editor_addon/addons/gdcc/` 的运行时内容，路径前缀固定为 `addons/gdcc/`；
-  保留解释型 `.gd`、插件配置、翻译和图标，排除已编译的 `.gd3`、其 UID、导入缓存、
-  `.godot/` 和源码目录原有的 `bin/`。重新生成的 `bin/` 仅来自本次四平台构建，
-  `gdcc_for_editor.gdextension` 的八个架构限定 debug/release 键均指向对应 Release 库，
-  并维持 `reloadable = false`。不包含 `src/editor_addon` 项目根或其他 addon 的内容。
-- CI 在 Windows x64 和 Linux x64 分别运行 editor-addon 测试；Linux x64 的专用任务
-  在测试通过后执行上述四平台打包并上传 `gdcc-editor-addon` 工件。`release.yml` 使用同一入口，
-  将 `gdcc_editor_addon.zip` 加入工件、完整性检查和 GitHub Release 附件。
+- `plugin.gd` 创建唯一 `GdccProjectManager` 子节点（解释型 `.gd`：异步操作依赖信号
+  `await`，构建部署使用 EditorFileSystem/GDExtensionManager；编译型 addon 的无协程
+  自举约束不变，§5），注入独立 RPC 客户端、launcher、驻留诊断服务和 busy 协调器。
+  `gdcc_dock.gd` 与 `gdcc_build_toolbar.gd` 仅持有同一管理器实例，不各自创建模块、
+  客户端或构建副本。Ping/Create/Analyze、构建/取消、所有权核验、部署及延迟启用均由
+  管理器执行，日志和动作状态通过信号传播。管理器不为 UI 拆分另建编译状态机，不改
+  诊断服务的自动模块创建、全项目递归同步、排除 glob、打开排除脚本临时纳入以及关闭
+  后的剔除行为。
+- 所有普通动作在修改 RPC 端点前检查共享 busy 与待启用状态；构建在首次 `await` 前
+  同步占用 busy。两个视图因此无法重入构建或将同一客户端改道。Cancel 继续使用任务
+  启动时端点上的独立客户端（钉住任务端点，避免 -32002 取消重试端点错绑）。待扫描/
+  重载阶段仍禁用 Build，轮询超时保留任务 ID，不阻止原有取消旧任务并重建路径。
+- **dock（精简形态）**：连接时只有两块可视内容——顶部单行
+  `Connected/Disconnected | Diagnostics: ... | Build: ...` 与下方只读 `TextEdit`
+  输出；连接指示对应诊断通道 READY；诊断时间取最近成功合并轮的单调时钟，构建时间
+  沿用成功安装/启用后的记录；尚无记录时显示 `Never`。诊断通道未 READY 时隐藏输出
+  与 Clear，保留状态行，下方显示"手动配置编译服务器"（复用 Build toolbar 的原生项目
+  设置导航，选中 `gdcc/compilation_server`）和"安装编译服务器"（打开向导，§3.10）
+  两个按钮；日志仍在后台保留，连接恢复后自动显示原输出。输出水平/垂直填满剩余区域，
+  最小高度按实际行高容纳至少六行并加内边距及横向滚动条预留高度，字体/主题变化后
+  重新计算；状态文字不换行，窄宽度省略并可悬停读取完整内容；右侧主题图标 `Clear`
+  清空现有输出（构建忙时仍可用，不修改任务、诊断或构建记录）。
+- **标题栏 Build 控件**：根控件是 `HBoxContainer`——左侧 GDCC 图标与 **Build** 文本
+  的动作按钮，右侧独立箭头打开 `PopupPanel`。使用公开 `CONTAINER_TOOLBAR` 添加后，
+  在其实际父容器中按原生类名找到 `EditorRunBar` 并 `move_child` 到其左侧；不进入
+  私有 `get_buttons_container()`（Godot 4.5.1 的公开容器实际追加到渲染选择器后，故
+  需显式重排；内部类名不存在时警告并保留可用入口；插件退出时按原公开容器移除）。
+  Build 与箭头均使用 `FOCUS_ACCESSIBILITY`（普通鼠标点击不留持续焦点框，保留读屏
+  聚焦能力）。构建准备、编译、部署及待启用期间，Build 文本显示 `Building ` 加点阵
+  序列 `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`（每帧检查距上次切换是否超过 100ms，满足时仅推进一个
+  字符，不补帧）；成功启用或构建失败/取消/轮询超时后恢复 `Build`；空闲时不运行
+  动画。管理器单独发布构建状态，不把 Ping/Create/Analyze 等其他忙操作误显示为构建。
+- **Build 弹出窗**：显示 `server.info` 返回的版本/分支/commit 和 **Last successful
+  build**。服务版本与 `server.availableCCompilerKinds` 查询共用独立客户端（不能改写
+  正在构建的端点）；诊断通道就绪后自动查询，每五秒及打开菜单时刷新；端点改变或断连
+  后清除缓存，旧端点响应不更新 UI；查询使用具名信号回调，不依赖会被脚本重载取消的
+  挂起 await。PopupPanel 显式使用编辑器主题并随标题栏主题变化更新；自动换行的版本
+  标签具有与内容容器一致的最小宽度（避免隐藏窗口首次布局前按零宽度折行放大弹窗最小
+  高度）。上次成功构建时间仅在扫描确认安装或本机加载/重载成功后记录，使用 Unix 秒
+  时间戳，保存于项目 editor metadata `gdcc/last_build_time`，不混入共享项目配置。
+- **构建参数**：项目设置 `gdcc/build/optimization_level`（字符串枚举 `DEBUG`/`RELEASE`，
+  默认 `DEBUG`）、`gdcc/build/strict_mode`（bool，默认 false，沿用 API 编译策略字段）、
+  `gdcc/build/c_compiler_kind`（默认 `AUTO`）。菜单始终额外保留 **Auto**，其他项仅
+  来自 RPC 的可用后端列表（`ZIG_CC` 显示为 Zig，`TINY_CC` 显示为 Builtin）；Auto 回传
+  null，沿用服务端 Debug→TinyCC、Release→Zig 的规则。未连接到编译服务、无可用后端
+  或查询失败时 Build 禁用，菜单显示以编辑器警告图标开头的黄色提示；不可用的已保存
+  显式选择同样禁用 Build，用户可重新选择 Auto 或可用后端。下拉修改即时更新
+  ProjectSettings 并检查 `ProjectSettings.save()` 返回值。构建点击时冻结选择，
+  `options.get` 获取完整副本快照，仅改 `projectPath`、`optimizationLevel`、
+  `strictMode`、`cCompilerKind` 后整体回传（Auto 显式覆盖继承的后端选择，不修改诊断
+  模块选项）；构建中的设置编辑只影响下一次构建。
+- **GDCC Project Settings 入口**：弹出窗底部全宽按钮打开真实的 Project Settings
+  General 页面、启用 Advanced Settings 并过滤 `gdcc`，选中可编辑的 `gdcc/build` 子
+  分类（`gdcc` 父分类不可选）。4.5.1 没有公开的项目设置导航入口，适配器先核验
+  `ProjectSettingsEditor` 及搜索行结构，再调用继承的 Window API 和筛选控件；找不到时
+  提示手动打开，不替换成 Editor Settings 或私有配置文件。该结构依赖需在更换 Godot
+  版本时复验。
+- **相对时间**：`gdcc_project_manager.gd.relative_time_text` 是两个视图唯一的相对
+  时间格式化入口（英文原文 + 中文翻译；负间隔按 0 秒）：<60s 显示整数秒（`59s ago`）；
+  60–599s 向下取整到半分钟（`1.5min ago`）；600–3599s 向下取整到整数分钟；
+  3600–86399s 向下取整到半小时（`1.5h ago`）；≥86400s 向下取整到半天（`1.5d ago`）。
+  dock 状态行与 Build 菜单的 Last successful build 均每秒刷新，状态变化/菜单打开时
+  立即刷新；空闲 Build 动画仍保持关闭。`gdcc/last_build_time` 旧格式（无偏移本机日期
+  字符串）按当前本机 UTC 偏移一次性转换为 Unix 秒并保存，后续启动不再重复解释
+  （旧格式未记录历史时区偏移，首次迁移跨夏令时的旧值可能有偏差）。
+- **构建状态提示**：`.gd3` saver 在最近保存时间晚于最后一次构建尝试时，空闲按钮显示
+  `Build*`（构建尝试以开始时间为界；构建中再次保存仍保留星号；没有新保存时已失败的
+  构建只显示错误标记）。构建准备、启动、轮询、编译、部署或启用失败后，按钮在文字
+  右侧使用编辑器原生 `StatusError` 红色图标（替换正常左侧 GDCC 图标），菜单单独显示
+  红色"上次构建失败"；失败不禁用重试，取消不作为编译失败；尚在构建或等待启用时卸载
+  插件按未完成构建保存失败状态（避免重新启用后误显成功）。按钮悬浮提示按优先级：
+  断连 `Cannot connect to the GDCC compilation server` → 后端不可用
+  `No compilation backend available` → 上次失败 `Compile GDCC scripts [last build
+  failed]` → 默认 `Compile GDCC scripts`（中文编辑器使用翻译目录对应中文）。最近保存
+  时间、构建尝试时间和失败状态分别保存在项目 editor metadata
+  `gdcc/last_source_save_time`、`gdcc/last_compile_time`、`gdcc/last_build_failed`；
+  旧项目尚无构建尝试记录时沿用既有成功时间；`last_build_time` 只表示安装/启用成功，
+  不因失败构建改变。源码保存和构建尝试使用带小数的 Unix 秒区分同秒内先后事件。
+- **卸载顺序**：先释放两个视图，再释放管理器（副本所有权清理及 busy 排空），之后
+  注销诊断服务，最后关闭本插件拉起的服务器；失败安装同样回收管理器，不留半安装状态。
 
 ### 3.9 `gdcc_syntax_highlighter.gd` — `.gd3` 语法高亮（解释型 GDScript）
 
 **成因**：脚本编辑器按脚本语言名匹配已注册 `EditorSyntaxHighlighter` 的
-`_get_supported_languages()`（4.5 `script_editor_plugin.cpp`；仅非 Script 文本才退回扩展名
-匹配），原生 `GDScriptSyntaxHighlighter` 只认领 `"GDScript"`，`.gd3`（语言名 `"GD3"`）
-此前静默回落到 `EditorStandardSyntaxHighlighter`——关键字/引擎类型有颜色而注解、类型
-提示、脚本成员、节点路径等 GDScript 专属词法着色全缺。**形态**：必须用解释型 `.gd`——
-编译类注册在 GDExtension SCENE 级，编辑器专有基类在 EDITOR 级才存在（§5 末条实证）。
+`_get_supported_languages()`（4.5 `script_editor_plugin.cpp`；仅非 Script 文本才退回
+扩展名匹配），原生 `GDScriptSyntaxHighlighter` 只认领 `"GDScript"`，`.gd3`（语言名
+`"GD3"`）会静默回落到 `EditorStandardSyntaxHighlighter`——关键字/引擎类型有颜色而
+注解、类型提示、脚本成员、节点路径等 GDScript 专属词法着色全缺。**形态**：必须用
+解释型 `.gd`——编译类注册在 GDExtension SCENE 级，编辑器专有基类在 EDITOR 级才存在
+（§5 实证）。
 
-**实现**：逐块移植 4.5 `gdscript_highlighter.cpp` 的行内状态机（区域、数字、关键字/类名/
-成员/全局函数查表、函数/信号/声明名检测、点后成员、`expect_type`、`&^$%@` 前缀、颜色
-优先级链与 `prev_text` 转移器），跨行区域经 `_color_region_cache` + 基类行缓存回填；
-色值全部读 EditorSettings 同名主题键（含 `gdscript/*` 专属键与注释标记三色三表），主题
-变更经编辑器既有 `update_cache()` 节拍生效。与原生仅有的方向安全差异（只可能错色、
-不可能崩溃）写进类头注释（无 `is_class_exposed` 过滤、非 ASCII 一律按标识符字符、空白
-仅空格/Tab、自有成员与基类来自缓冲区扫描）。**局部变量无语义着色**——原生也没有，
-不属缺口。
+**实现**：逐块移植 4.5 `gdscript_highlighter.cpp` 的行内状态机（区域、数字、关键字/
+类名/成员/全局函数查表、函数/信号/声明名检测、点后成员、`expect_type`、`&^$%@` 前缀、
+颜色优先级链与 `prev_text` 转移器），跨行区域经 `_color_region_cache` + 基类行缓存
+回填；色值全部读 EditorSettings 同名主题键（含 `gdscript/*` 专属键与注释标记三色三
+表），主题变更经编辑器既有 `update_cache()` 节拍生效。与原生仅有的方向安全差异
+（只可能错色、不可能崩溃）写进类头注释（无 `is_class_exposed` 过滤、非 ASCII 一律按
+标识符字符、空白仅空格/Tab、自有成员与基类来自缓冲区扫描）。**局部变量无语义着色**
+——原生也没有，不属缺口。
 
 **注册/应用**（plugin.gd）：install 成功后注册单个模板实例；编辑器只对新页签自动选择
-（注册不触发既有页签重选），已开页签由 `_apply_highlighter_to_current_editor` 在启用时
-（当前页签）与 `editor_script_changed`（后续焦点）接力应用。门控：资源路径扩展名须为
-`gd3`（`Script.get_language()` 4.5 未绑定，GDScript 页签会把处理器打挂）；仅替换两个内置
-回落高亮器（Standard/Plain Text——`get_class()` 对未注册 GDCLASS 类也上报**自身**派生名
-（`object.cpp::_get_class_namev`），据此精确识别；用户下拉选的
+（注册不触发既有页签重选），已开页签由 `_apply_highlighter_to_current_editor` 在启用
+时（当前页签）与 `editor_script_changed`（后续焦点）接力应用。门控：资源路径扩展名
+须为 `gd3`（`Script.get_language()` 4.5 未绑定，GDScript 页签会把处理器打挂）；仅
+替换两个内置回落高亮器（Standard/Plain Text——`get_class()` 对未注册 GDCLASS 类也
+上报**自身**派生名（`object.cpp::_get_class_namev`），据此精确识别；用户下拉选的
 `GDScriptSyntaxHighlighter` 等语言高亮器绝不替换）；每个 CodeEdit 实例只 settle 一次
-（`_handled_highlighter_editors` 按实例 ID 记忆，ID 会话内单调不重用），用户之后手动切换
-的选择在页签往返间不被覆盖。`_exit_tree` 反注册模板并断开信号；已装实例留在页签里
-继续工作（类是解释型的，卸载扩展不影响）。
+（`_handled_highlighter_editors` 按实例 ID 记忆，ID 会话内单调不重用），用户之后
+手动切换的选择在页签往返间不被覆盖。`_exit_tree` 反注册模板并断开信号；已装实例留在
+页签里继续工作（类是解释型的，卸载扩展不影响）。
 
-**页签状态踩点（2026-10-05 实证，引擎用例无法覆盖的真实会话路径）**：`ScriptTextEditor`
-打开页签时会按项目 `.godot/editor/script_editor_cache.cfg` 里保存的 `syntax_highlighter`
-状态恢复用户上次的高亮器选择——在本功能落地前打开过 `.gd3` 的项目把 `"Standard"` 钉在
-缓存里，恢复动作发生在原生自动选择**之后**，把选好的实例换回 Standard。脚本侧无法阻止
-恢复，但接力在焦点信号时按上述门控换回我们的高亮器（踩点页签此前从未 settle，不会
-被 settle-once 挡住）；我们赋值后，页签的编辑状态在下一次布局保存/关页签时经
+**页签状态踩点（实证，引擎用例无法覆盖的真实会话路径）**：`ScriptTextEditor` 打开页签
+时会按项目 `.godot/editor/script_editor_cache.cfg` 里保存的 `syntax_highlighter` 状态
+恢复用户上次的高亮器选择——在本功能落地前打开过 `.gd3` 的项目把 `"Standard"` 钉在
+缓存里，恢复动作发生在原生自动选择**之后**，把选好的实例换回 Standard。脚本侧无法
+阻止恢复，但接力在焦点信号时按上述门控换回我们的高亮器（踩点页签此前从未 settle，
+不会被 settle-once 挡住）；我们赋值后，页签的编辑状态在下一次布局保存/关页签时经
 `get_edit_state()` 记为 `"GD3"`（非赋值的同步副作用），之后打开直接恢复我们的。
-该缺陷由 GUI 输出测试点（`[GDCC-HL]`）定位：日志同时显示 `_create()`/`_update_cache`
-已成功（自动选择生效）与当前高亮器为 Standard（恢复踩点）。
 
-**验收**：引擎用例 `syntax_highlighter`（§8.2）——新页签自动选中、成员扫描计数、24 组
-逐列颜色断言（注解/类型提示/基类与自有成员/字符串含跨行与 raw/注释标记/数字/关键字）、
-主题改写即时生效、`.gd` 页签仍用原生高亮器。
+### 3.10 编译服务器安装向导（`gdcc_setup_dialog.gd` / `GdccInstallService` / `GdccInstallUtil`）
+
+- 入口：诊断通道未 READY 时 dock 显示"安装编译服务器"按钮（§3.8）；顶部"编辑器"菜单
+  另提供"安装 GDCC 编译服务器"，连接与断连状态都可打开同一向导。菜单条目使用独立
+  命令 ID，菜单重建后在打开时恢复，语言变化时刷新，插件卸载时移除。
+- 形态：向导 UI 是解释执行的 `gdcc_setup_dialog.gd`；安装服务编译为
+  `GdccInstallService`（`gdcc_install_service.gd3`），文件/压缩包/版本解析编译为
+  `GdccInstallUtil`（`util/gdcc_install_util.gd3`）；原生构建递归收集 `.gd3` 并保留
+  addon 相对路径（§3.12）。安装服务是 §5 无协程约束的**受控例外**：可使用信号、
+  lambda 与 `await`；公开异步方法返回 `Variant`，解释型向导通过 `await_result` 区分
+  同步结果与带 `completed` 信号的挂起状态。协程只在主线程运行；工作线程只承担同步
+  文件操作。服务等待自己的帧信号，在离树时取消并排空协程、join 工作线程，退出期间
+  的剩余文件清理同步完成，不再创建新的挂起任务。
+- UI 合同：顶部可点击的"安装JRE » 安装GDCC"步骤链接，就绪步骤显示绿色 ✔，右侧退出
+  为链接文本；步骤与对勾按 2 像素间距分组，箭头两侧各 12 像素；行内符号不自动换行并
+  与链接垂直居中。头尾固定、内容区滚动；弹出前仅显示第一页，默认尺寸按 720×460 缩放
+  并限制在父窗口 80% 内（避免同时计算两页最小高度撑出屏幕）。底部进度条与下载文字
+  始终参与布局，空闲时通过透明度隐藏；状态和下载文字单行裁剪，完整状态可悬停读取
+  （避免新增内容在容器未排序时撑大 `AcceptDialog` 内容最小尺寸触发
+  `Window.wrap_controls` 单向扩窗）。底部全宽按钮第一步为"下一步"、第二步为"完成
+  编译器配置"；检查 Java 或安装 JRE 成功只启用下一步，不自动跳转。
+- Java 探测：依次检查该项目上次确认的路径、`JAVA`、`JAVA_HOME`、`JDK_HOME`、
+  `JRE_HOME`、PATH 以及 Editor Data 中的缓存，去重后列出所有可识别 Java 供用户选择。
+  每个候选通过非阻塞进程管道执行 `--version`（必要时回退 `-version`）；低于 25 的
+  版本仍显示但不可选。管道同时排空 stdout/stderr，有截止时间并只终止自己创建的探测
+  进程；不存在的可执行文件不发起子进程。
+- JRE 安装：查询 `script-gd/gdcc-jre/releases/latest`，按平台/架构选择 Windows x64
+  ZIP、Linux x64/aarch64 或 macOS aarch64 tar.gz，使用同次发布的 `SHA256SUMS` 强制
+  校验；没有对应资产的平台提示手动选择已有 Java，不猜测其他架构或静默使用模拟器
+  版本。
+- 缓存布局：根为 `EditorInterface.get_editor_paths().get_data_dir()/gdcc`（遵循
+  Godot 的 Windows/Linux/macOS 和便携模式路径）：
+  `runtimes/<发行包完整SHA256>[-<随机后缀>]/jre` 存运行环境，
+  `compilers/release-<id>`、`actions-<id>`、`local-<完整SHA256>` 分离编译器安装。
+  读取当前发布的 SHA256SUMS 后先查找同校验和的主目录及复制副本（跳过 `.installing`
+  标记目录），实际运行 Java 验证通过即复用，不再下载/解压/建目录；校验和统一小写，
+  不按发布名称认定内容相同；原先按发布包命名的缓存不删除（已保存路径仍可扫描选择，
+  但不能推断为某一归档校验和）。列表读取 JAR 内 `gdcc-version.properties` 的
+  version/branch/commit，不依赖文件名推断版本；下载的发行包验证 manifest Class-Path
+  依赖，本地导入按 gdparser 标志库规则识别依赖。
+- 编译器列表：正式版和预览版标签页各按 20 条分页按需加载；"加载更多"是列表末尾的
+  特殊项（选中即请求下一页，不作为独立按钮，不可当作可安装版本）。正式版只列非
+  draft/prerelease 的 `script-gd/gdcc` Releases，同时安装 JAR 与 `-libs.zip`，追加
+  `published_at` 日期；预览版查询 `gdcc-jar-and-libs` Actions artifacts（排除
+  expired），显示分支、commit、按当前系统时区偏移转换的本地日期时间（中文用年月日
+  格式，字段用 `·` 分隔，不以分支名已用的 `/` 作分隔符，不直接显示 ISO 8601 时间戳）。
+  预览包经 `https://nightly.link/script-gd/gdcc/actions/artifacts/<整数ID>.zip` 匿名
+  下载（nightly.link 已获仓库 Actions 读取授权；插件不收集 Token，也不依赖本机 gh
+  登录）；预览压缩包中的嵌套 libs ZIP 同样解压；界面不显示 nightly.link 下载说明。
+  "安装所选版本"和"从本地安装"同行，中间显示"或"，按 2:1 分配按钮空间；该操作行位于
+  列表滚动区之外、进度区上方，仅在第二步显示。选择本地 JAR 后要求相邻 `lib/` 中存在
+  `gdparser-*.jar`，否则显示错误对话框；满足此标志即认为依赖库已找到，导入时复制
+  lib 中的文件，不逐项拒绝 manifest 中其他缺失项。完成配置前仍实际运行
+  `java -jar ... --version`，运行校验失败后不保存启动命令。
+- 下载与解包：下载保持原始字节、有限重定向，直接流式写入 staging；进度显示已下载
+  大小和文件总大小，取消时中止请求/探测进程。哈希、解压和复制在工作线程执行，通过
+  插件既有 busy 计数维持帧泵。服务经 `phase_changed` 更新当前阶段（读取发布信息、
+  下载、SHA-256 校验、解压、检验解压后的 Java、安装/复制校验、检验安装后的 Java、
+  清理、完成），非下载阶段使用不确定进度动画。JRE 必须有 SHA-256；编译器在 GitHub
+  提供 digest 时校验，旧资产无 digest 时依赖 HTTPS。Windows 自动读取当前用户手动
+  代理的 `ProxyEnable`/`ProxyServer`（忽略 PAC/绕过规则）；显式 Godot Editor HTTP
+  代理优先；系统策略强制机器级代理、SOCKS 和代理认证不在此接口范围。
+  ZIP 解包前检查中央目录的大小/条目数，拒绝路径穿越、加密和不支持的 ZIP64；
+  tar.gz 有解压大小、头校验和及条目数上限，支持发行包的 PAX 时间戳和普通文件/目录，
+  保留 Unix 执行位；法律声明符号链接在普通文件完成后物化为包内副本，不创建可用于
+  逃逸的链接；TAR 字段先按 NUL 字节截断再解码（避免构造 `String.chr(0)` 产生大量
+  Unicode 解析诊断）。
+- 落盘：编译器验证完成后把 staging 原子移动为缓存，失败不修改项目设置，取消后清理
+  staging。JRE 优先复用同校验和的有效目标（含随机后缀副本）；目标不存在时尝试快速
+  移动；Windows `MoveFileW` 失败只返回笼统的 `FAILED=1`，因此移动失败或旧目标不可用
+  时改用独立随机后缀目录复制完整 JRE，逐文件 SHA-256 校验后再次运行 Java；复制成功
+  不要求最后再重命名，直接使用实际可执行路径；旧目标不被移动/覆盖/删除。复制中的
+  目录带 `.installing` 标记，扫描时跳过，校验成功才移除标记；失败/取消清理未完成
+  目录（含隐藏文件）；仅存在空目录、被占用的旧目标不再阻止安装，也不对不存在的
+  java.exe 发起探测。
+- 完成配置："完成编译器配置"在 Java 和所选编译器就绪后启用，先验证 Java、JAR 依赖
+  和 `java -jar ... --version`，再将本地启动命令写入
+  `gdcc/compilation_server/launch_command`、host 设为 loopback，并保存项目；保存失败
+  恢复命令、host、port 三项内存设置。Java/JAR 路径另存项目 editor metadata。管理器
+  忙时拒绝改写；已连接不再构成拒绝条件。向导先用 `TCPServer.listen(0, "127.0.0.1")`
+  预留一个不同于旧端点的本地空闲端口，保存后释放预留；新端点避免 `ensure_running`
+  把旧服务误判为可复用的外部服务。随后共享项目管理器显式 retarget 诊断通道（旧
+  epoch 失效），异步关闭本会话拥有的旧服务（`stop_owned_async`，§3.7），再经共享
+  launcher 拉起新命令；外部旧服务继续运行。端点切换仍使用既有私有模块清理与重新
+  同步，不卸载语言或重启 Godot 的 GDScript LSP。旧服务停止失败保留跟踪并记录日志；
+  新服务拉起失败保留已保存配置，向导显示明确错误，不误报成功。设置窗口手工修改命令
+  仍只影响下次启动。`configured` 保留为对话框成功事件，仅在保存与新服务拉起成功后
+  发出，不再由 dock 监听重复拉起。已知边界：端口预留释放到 JVM 绑定之间并非原子
+  交接，仍有被无关进程抢占的低概率窗口（§10 R28）；此流程配置的是编译服务器启动
+  程序，不擅自修改 `c_compiler_kind`、优化级别或其他构建偏好。
+
+### 3.11 编辑器插件国际化
+
+- 英文是消息原文和未支持语言的回退；`addons/gdcc/locale/zh.po` 提供中文，使用原生
+  `Translation` 资源和独立的 `gdcc.editor` 翻译域。`Language: zh` 匹配旧版的 `zh_CN`
+  与新版的 `zh_Hans`，其他中文区域也使用此简体中文目录。
+- `plugin.gd` 在启用时注册目录，回滚或卸载时移除自己的翻译和域；不向 `godot.editor`
+  或游戏主域注入消息，不修改项目的语言、翻译资源设置或编辑器语言设置。`.po` 由核心
+  资源加载器直接读取，不依赖导入缓存；插件首次扫描前即可预加载。
+- 管理器和 launcher 继承插件的域；驻留 service 显式使用该域，卸载后恢复继承。
+  dock 与 toolbar 在 `setup` 中复制管理器的域（添加到编辑器容器后不再位于插件子树
+  内）；其子节点（含 PopupPanel、OptionButton 菜单及原生悬浮 tooltip）继承该域。
+- 静态标签、选项和 tooltip 保留英文，使用节点自动翻译；状态、相对时间、构建点阵及
+  带参数的提示使用 `tr()`。语言变化通知会刷新动态文字，已有日志不回溯翻译。
+  管理器的 `_log` 先翻译完整模板、再插入参数，不对参数中的 `%`、路径或外部错误二次
+  格式化。
+- 翻译范围包含构建菜单、dock、所有插件自有操作日志、launcher 输出及插件/诊断调度器
+  警告。技术标识（GDCC、GD3、Zig、设置键、RPC 方法、状态枚举、代码模板）及编译器/
+  LSP 返回的原始诊断保留原文。日志 TextEdit 禁用自动翻译，避免再次翻译已格式化消息
+  或源码。
+- 引擎限制：插件列表中的 `plugin.cfg` description 是插入引擎 tooltip 的原始元数据，
+  Godot 4.5–4.7 均不为其调用翻译；保留英文，不通过修改引擎或注入保留域绕过。
+- 原生项目设置使用 `EditorPropertyNameProcessor` 与 `godot.properties` 域，不会读取
+  插件自有域，也不使用控件自动翻译。`locale/zh_properties.po` 单独提供分类和属性名，
+  启用时向现有属性域注册；卸载或回滚只移除这份资源，绝不删除或清空引擎属性域。
+  目录使用处理器生成的英文显示名（如 `Compilation Server`、`C Compiler Kind`），不
+  包含已有引擎翻译的 `Host`、`Port`、`Sync`，避免覆盖通用属性名。设置名称遵循编辑器
+  的"本地化设置"开关；`zh_CN` 与 `zh_Hans` 都匹配此简体目录。Godot 4.6+ 切换语言会
+  重载并清空属性目录，因此在翻译变化通知中幂等重加同一资源，再由原生 inspector 刷新
+  分类与标签。键名和 `DEBUG`、`RELEASE`、`AUTO`、`ZIG_CC`、`TINY_CC` 等实际存储值保持
+  不变，不通过翻译枚举提示修改配置格式。
+
+### 3.12 文件与构建接线
+
+- `EditorAddonProjectInstaller`（`src/test/java/gd/script/gdcc/rpc/`）：递归收集
+  `addons/gdcc/**` 全部 `.gd3` 源（含 `util/` 子目录），按 addon 相对路径写入模块
+  VFS（`/src/<相对路径>`，displayPath 为 `res://addons/gdcc/<相对路径>`，absolutePath
+  为主机绝对路径——供类元数据 `source_res_path`/`source_path`，§7.1）；全部源进同一
+  模块以便跨类引用解析。**所有**安装出口（`buildNative`/`buildAllPlatform`/测试安装）
+  统一后处理 `gdcc_for_editor.gdextension`，把 `reloadable = true` 改写为 `false`
+  （§6）；无动态库产物的安装抛 `IOException`（负例锚定）。
+- 解释型 `.gd`（`plugin.gd`、`gdcc_dock.gd`、`gdcc_project_manager.gd`、
+  `gdcc_build_toolbar.gd`、`server_launcher.gd`、`gdcc_syntax_highlighter.gd`、
+  `gdcc_setup_dialog.gd`）不进编译模块、不上面向世界清单，由 `plugin.gd` `preload`
+  直接引用。
+- `buildAddonNative` / `buildAddonAllPlatform` Gradle 任务不变。
+- 分发入口：`./gradlew buildAddonAllPlatform --args=--package --no-daemon --info
+  --console=plain`。独立编译 Windows x86_64、Linux x86_64、Linux AArch64、macOS
+  AArch64 四套 **Release** 库，不覆盖源码目录的手工安装；生成
+  `build/distributions/gdcc_editor_addon.zip`。ZIP 仅包含
+  `src/editor_addon/addons/gdcc/` 的运行时内容，路径前缀固定为 `addons/gdcc/`；保留
+  解释型 `.gd`、插件配置、翻译和图标，排除已编译的 `.gd3`、其 UID、导入缓存、
+  `.godot/` 和源码目录原有的 `bin/`。重新生成的 `bin/` 仅来自本次四平台构建，
+  `gdcc_for_editor.gdextension` 的八个架构限定 debug/release 键均指向对应 Release 库，
+  并维持 `reloadable = false`。不包含 `src/editor_addon` 项目根或其他 addon 的内容。
+- CI 在 Windows x64 和 Linux x64 分别运行 editor-addon 测试；Linux x64 的专用任务
+  在测试通过后执行上述四平台打包并上传 `gdcc-editor-addon` 工件。`release.yml` 使用
+  同一入口，将 `gdcc_editor_addon.zip` 加入工件、完整性检查和 GitHub Release 附件。
+- 测试门控：editor-addon 测试以 `@Tag("editor_addon")` 标记、默认排除；
+  `-PincludeEditorAddonTest=true` 随全量运行，`-PeditorAddonTestOnly=true` 只跑它们
+  （`build.gradle.kts`）。
 
 ---
 
@@ -1851,50 +1107,46 @@ dock 保留 gdcc 诊断通道连接状态、上次诊断及上次成功构建的
 
 ### 4.1 注册/注销时序
 
-注册（插件 `_enter_tree`，同步顺序；LSP 与 gdcc 模块为异步就绪，不阻塞注册）：
+注册（插件 `_enter_tree`，同步顺序；LSP 与 gdcc 模块为异步就绪，不阻塞注册；
+plugin.gd 侧的完整步骤清单见 §3.6）：
 
-1. （plugin.gd）常驻节点就位：`get_tree().root.get_node_or_null("GdccEditorService")`，
-   命中先 `is GdccEditorService` 验明身份，类型不符 `push_error` 并放弃安装
-   （fail-closed、零副作用，**此步先于任何设置改动**）；不存在则创建并挂到根。
- 2. （plugin.gd）暂存并设置 `network/language_server/use_thread = true`（LSP 线程模式
-    硬前提）。**运行期启用的修正（Phase 2 评审实证，两轮）**：`set_setting` 不发出重启
-    监听所需的 `NOTIFICATION_EDITOR_SETTINGS_CHANGED`（§2.6），因此门闩不看"是否在
-    扫描"而看**翻转瞬间端点是否已在听**（≤150ms 非阻塞探测，不发送数据故不抢占
-    `latest_client_id`）：已在听 → 本会话服务端必是主线程轮询，置常驻服务上
-    `lsp_blocking_unsafe = true`（进程内粘性，禁用/恢复同样不会重启服务端故不清除）
-    并 push_warning 提示重启；未在听 → 服务端启动时会读到翻转值（线程模式），置
-    `lsp_thread_primed = true`（粘性，避免禁用/再启用后端口已在听而误闩 unsafe；
-    仅当本次 primed 的安装被回滚、设置已还原时才清除）。该会话内 `_validate` 的
-    内联等待仅在未标记 unsafe 时进行（诊断仍异步流动，见 §4.2 第 1 步）。
-3. （plugin.gd）初始化低功耗 busy 协调器（计数 0，**不触碰** `OS.low_processor_usage_mode`，
-   首个 busy 0→1 时才保存原值并置 `false`；管理器与 launcher 的 busy 上报指向它）。
-   此步必须先于第 6 步的任何 `ensure_server_hook` 调用（§3.5/§3.7）。
-4. `install(...)`（RPC 端点来自**项目级设置** `gdcc/compilation_server/host|port`，缺省
-   127.0.0.1:6099；配置非法时 fail-closed 回退默认值并 push_error，§3.6 第 3 项）：首建时创建服务专用
-   `GdccRpcClient` 子节点（与项目管理客户端队列隔离）；语言实例（首建或复用）
-   `Engine.register_script_language(lang)`，返回值非 `OK` 即按 §3.5 回滚并向上报错
-   （16 语言上限/重名属可预期失败，不得断言了事）；注册 loader/saver 并以探针资源
-   分别验证后置条件；启动 LSP 带退避重连。`install` 返回非 OK 时恢复 `use_thread`
-   原值并报告，后续步骤不再执行。
-5. （plugin.gd）`install` 成功后连接
-   `EditorInterface.get_resource_filesystem().filesystem_changed` → 转发服务对账
-   （先 `is_connected` 防重，仅连接一次；放弃/失败路径不连接，注销时仅在已连接时
-   断开）。
+1. （plugin.gd）常驻节点就位与身份核验（fail-closed、零副作用，**先于任何设置改动**）。
+2. （plugin.gd）暂存并设置 `network/language_server/use_thread = true`（LSP 线程模式
+   硬前提）。**运行期启用的门禁**：`set_setting` 不发出重启监听所需的
+   `NOTIFICATION_EDITOR_SETTINGS_CHANGED`（§2.6），因此门闩不看"是否在扫描"而看
+   **翻转瞬间端点是否已在听**（≤150ms 非阻塞探测，不发送数据故不抢占
+   `latest_client_id`）：已在听 → 本会话服务端必是主线程轮询，置常驻服务上
+   `lsp_blocking_unsafe = true`（进程内粘性，禁用/恢复同样不会重启服务端故不清除）
+   并 push_warning 提示重启；未在听 → 服务端启动时会读到翻转值（线程模式），置
+   `lsp_thread_primed = true`（粘性，避免禁用/再启用后端口已在听而误闩 unsafe；
+   仅当本次 primed 的安装被回滚、设置已还原时才清除）。该会话内 `_validate` 的
+   内联等待仅在未标记 unsafe 时进行（诊断仍异步流动，见 §4.2 第 1 步）。
+3. （plugin.gd）初始化低功耗 busy 协调器（§3.5；必须先于任何 `ensure_server_hook`
+   调用）。
+4. `install(...)`（RPC 端点来自**项目级设置** `gdcc/compilation_server/host|port`，
+   缺省 127.0.0.1:6099；配置非法时 fail-closed 回退默认值并 push_error，§3.6）：
+   首建时创建服务专用 `GdccRpcClient` 子节点（与项目管理客户端队列隔离）；语言实例
+   （首建或复用）`Engine.register_script_language(lang)`，返回值非 `OK` 即按 §3.5
+   回滚并向上报错（16 语言上限/重名属可预期失败，不得断言了事）；注册 loader/saver
+   并以探针资源分别验证后置条件；启动 LSP 带退避重连。`install` 返回非 OK 时恢复
+   `use_thread` 原值并报告，后续步骤不再执行。
+5. （plugin.gd）`install` 成功后连接 `filesystem_changed` 与 `settings_changed`
+   转发（先 `is_connected` 防重，仅连接一次；放弃/失败路径不连接，注销时仅在已连接
+   时断开）。
 6. 经 `ensure_server_hook`（§3.7）确保 RPC 服务可用（未配置启动命令且服务缺席时
    静默降级，后续心跳失败仍会再经钩子重试）；首个 `ping` 成功后创建私有诊断模块，
-   随后初始同步：`DirAccess` 递归遍历项目 `.gd3`（**排除
-   `gdcc/sync/excluded_globs` 命中的路径**，Phase 10 后修复 2）上传 VFS 并做一次
-   `analyze.run` 预热缓存。
+   随后初始同步：`DirAccess` 递归遍历项目 `.gd3`（**排除 `gdcc/sync/excluded_globs`
+   命中的路径**，§7.4）上传 VFS 并做一次 `analyze.run` 预热缓存。
 7. （plugin.gd）仅运行期启用场景：`call_deferred` 触发 `EditorFileSystem.scan()`。
 
 注销（`_exit_tree`）：断开事件连接、释放两个视图、管理器清理占用并排空残余 busy →
 `uninstall()`（停防抖调度与在途分析回调 → 断 LSP → 移除 loader/saver → 注销语言
-（**不释放**实例）→ 删除私有模块（需服务在线）→ UNINSTALLED）→ 恢复
-`use_thread` 原值（脚本 `set_setting` 不会重启引擎 LSP 服务（§2.6）；顺序仍须保持
-——先断开本客户端、注销语言，再把设置翻回，且离开前若服务端尚未开始监听需撤销
-`lsp_thread_primed`（§4.1 第 2 步））→ **最后** `launcher.shutdown_owned()`：对拉起的服务发 `server.shutdown`
-RPC，**收到响应即完成**（优雅收尾由 JVM hook 在后台完成，编辑器不等待）；仅当
-RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
+（**不释放**实例）→ 删除私有模块（需服务在线）→ UNINSTALLED）→ 恢复 `use_thread`
+原值（脚本 `set_setting` 不会重启引擎 LSP 服务（§2.6）；顺序仍须保持——先断开本
+客户端、注销语言，再把设置翻回，且离开前若服务端尚未开始监听需撤销
+`lsp_thread_primed`）→ **最后** `launcher.shutdown_owned()`：对拉起的服务发
+`server.shutdown` RPC，**收到响应即完成**（优雅收尾由 JVM hook 在后台完成，编辑器
+不等待）；仅当 RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
 
 不在 GDExtension 入口初始化阶段注册的原因：gdcc 生成的入口不向 `.gd3` 暴露初始化
 钩子；插件 `_enter_tree` 早于编辑器就绪与用户操作。
@@ -1902,7 +1154,8 @@ RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
 ### 4.2 诊断合并流程（`_validate(script, path, ...)`）
 
 入参 `script` 即编辑缓冲区当前文本（无 0xFFFF 哨兵）。全程单线程（主线程），
-`_in_validate` 守卫防重入；服务 UNINSTALLED 时直接返回 `{"valid": true}`。
+`_in_validate` 守卫防重入；服务 UNINSTALLED 时直接返回
+`{"valid": true, "functions": PackedStringArray()}`。
 
 1. LSP READY：URI 为 `res://` → `file:///` 服务端方言（§2.6）；`didOpen`（首次）或
    `didChange`（全量文本，generation 递增，水位规则见 §3.4）；随后**有界同步等待
@@ -1910,8 +1163,7 @@ RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
    §2.6）；超时则用该 URI 的最近缓存诊断。**READY 但非线程模式**（运行期启用翻转，
    §4.1 第 2 步）：同步仍发送（诊断异步进缓存、下一校验节拍浮现），仅跳过内联
    等待——主线程轮询的服务端会被内联等待饿死。
-2. LSP 诊断映射（0-based → 1-based，行与列均 +1；验收时与同内容 `.gd` 文件逐条对比，
-   §8.3）：
+2. LSP 诊断映射（0-based → 1-based，行与列均 +1）：
    - `severity == 1` → `errors[]`：`{line, column, message, path: <当前 res:// 路径>}`
      （`path` 必填，否则编辑器把错误归入"依赖脚本错误"面板）。
    - `severity == 2` → `warnings[]`：`{start_line, end_line, code: 0,
@@ -1919,20 +1171,25 @@ RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
      `code` 可能是字符串，不作 int 转换）。
    - 其余 severity 丢弃。
    - 映射 error 前过滤已证实的代理类型身份误报：仅当本次 `lsp_safe_text` 通过完整
-     擦除准入，消息中的两端类型恰为当前 `.gd3` 路径与该视图返回的 `class_name`，
-     才丢弃声明初始化、普通赋值、返回值和实参不兼容诊断（支持两端互换）。这是同一
-     源文件在 LSP 中被拆成匿名脚本类与 ClassDB 编译类造成的限制，不按 `.gd3` 子串
-     或类型错误类别整体过滤。未擦除、来源不匹配、其他类/基础类型/容器类型仍照常显示；
-     原始 LSP 缓存不变，gdcc 诊断也不参与过滤。被过滤项不触发第 3 步的级联抑制门禁。
+     擦除准入（§7.2），消息中的两端类型恰为当前 `.gd3` 路径与该视图返回的
+     `class_name`，才丢弃声明初始化、普通赋值、返回值和实参不兼容诊断（支持两端
+     互换）。这是同一源文件在 LSP 中被拆成匿名脚本类与 ClassDB 编译类造成的限制，
+     不按 `.gd3` 子串或类型错误类别整体过滤。未擦除、来源不匹配、其他类/基础类型/
+     容器类型仍照常显示；原始 LSP 缓存不变，gdcc 诊断也不参与过滤。被过滤项不触发
+     第 3 步的级联抑制门禁。
 3. gdcc 通道：**先** `version := notify_source_changed(path, script)`（每次校验都执行，
    包括 LSP 有错误时——LSP 错误只抑制 gdcc 诊断的**显示**，不抑制标脏与缓存失效），
-   再读 `gdcc_diagnostics_for(path, version)`：**Phase 10 后修复 1 起为过期可见**
-   ——缓存中有条目即合并（编辑已升版时其行列指向旧文本，直到新一轮合并替换），
-   按 `severity` 拆入 `errors`/`warnings`（`string_code: <category>`，`message` 前缀
+   再读 `gdcc_diagnostics_for(path, version)`：**过期可见**——缓存中有条目即合并
+   （编辑已升版时其行列指向旧文本，直到新一轮合并替换，§4.4），按 `severity` 拆入
+   `errors`/`warnings`（`string_code: <category>`，`message` 前缀
    `[gdcc <category>]`；`sourcePath`/`range` 为空的条目按文件级诊断处理：行 1 列 1）。
-   若 LSP 有错误，即使缓存新鲜也不叠加（避免级联噪音）。
-4. 返回 `{"valid": errors.is_empty(), "errors": ..., "warnings": ...}`。
-5. LSP 不可用（DEGRADED）：跳过第 1–2 步，仅 gdcc 通道（gdcc 前端本身覆盖 GDScript
+   若 LSP 有错误，即使缓存新鲜也不叠加（避免级联噪音）。缓存仅在诊断模块 READY 时
+   提供——离线降级让 `_validate` 只剩 LSP 通道而不是旧 gdcc 缓存。
+4. `validate_functions=true` 时登记大纲需求并读取大纲缓存填入 `functions`（§4.7；
+   该路径不发送网络请求）。
+5. 返回 `{"valid": errors.is_empty(), "errors": ..., "warnings": ..., "functions":
+   functions}`（`validate_functions=false` 时 `functions` 为空数组）。
+6. LSP 不可用（DEGRADED）：跳过第 1–2 步，仅 gdcc 通道（gdcc 前端本身覆盖 GDScript
    语法解析，降级仍有意义）。
 
 ### 4.3 补全流程（`_complete_code(code, path, owner)`）
@@ -1941,18 +1198,22 @@ RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
 
 1. `idx := code.find(String.chr(0xFFFF))`；`idx < 0` → 返回
    `{"result": ERR_UNAVAILABLE, "force": false, "call_hint": "", "options": []}`。
-2. 由 `idx` 计算 0-based `(line, character)`，剔除哨兵得纯净文本，先同步文档再
-   `request_blocking("textDocument/completion", ...)`，预算 ≤400ms。补全成功后复用同一
-   已同步文档与位置追加 `request_blocking("textDocument/signatureHelp", ...)`，预算
-   ≤200ms；签名查询失败、超时或无结果只产生空 `call_hint`，不丢弃已成功的补全应答。
+2. 由 `idx` 计算 0-based `(line, character)`（码点计数），剔除哨兵得纯净文本，
+   经 `lsp_safe_text` 擦除视图与前向映射（§7.2）后先同步文档再
+   `request_blocking("textDocument/completion", ...)`，预算 ≤400ms。补全成功后复用
+   同一已同步文档与位置追加 `request_blocking("textDocument/signatureHelp", ...)`，
+   预算 ≤200ms；签名查询失败、超时或无结果只产生空 `call_hint`，不丢弃已成功的补全
+   应答。
 3. 结果映射（LSP `CompletionItem` → 引擎 option）：
    - `display := item.label`；
      `insert_text := item.textEdit.newText ?? item.insertText ?? label`。
    - `kind` 映射：Class→0，Method/Function/Constructor→1，Event→2(SIGNAL)，
      Variable/Field→3，Property→4(MEMBER)，Enum→5，Constant/EnumMember/Value→6，
-     File/Folder→8(FILE_PATH)，Snippet→7(NODE_PATH)（**Phase 4 实施期修正**：4.5
-     服务端把节点路径选项发为 Snippet=15，见 `gdscript_text_document.cpp` 的 kind
-     映射；其余→9(PLAIN_TEXT)。（4.5 无 KEYWORD kind。）
+     File/Folder→8(FILE_PATH)，Snippet→7(NODE_PATH)（4.5 服务端把节点路径选项发为
+     Snippet=15，见 `gdscript_text_document.cpp` 的 kind 映射；其余→9(PLAIN_TEXT)。
+     4.5 无 KEYWORD kind。4.5 服务端实际发出的 kind 集合经核实为 Text=1 / Method=2 /
+     Variable=6 / Class=7 / Property=10 / Enum=13 / Snippet=15 / File=17 / Constant=21 /
+     Event=23；Function/Constructor/Field/EnumMember/Value 分支为规格容忍兜底。）
    - `font_color := Color(1, 1, 1)`，`icon := null`，`default_value := null`，
      `location := 1024`（`LOCATION_OTHER`）。
 4. `call_hint` 映射：读取 SignatureHelp 的 `signatures[activeSignature].label`，
@@ -1961,43 +1222,368 @@ RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
    标记并对当前参数做下划线/高亮。无可用签名、无参数或越界且无 vararg 槽时返回
    原 label 或空串，不视为补全失败。
 5. 返回 `{"result": OK, "force": false, "call_hint": call_hint, "options": options}`；
-   任何补全失败返回第 1 步的降级字典。注意空选项列表是合法的成功应答（引擎对无上下文
-   位置如实返回空，见 §7 Phase 4 偏差 1），不得坍缩为降级形状。
+   任何补全失败返回第 1 步的降级字典。**引擎事实**：类体内纯空行不产生任何补全选项
+   （`GDScriptParser.make_completion_context` 仅在光标落在某个 token 上时才赋上下文，
+   纯空行保持 `COMPLETION_NONE`，`complete_code` 直接返回空列表——与 `.gd` 行为逐字
+   一致）；关键字补全需要标识符前缀上下文（`COMPLETION_IDENTIFIER` →
+   `_find_identifiers` 注入关键字表）。空选项列表是合法的成功应答，不得坍缩为降级
+   形状。
 
 ### 4.4 gdcc 诊断调度（全异步）
 
-- **不引入任何主线程阻塞 RPC 通道**（两个评审轮次均判定阻塞 `HTTPClient` 无法在
-  UI 线程保证硬截止）。一律走 `GdccRpcClient` 的异步挂起对象队列，且使用服务
-  **专用**的客户端实例（§3.5）：与 dock 的客户端分属两条 HTTP 连接与超时配置，
-  dock 触发 Compile 期间其 `compile.getTask` 进度轮询不被整模块 `analyze.run`
-  阻塞，诊断分析也不被 dock 操作饿死。
+- **不引入任何主线程阻塞 RPC 通道**（阻塞 `HTTPClient` 无法在 UI 线程保证硬截止）。
+  一律走 `GdccRpcClient` 的异步挂起对象队列，且使用服务**专用**的客户端实例
+  （§3.5）：与项目管理器的客户端分属两条 HTTP 连接与超时配置，Build 期间其
+  `compile.getTask` 进度轮询不被整模块 `analyze.run` 阻塞，诊断分析也不被构建操作
+  饿死。
 - 标脏与防抖：`_validate` 第 3 步标脏；服务在 `process_frame` 累积计时，自上次变更
   满 800ms 且无在途分析时发射：按序执行 `put_file`（VFS 映射合同见 §3.5）+
   `analyze.run(analyze_include_lowering)`。
-- **单飞以服务端完成为准**：在途期间不发射新请求（新变更只更新 `_dirty`）；
-  响应到达后按内容版本号比对——落后则丢弃并立即安排新一轮，匹配则回填
-  `_gdcc_diagnostics`。**读取侧自 Phase 10 后修复 1 起过期可见**（§3.5/§4.2）：
-  合并写回仍是唯一清除/替换途径，防抖窗口内旧诊断保持显示。
-- ~~**无主动 revalidation 通道**~~（§2.5）：**Phase 5 起**经 `validate_script`
-  注册信号主动触发重校验（§2.5 末条；触发条件与排队规则见 §7 Phase 5 第 1 项）。
-  在此之前新诊断随编辑器下一次校验节拍（再编辑的 idle 超时、页签切换、外部
-  重载）自然浮现。风险记录在 §9 R17/R24。
-- 与编译任务的关系：`analyze.run` 在服务端与 compile 串行；dock 触发 Compile 期间
-  诊断只是变旧，不会卡死编辑器（异步）。
-- 服务器离线：静默降级（沿用现有"只记录日志"约定），`_validate` 仅剩 LSP 通道。
+- **单飞以服务端完成为准**：在途期间不发射新请求（新变更只更新 registry 的脏标记）。
+  flight
+  记录整模块版本戳（版本和 + 路径数），完成时不匹配即整轮丢弃并立即重飞——逐文件
+  版本门禁不足：flight 中途任一源变化（含快照外文件）时，未变文件仍会并入按旧模块
+  状态算出的诊断。
+- **合并写回**：响应到达后按版本戳比对，匹配则回填缓存——合并写回
+  是唯一清除/替换途径。`analyze.run` 返回 RPC 成功但 `outcome != COMPLETED`（如元数据
+  加载失败）不当干净轮合并：仅 COMPLETED 合并并清脏；失败轮按次数退避，连续 5 次后
+  挂起调度直至下一次真实变更（push_warning 告知）；置"整模块重分析"标记时同步解除
+  挂起并清零失败计数。
+- **读取侧过期可见**：缓存条目在新鲜轮合并前持续返回（行列指向编辑前文本，属刻意
+  取舍，与 Godot 自身"新结果到达才替换"的行为一致）。根因：编辑器每次校验节拍用
+  `_validate` 的返回值**整体替换**该页签的错误显示
+  （`ScriptTextEditor._validate_script`：`errors.clear()` 后按新结果重建），若按内容
+  版本门控读取，`notify_source_changed` 先升版会使同一次 `_validate` 读到空缓存，
+  防抖+分析窗口内既有错误被整体清空。`is_version_current` 保持严格新鲜度语义，供
+  主动重校验门（§4.5）与测试观测。
+- **删除与墓碑**：删除一律落墓碑（`_deleted_paths`），`notify_source_changed` 对墓碑
+  路径且磁盘不存在时返回 -1，墓碑在文件重新出现时解除（解除即恢复 `_disk_known`）；
+  flight 上传前再查一次墓碑关闭"删除与对账之间"的窗口；flight 的墓碑守卫只清脏标记
+  与缓存、保留 `_sources` 并触发对账。删除判定只认 `_disk_known`（"已镜像"不是"曾在
+  盘"的证据：已 flight 上传的纯缓冲区文件从未落盘，不得误判为删除）。对账中出现删除
+  即置"整模块重分析"——幸存文件的诊断（如消失的被继承 `class_name`）需要刷新。
+  `vfs.deletePath` 仅 ok/-32005 视为删除成功，其余失败走 outage——恢复时
+  `module.create` 命中 -32001 重建路径自然清空僵尸。
+- **outage/重定向/卸载**一律清空诊断缓存（旧结果可能在恢复时已过时），恢复后由重
+  镜像+重分析重建；outage 保留模块创建标记（仅重定向/实际删除才清除），瞬时故障后
+  卸载不会跳过模块删除造成孤儿；outage 恢复时把"不在盘、非已知、非墓碑、未镜像、
+  未脏"的 `_sources` 条目补标脏，由下一 flight 重传（纯缓冲区文件不丢失）。
+- **setup 状态机**（lifecycle 子节点）：hook-first——模块未就绪时每个断供窗口先走
+  `ensure_server_hook`（launcher 自带 ≤200ms TCP 快探，实证 `HTTPRequest` 对拒连端口
+  会挂满 30s 请求超时）再 ping；hook 在途期间不发 ping。hook 全局单飞
+  （`_hook_sent == _hook_done` 才允许新 hook），30s hook 超时按失败语义放弃窗口并
+  合成缺失的完成计数；teardown（outage/重定向/卸载）只清在途标记，迟到应答由
+  session 守卫丢弃。setup ping/create/残留删除共用失败计数，达 5 次上限即结论化
+  释放 busy（计数清零只在 hook 失败/进入就绪/通道重置；hook 成功不清零也不强制
+  未结论化——"TCP 可连但 RPC 永失败"循环必须能触到上限）。同窗口第二次 -32001 改走
+  共享退避上限（矛盾服务器可致"删除成功→立即重建"紧密循环）。hook 成功时置回未
+  结论化——launcher 的 busy 与服务的 busy 在回调内重叠交接，ping→create→首轮对账
+  全程有帧；无钩子时 outage 直接结论化、静默降级。hook 失败即重置"已尝试"标记，
+  重试周期始终先走 launcher 快探。
+- **busy 交接边界**：服务缺席期间两次快速探测之间的退避不占 busy（完全空闲的编辑器
+  里到期的重试在下一帧用户活动时执行），符合静默降级；"杀进程后无任何输入也能自动
+  拉起"不作承诺——心跳检测本身依赖帧。心跳在纯空闲时暂停：killed 服务的发现延迟到
+  下一次编辑器活动；期间 `_validate` 可能短暂提供 kill 前的缓存（与 §10 R17 的节拍
+  级延迟同类）。不以心跳新鲜度门控缓存读取——健康服务下空闲数秒就隐藏既有诊断更差。
+- **主动重校验**：合并完成记录"哪些 (path, version) 首次变为缓存可读"，由 §4.5 通道
+  触发当前页签重校验；在此之前新诊断随编辑器下一次校验节拍（再编辑的 idle 超时、
+  页签切换、外部重载）自然浮现。
+- 与编译任务的关系：`analyze.run` 在服务端与 compile 串行；Build 期间诊断只是变旧，
+  不会卡死编辑器（异步）。
+- 服务器离线：静默降级（只记录日志），`_validate` 仅剩 LSP 通道。
+
+### 4.5 主动重校验通道
+
+背景：异步分析完成后没有任何公开 API 让编辑器重跑 `_validate`（§2.5），且"打字→
+停顿→再打字"节奏下校验节拍与可读版本可能永远错开。本通道经 `CodeTextEditor` 的注册
+信号 `validate_script` 主动触发（接线事实与"编译代码泵内直发外来信号不送达"的缺陷
+实证见 §2.5——中继是必要形态，不是风格选择）：
+
+1. scheduler 合并分析结果时记录本轮"哪些 (path, version) 首次变为缓存可读"（写入前
+   缓存未服务该版本即计入——诊断内容不变但版本前进也必须计入，此前的校验可能因版本
+   不匹配而显示空结果）。
+2. service 帧泵 `_pump_revalidation` 做**初筛**：命中路径是**当前页签** + registry
+   版本一致 + **缓冲区文本与分析文本逐字一致**（registry 版本只在校验时前进，用户
+   键入后合并前会有滞后，文本比对兜住这一拍）+ 补全弹窗未开（弹窗判定用
+   `CodeEdit.get_code_completion_options()` 非空，与 4.5 的绘制条件
+   `code_completion_active && !options.is_empty()` 逐字等价；弹窗期间暂缓入队、关闭后
+   次帧补发）。门禁通过后发射**自有**信号 `revalidation_requested(path, version)`；
+   初筛与发射在同一帧内原子完成。
+3. 解释型 `plugin.gd` 收信号后先 `call_deferred` 跳出泵栈，再经
+   `should_still_revalidate(path, version)` **复核**全部门禁（一帧间用户可能又键入或
+   打开弹窗；outage/retarget 后的缓存新鲜度/就绪度也在复核内；弹窗刚开则重新入队而非
+   丢弃），通过后对当前页签的 `CodeTextEditor` 发射 `validate_script`。
+4. 无反馈循环：相同文本的重校验不会重新标脏。
+5. gdcc 缓存新鲜门禁对"纯 LSP 重同步"场景保持不变：gdcc 通道离线时，擦除决策翻转后
+   的显示刷新依赖编辑器自身节拍（诊断数据面已在重同步后更新）。
+
+观测锚定：合并检出后有界帧数内语言 `_validate` 调用计数前进（引擎测试
+`diag_revalidate`）。idle 时序事实：clean→error 的 idle 间隔 1.5s、**晚于** 0.8s
+防抖（`set_error_count` 切到 0.5s 只在错误已显示之后）；已有错误时 idle 为 0.5s、
+严格早于合并周期（§2.5）。
+
+### 4.6 符号查找（`_lookup_code`）
+
+- **版本门槛**：Godot >= 4.6.0 转发 `hover`/`definition`；更早版本返回
+  `{"result": ERR_UNAVAILABLE, "type": 0}` 且不同步文档、不发送查询（`request_lookup`
+  原始传输入口同样拒绝旧版本，防止绕过门槛）。原因：Godot
+  [PR #109345](https://github.com/godotengine/godot/pull/109345)（4.6）将
+  `GDScriptCache.get_shallow_script` 的 `set_path(path, true)` 改为
+  `set_path_cache(path)`，浅层脚本不再替换全局 `ResourceCache` 中的原脚本；4.5.1 的
+  浅层 GDScript 会接管 `.gd3` 资源路径。4.8 开发版
+  [PR #120487](https://github.com/godotengine/godot/pull/120487) 进一步把 lookup 结果
+  改为路径表示，并移除结果构造中的浅层脚本获取（保留 `ScriptLanguageExtension` 适配）。
+  该门槛独立于脚本创建对话框的 `> 4.6.0` 限制（§2.1）。客户端继续用
+  `languageId: "gdscript"` 打开 `.gd3`；这不是正式的自定义语言支持，也不是非
+  GDScript 文档过滤带来的修复。
+- **形态**：无状态子节点 `GdccLookupService`（全量同步 + hover/definition 各 200ms
+  有界阻塞；hover 先答——悬浮是更高频路径；definition 腿失败降级为 hover-only，
+  hover 腿失败整体降级）。服务根 `request_lookup` 门面做前置守卫（ACTIVE + LSP
+  READY + 线程模式，与补全同款）。哨兵定位（4.5 全部编辑器调用路径均经
+  `get_text_with_cursor_char`/`get_text_for_symbol_lookup` 携带 0xFFFF 哨兵；无哨兵时
+  整词回退、跳过注释尾）、0 基码点行列计算、擦除视图前向映射与 LSP → 引擎
+  LookupResult 字典映射都集中在 `GdccLookupService.lookup_code`；语言入口仅做服务
+  可用性检查和委托。
+- **OK 判定收紧**：description 为空**且** definition 不可导航（目标不出项目、无有效
+  起始行、或跨文件 Script 加载失败）时一律降级——不允许"无提示也不可跳转"的假成功。
+  返回范围的列不做擦除反向映射（LookupResult 契约只消费行号——`_lookup_symbol`/
+  `goto_line_centered` 以 `location - 1` 跳行，无任何列消费路径；擦除两种形态均不
+  改变行数）。`location` 为 1 基；跨文件目标必须附 `script` 资源，否则引擎会在当前
+  页签内跳行。
+- **符号分类**（4.5 引擎事实：适配器强制 `result` 与 `type` 两键，缺一即
+  ERR_UNAVAILABLE；`LookupResultType` 枚举 SCRIPT_LOCATION=0…LOCAL_VARIABLE=10）：
+  hover/definition 本身不提供结构化符号 kind，统一标 LOCAL_VARIABLE 会把类/函数等错误
+  显示为局部变量。故 hover/definition 后最多追加一次有界符号检查：项目定义用
+  `documentSymbol` 的 selectionRange 精确分类，原生符号用 `nativeSymbol` 分类；类、
+  方法、属性、常量、枚举与信号按真实类型返回。分类失败保留有效导航
+  （SCRIPT_LOCATION），不误标局部变量；无法确认的脚本符号不伪造分类。单次 lookup
+  最多三个各 200ms 的 LSP 请求。LookupResult 无构造函数、运算符与主题项种类，这些
+  符号引用所属类型的帮助，而非错误的方法/属性分区。信号大纲缺失参数类型时不编造
+  类型字段。原生属性访问器被上游 LSP 文档表省略时，仅对当前脚本根函数的未限定方法
+  调用做 ClassDB 回退（`_native_method_fallback`），不猜测任意接收者类型；原生符号
+  检查失败时可从带原生所有者的 hover 声明恢复帮助引用。
+- **文档**：局部变量/常量通过 `GdccMarkdownToBbcode` 转换 hover Markdown；脚本成员从
+  大纲读取原始 BBCode，发布到 ScriptExtension 文档与编辑器帮助缓存。CLASS_* tooltip
+  从帮助缓存读取文档，忽略 LookupResult.description；LOCAL_* 才消费该字段。文档名
+  优先使用目标脚本原始源码中的 `class_name`，内部类使用 `Outer.Inner`；无声明类名时
+  才回退为带引号的项目相对路径。命名脚本文档以源文档身份覆盖同名编译扩展的帮助条目
+  （成员显示类名并保留源码导航）；lookup 时重新发布命名条目，避免扩展文档重新生成后
+  误走原生帮助导航；旧命名条目的清理按已发布快照执行。类名读取不依赖已擦除
+  `class_name` 的 LSP 同步视图：同文件使用请求携带的原始缓冲区；跨文件优先使用源码
+  注册表的存活文本，再回退为目标资源源码（避免未保存的 `class_name` 改名仍显示旧
+  名字）；不采用墓碑条目。未命名脚本的相同文档不重复更新帮助缓存；命名脚本每次
+  lookup 都恢复源文档帮助条目。`nativeSymbol` 为 Godot 内置 LSP 扩展方法，其响应保留
+  原始 BBCode；原生符号直接引用引擎帮助。`_get_documentation` 是按需 LSP 大纲缓存，
+  不在资源加载或文档虚函数内发网络请求。
+- **跨文件边界**：跨文件解析**只**经 path-based extends 工作——4.5 服务器的全局类名
+  解析读引擎 ScriptServer 表，`.gd3` 类不入表（该注册属暂缓的 Stage C，§9）；extends
+  路径经解析器依赖加载解析，由 workspace 镜像（§7.3）的 didOpen 供数。
+- **资源身份**：lookup 不得改变当前页签脚本的资源身份与保存路径（`lookup_suspended`
+  回归覆盖启用与禁用分支，含真实编辑器符号信号后原资源身份、缓存路径与保存往返）。
+
+### 4.7 成员大纲（`documentSymbol`）
+
+- 编辑器左侧成员大纲来自 `validate(..., r_functions)`（§2.5）。`_validate` 在
+  `validate_functions=true` 时仅通过 `GdccEditorService.outline_functions(path,
+  source)` 读取缓存并登记需求，**不在该路径发送网络请求**。
+- `GdccOutlineService` 子节点在服务帧泵中同步所需 `lsp_safe_text` 擦除视图并异步请求
+  `textDocument/documentSymbol`，按 §2.5 的原生规则扁平化为
+  `functions: PackedStringArray`：使用声明 `range.start.line + 1`；擦除保持行数不变；
+  顶层不加脚本类名前缀，内部类递归限定；仅递归类节点，不进入方法、变量或属性子树
+  （不会把局部 lambda 或 getter/setter 混入大纲）。
+- 请求键包含路径、源码内容版本、连接 READY 代次及擦除视图；同键只发一次，空列表也
+  作为已完成结果缓存。新源码/擦除决策使旧请求失效；断线清除可见缓存，重连重新请求；
+  删除、墓碑、关闭的排除路径及卸载取消并清理相关请求。模块诊断服务不可用不影响大纲。
+  响应消费前重新检查版本和视图；同文本的诊断/镜像同步可能推进 LSP 文档版本，不因此
+  丢弃仍对应相同视图的结果。等待更新时保留上次成功的大纲；失败/超时不重复请求同键，
+  内容、擦除视图或连接代次改变后才重试。
+- 传输纪律：`GdccLspClient.request_async/take_response/cancel_request` 使用已有帧驱动
+  收包；读取挂起状态不轮询 socket，也不阻塞。大纲请求超时 2s，仅移除该 id，迟到响应
+  忽略，不断开连接。每帧最多发起两个查询；只有在途/未处理请求及待刷新工作持有忙
+  标记。异步查询无 `use_thread` 前提，非线程服务端随正常帧推进即可回答；诊断路径的
+  150ms 有界等待及非线程降级逻辑保持独立，不为大纲额外等待。
+- 新结果经服务自有信号 `outline_revalidation_requested` → 解释型插件延迟发射
+  `validate_script` 刷新实际大纲（与 §4.5 同一中继形态）；发送前和延迟回调均检查
+  当前页签、实际缓冲区、缓存新鲜度，弹出补全时延后。该门禁独立于 gdcc 诊断缓存的
+  READY/版本门禁，纯 LSP 会话也会主动刷新。重验证只读已完成缓存，不重新发起同键
+  请求。离线、禁用或不支持的路径返回空列表；关闭 `validate_functions` 不登记新需求；
+  错误仍令 `valid=false`，不为强制刷新大纲而隐藏诊断。`safe_lines` 仍不提供。
+- 本查询**不**沿用 lookup 的 4.6 门槛：4.5.1 的 `documentSymbol`
+  （[`gdscript_text_document.cpp:L170-L180`](https://github.com/godotengine/godot/blob/4.5.1-stable/modules/gdscript/language_server/gdscript_text_document.cpp#L170-L180)）
+  仅从工作区现有解析缓存读取并序列化符号，不经过 hover/definition 的浅层脚本加载；
+  同步引起的分析与既有诊断通道相同。
+
+### 4.8 自动缩进与脚本模板
+
+- `_auto_indent_code`：**逐字镜像** 4.5 GDScript 参考算法
+  （`GDScriptLanguage::auto_indent_code`，gdscript_editor.cpp）：嵌套完全由前行非空
+  非注释行的前导空白宽度栈推导（不看冒号/括号）；`from_line` 起各行重写为
+  缩进单元×栈深 + 去空白内容；空行与 `#` 注释行逐字节透传且不入栈；退阶落在两个栈
+  宽度之间时按引擎"not right but gets the job done"怪癖压为新一级；`from_line >
+  to_line` 病态区间触发引擎提前 break 怪癖（输出恒等）。缩进单元经服务门面
+  `editor_indent_unit()` 镜像 `GDScriptLanguage::_get_indentation`（`indent/type` 选
+  Spaces 时按 `indent/size` 重复空格，否则单个制表符；未安装时恒为制表符——引擎非
+  编辑器分支）。契约级约束：适配器把虚函数返回**无条件**写回缓冲区，实现缺失/失败
+  会清空用户代码，故实现必须是全函数。
+- `_make_template(template, class_name, base_class_name)`：复用语言工厂返回已关联语言
+  的有效脚本；空模板生成 `class_name <类名>\nextends <基类>\n`，类名由无扩展名的文件名
+  转 PascalCase 并规范为合法标识符（镜像 Godot 原生 identifier sanitizer：
+  非标识起始字符补 `_`，非法字符逐字替换为 `_`）。非空模板替换 `_BASE_`、`_CLASS_`、
+  `_CLASS_SNAKE_CASE_`、`_TS_`，类名占位符按 Godot 规则转换，缩进使用编辑器设置，
+  不额外插入 `class_name`。原生创建对话框即使关闭模板也调用 `_make_template`，因此
+  不能返回 null，否则引擎在设置脚本路径时空指针崩溃。`_get_built_in_templates` 返回
+  空列表，`_is_using_templates` 为 false。"创建脚本"对话框的 GD3 项仅在 Godot >
+  4.6.0 时可选（§2.1）；旧版本 `.gd3` 新建入口仍为 dock 按钮或在文件面板外创建。
+
+### 4.9 编译工作流与 Build 部署
+
+**形态**：dock/标题栏的 Build 从 `module.copy` 复制私有诊断模块得到一致快照开始，
+编译副本，部署动态库到项目 `bin/` 并生成/更新 `bin/gdcc.gdextension`，经引擎扫描
+持久化并加载/重载。方案取舍（调研结论）：第二模块持续同步 = 双份流量 + 双套生命
+周期；直编诊断模块 = 编译持门冻结诊断（≤120s）且打破所有权隔离；**服务端模块复制
++ 编译副本**零额外同步流量、诊断不冻结、所有权隔离不破、编译输入为显式一致快照——
+采纳。服务端可行性：`ModuleState` 无分析缓存（analyze/compile 每次自冻结源码快照
+重建），模块 = VFS 树 + CompileOptions + 顶层类名映射 + 运行态；VFS 目录节点可变、
+叶子节点不可变（内存 String），复制 = 新根 + 递归新目录节点 + 共享叶子，纯内存操作。
+
+**服务端 `module.copy`**（合同见 `json_rpc_service_implementation.md` 与
+`rpc_api_implementation.md`）：`API.copyModule(sourceModuleId, newModuleId,
+newModuleName?)` 持有**源模块门**完成整份快照（VFS + options + 类名映射一次性一致；
+经 `runExclusive` 排在在途操作之后——禁止多次 RPC 读拼快照的混合时间态）；复制 VFS
+（新目录节点、共享不可变叶子并保留 displayPath/absolutePath/updatedAt）、
+CompileOptions、顶层类名映射、moduleName；**不复制运行态**（lastCompileResult = null、
+输出发布清零、任务槽空闲）；`freezeCompileRequest` 按 moduleId 派生逻辑路径，副本是
+全新 `ModuleState`。错误：目标已存在 -32001（先快速失败再等待源门）、源缺失 -32000、
+源忙按既有门语义等待（不新增忙失败）。可选 `newModuleName` 只覆盖副本的
+`moduleName`，诊断模块仍保持 PID 作用域隔离；旧调用缺省时仍继承源名称；服务端忽略
+覆盖字段、回显名称不符时中止并提示升级。
+
+**Build 流程**（管理器执行）：
+
+1. 校验端点字段与服务 `diag_channel_status()` 的有效端点一致（防止对错误服务器按 id
+   复制/删除）→ 从服务取诊断模块 id 并就绪校验。
+2. 经管理器自有 RPC 客户端（与诊断流量分队列）`module.copy(诊断id, 副本id)` →
+   `options.set` 重写 `projectPath`（`res://.godot/gdcc/<副本id>/<端点hash>`，与诊断
+   模块的宿主目录隔离）→ `compile.start` → 轮询。
+3. 再次编译命中 -32001 → 仅当服务端 owner token 属于本管理器且本地记录证明副本由本
+   管理器创建时，删除旧副本后重新复制（永远编译最新快照）；-32002（旧副本编译仍在
+   进行，如上次轮询超时）→ 取消本管理器发起的旧任务并等待终态后重试删除一次。
+4. 旧服务端无 `module.copy`（-32601）时报错提示升级服务端，不回退有损的手动上传路径。
+
+**身份与目录**：
+
+- 按钮每次从 `application/config/name` 读取并 trim 项目名称，空白时提示设置名称而不
+  启动构建；即使在诊断 setup 后修改项目名，新构建仍使用当前名称。
+- 编译副本 id 固定为 `gdcc_editor_compile_<安全化项目名前32字符>_<hash>`。安全化使用
+  Godot `String.validate_filename()`，再将 U+0000–U+001F 和 U+007F 控制字符替换为
+  `_`（引擎的 filename 校验本身不处理这些字符）；hash 为
+  `ProjectSettings.globalize_path("res://") + "\n" + trim 后项目名` 的 SHA-256 前 16
+  个十六进制字符，区分同名不同路径、非法字符替换碰撞及长名称截断碰撞。不含 PID，
+  相同项目路径和名称在重启编辑器后仍复用 `.godot/gdcc/<副本id>` 身份目录和后端产物名。
+  项目改名或移动路径会产生新身份；不自动删除旧 PID 目录或其他身份的历史产物。
+- 实际构建路径为 `.godot/gdcc/<副本id>/<端点hash>`，端点 hash 为 `host + "\n" + port`
+  的 SHA-256 前 16 字符，不含 PID 或任务 id。相同服务端点跨会话复用子目录；切换端点
+  或其他编辑器使用不同服务器时分开生成 C、对象和原始库，不自动删除旧端点目录。原因：
+  占用模块仅在单个服务内互斥，后端构建锁也仅限同一 JVM，且生成 C 发生在原生编译锁
+  之前；上一次轮询超时的旧服务可能仍在写入。
+- 同一服务上同一项目身份只允许一个项目管理器拥有构建模块：先用既有 `module.create`
+  原子创建 `<副本id>_owner`，其 `moduleName` 为每个项目管理器随机生成的 token，该
+  占用模块不编译、无磁盘产物。重复构建先核对服务端 token，再替换自己已创建的快照；
+  其他 token、无占用但已存在的未知副本均拒绝接管，不删除/取消他人的模块或任务。
+  正常空闲卸载核对 token 后先删副本，确认成功/不存在后再删占用；服务器重启后本地
+  记录不能证明所有权。异常退出、忙副本、网络清理失败或在途请求卸载保留占用，提示
+  关闭占用编辑器或重启 gdcc 服务恢复。这替代旧的多编辑器独立构建目录约定；诊断/
+  补全仍为每个编辑器独立通道，不修改 API/RPC 协议。副本按端点逐条记录（端点可在两次
+  编译间重定向）；插件空闲卸载时对每条记录用**阻塞 HTTPClient**（绕过已离树的帧泵
+  客户端）核对服务器上的所有权后做有界删除。
+- 已打开的被排除插件脚本仍会临时进入诊断快照（§7.4）；若成功结果的 `sourcePaths`
+  包含 `res://addons/gdcc/`，拒绝部署并提示关闭这些页签或恢复同步排除规则，避免
+  项目库重复注册驻留编辑器扩展的类。诊断本身仍允许检查这些打开的脚本。
+
+**部署与启用**：
+
+- C 和内部编译产物留在独立 `.godot/gdcc/<副本id>/<端点hash>`。只从**当前终态任务的**
+  `CompileResult.artifacts` 选择目标平台对应的唯一动态库，不查询后续 lastResult，
+  不扫描旧构建目录猜产物；缺库、多个库、库在编辑器机器上不可访问时部署失败。
+  RPC 服务必须能提供编辑器可读的本地/共享文件路径，尚无跨机器二进制下载协议。
+- 库部署到 `res://bin/[lib]<安全化项目名>_<平台>_<debug|release>_<架构>-<hash>.<后缀>`，
+  hash 是库内容 SHA-256 的前 16 个十六进制字符。不同内容发布到新路径，避免 macOS
+  dyld 的同路径映像缓存，以及覆盖被编辑器/游戏进程映射的库；相同内容复用已校验的
+  路径，不重复换库（与后端 hot_reload 文档的换库合同一致）。平台和架构来自结果冻结
+  的 CompileOptions，而非当前 OS 猜测；Godot 标签转换为 `AARCH64 → arm64`、
+  `RISCV64 → rv64`。只有动态库进入 `bin`，生成 C、对象文件及辅助调试文件保留在内部
+  构建目录。
+- 描述文件固定为 `res://bin/gdcc.gdextension`，避免项目改名留下多个启用同组类的
+  描述文件。`entry_symbol = "gdextension_entry"`、`compatibility_minimum = "4.5"`、
+  `reloadable = true`；`gdcc_managed = true` 标记插件管理的文件，拒绝覆盖未标记或
+  无法解析的已有文件。用 ConfigFile 正确转义路径并保留其他目标条目。
+  `[libraries]` 只生成 `<platform>.<architecture>`（例如 `windows.x86_64`），不使用
+  debug/release 标签或模式别名；同一目标的后续构建覆盖该条目，因此 Debug 编辑器也
+  加载本次选择的 Release 库。库文件名仍保留优化级别，描述文件键与编译优化选项分离。
+  已托管描述文件中的旧 `<platform>.<debug|release>.<architecture>` 条目合并为新键；
+  其他目标优先保留已有新键，没有新键时优先选择当前编辑器原来匹配的模式，缺少该模式
+  则保留已有库路径。当前构建目标始终改指本次产物，删除所有被迁移的模式条目，避免
+  Godot 的更具体标签匹配盖过新键。旧 `gdcc_library_aliases` 校验类型后移除，不再生成。
+  `gdcc_libraries` 继续以 PackedStringArray 记录插件拥有的库文件；该字段及存在的旧
+  别名字段若类型非法，在文件发布前拒绝。重载比较迁移前实际匹配的旧模式路径或新键
+  路径与本次路径，不能因旧 Debug 路径保留而跳过 Release 重载。此合同仅作用于 addon
+  的项目 Build；CLI 和 `gdcc_for_editor` 安装器的独立元数据生成合同不变。
+- 等待现有编辑器扫描结束，再暂存库并通过 rename 发布到内容哈希路径，不直接截断
+  可能被映射的库文件；描述文件使用 ConfigFile.save，不使用 Windows 会先删除旧目标的
+  rename。成功启用后仅清理 `res://bin` 直接目录中、不再被任何目标条目引用的插件库，
+  不通过目录穿越路径删除项目文件；删除被游戏进程锁定的旧库失败只记日志，留待后续
+  构建重试。所有文件操作检查错误，失败不报告启用成功。编译失败/取消不部署；无效
+  结果或缺产物不改动上次安装。文件发布不是跨两个文件的事务；发布或引擎重载失败会
+  明确记日志，不能把"编译 SUCCESS"当作"已启用"。
+- 编译协程结束后延迟发起 `EditorFileSystem.scan()`，由 `filesystem_changed` 回调确认
+  主线程扫描动作已完成，让 Godot `ensure_extensions_loaded()` 发现描述文件、加载并
+  写入 `.godot/extension_list.cfg`。**不能先手动 load 再 scan**：manager 已有此扩展时
+  扫描可能看不到成员变化，从而不写加载清单，下一次运行又失效。插件不直接改写此引擎
+  维护文件。`is_scanning() == false` 不足以确认扫描完成：Godot worker 会在主线程
+  join 和扩展对账前清除此标志；定时器重试被在途 worker 拒绝的 scan，只在完成信号后
+  检查描述文件已被资源树识别。首次扩展成员变化还会触发引擎全脚本软重载，取消解释型
+  脚本的悬挂协程，因此构建收尾不能 await 此扫描；按钮在回调结束/超时前保持禁用。
+- 首次扫描后检查 manager 已加载；重建时调用 `reload_extension` 并检查 LoadStatus。
+  引擎加载/重载失败或扫描超时提示检查引擎错误、重启编辑器；非本机目标只报告已安装，
+  不把它当成本机已启用。Godot 单扩展 reload 的 `extension_loaded` 信号由既有类名
+  擦除服务处理（§7.2）；无需伪造 batch `extensions_reloaded` 信号。项目库的
+  reloadable 合同不改变 `gdcc_for_editor` 必须 `reloadable = false` 的 ScriptServer
+  安全规则（§6）。
+- 测试驱动细节：观察副本注册**不能用 `module.get`/`read_file`**——它们走模块门，副本
+  编译期间会阻塞；用 `module.list` 观察注册，内容校验移到编译结束后。引擎测试驱动在
+  真实构建模式将自身脚本资源置为无路径，避免被 Godot 按资源路径收集的全脚本软重载
+  取消；被测插件与 dock 保留正常资源路径，仍经过真实引擎扫描/重载。
+
+**引擎实现依据（Godot 4.5）**：
+
+- `core/extension/gdextension_library_loader.cpp`：配置解析、feature tags 最具体匹配、
+  相对库路径与修改时间检测。
+- `core/extension/gdextension_manager.cpp`：`ensure_extensions_loaded` 的清单更新条件、
+  `reload_extension` 状态与单扩展信号。
+- `editor/file_system/editor_file_system.cpp`：`scan` / `_scan_extensions`，扫描完成信号
+  在扩展成员对账之后；scan 本身不等于二进制重载。
+- [Godot 4.5.1 Windows 库加载](https://github.com/godotengine/godot/blob/4.5.1-stable/platform/windows/os_windows.cpp)：
+  编辑器通过 `~<库名>` 临时副本加载 DLL；
+  [macOS](https://github.com/godotengine/godot/blob/4.5.1-stable/platform/macos/os_macos.mm) 和
+  [Unix](https://github.com/godotengine/godot/blob/4.5.1-stable/drivers/unix/os_unix.cpp)
+  直接 `dlopen` 原库，因此固定内部构建身份不等于取消 `bin` 的内容哈希路径。
+  Godot 不扫描或加载 `.godot/gdcc` 中的库，仅发布到 `bin` 后经引擎启用。
+
+**非目标**：不引入第二个持续同步模块；编译仍为显式手动动作（不自动触发）。
 
 ---
 
-## 5. gdcc 自举约束与 Phase 0 探针
+## 5. gdcc 自举约束
 
-新 `.gd3` 文件遵守 `gdcc_rpc_client.gd3` 已钉死的全部约束：禁止 `await`/协程、
+编译型 `.gd3` 文件遵守 `gdcc_rpc_client.gd3` 已钉死的全部约束：禁止 `await`/协程、
 禁止 lambda 与 `Callable.bind`、引擎对象局部变量显式标注类型、`JSON.parse_string`
 结果显式守卫、公开 API 不返回协程（异步 RPC 沿用 `PendingRequest` 挂起对象；
 LSP 的同步等待是紧凑 `poll` 循环，不是协程）。
 
-安装服务为经原生验收覆盖的例外：`gdcc_install_service.gd3` 可使用信号、lambda 与 `await`；
-公开异步方法返回 `Variant`，解释型向导通过 `await_result` 区分同步结果与带 `completed` 信号的
-挂起状态。该例外不放开语言服务、RPC 客户端的同步边界，也不扩大 HRX 的多线程支持面。
+安装服务为经原生验收覆盖的例外：`gdcc_install_service.gd3` 可使用信号、lambda 与
+`await`；公开异步方法返回 `Variant`，解释型向导通过 `await_result` 区分同步结果与带
+`completed` 信号的挂起状态（§3.10）。该例外不放开语言服务、RPC 客户端的同步边界，
+也不扩大 HRX 的多线程支持面。
 
 拆分重构期间新增的实证边界（分析门禁 + 原生编译双重验证）：
 
@@ -2006,59 +1592,45 @@ LSP 的同步等待是紧凑 `poll` 循环，不是协程）。
   `new()` + `setup(...)` 方法替代。
 - **方法引用 Callable 不保留接收者（与官方语义一致）**：`obj.method` 前端零诊断、
   同作用域调用正常，跨作用域（接收者仅靠 Callable）调用报 `null::method`。对照实证
-  （4.5.1 官方解释器隔离探针，见 `tmp/callable_retention_probe`；注意同一持有者里的
-  lambda 会保活共享 token，探针必须隔离）：官方的标准 Callable（糖式**和**显式构造
+  （4.5.1 官方解释器隔离探针）：官方的标准 Callable（糖式**和**显式构造
   `Callable(obj, method)`）同样只存 `(ObjectID, StringName)`、**不保活任何接收者**
   （`callable.cpp` 构造函数实证），报错措辞与我们完全一致；唯一保活的是 lambda
   捕获（`GDScriptLambdaSelfCallable` 持 `Ref<RefCounted>`），而 lambda 恰在 .gd3
-  禁用清单内。故糖式路径我们与官方**逐行为对齐**，非缺陷。
-- **显式构造已由 PR #83 修复**：`Callable(obj, &"method")` 对自定义类接收者曾经在前端
-  放行、C 后端报 `ExtensionBuiltinClass` 无此构造；PR #83（固定调用参数的对象向上
-  转换物化）解除此拒绝，且明确**不保留**接收者（与官方语义一致）。最小复现/锚定：
+  禁用清单内。故糖式路径我们与官方**逐行为对齐**，非缺陷。显式构造
+  `Callable(obj, &"method")` 对自定义类接收者在前端放行、C 后端曾经报
+  `ExtensionBuiltinClass` 无此构造；该拒绝已解除（固定调用参数的对象向上转换物化），
+  且明确**不保留**接收者（与官方语义一致）。最小复现/锚定：
   `CustomReceiverCallableGapTest`（糖式+显式的同作用域对照、跨作用域不保活特征化、
   codegen 接受锚定）。
-- **编译类不能继承编辑器专有基类**（2026-10-05 实证，`syntax_highlighter` 用例）：
-  GDExtension 类注册发生在 `GDEXTENSION_INITIALIZATION_SCENE` 级（后端
-  `entry.c.ftl` 固定），而 `EditorSyntaxHighlighter` 等编辑器类要等
-  `register_editor_types()`（EDITOR 级）才进 ClassDB——编译产物注册
-  `extends EditorSyntaxHighlighter` 的类时引擎报
+- **编译类不能继承编辑器专有基类**（实证）：GDExtension 类注册发生在
+  `GDEXTENSION_INITIALIZATION_SCENE` 级（后端 `entry.c.ftl` 固定），而
+  `EditorSyntaxHighlighter` 等编辑器类要等 `register_editor_types()`（EDITOR 级）才进
+  ClassDB——编译产物注册 `extends EditorSyntaxHighlighter` 的类时引擎报
   `non-existing parent class`（gdextension.cpp `_register_extension_class_internal`），
   属失败但其余类照常注册，运行时表现为该类不存在。结论：需要编辑器专有基类的功能
   （如高亮器）只能用解释型 `.gd` 实现（与 `plugin.gd`/`gdcc_dock.gd` 同类）；
   后端若今后支持按模块选择 EDITOR 级注册，可再迁回编译目标。
-  方法引用 Callable 目前仅对 `self`（Node）可靠——但即使后端补齐保留/构造，标准
+- 方法引用 Callable 目前仅对 `self`（Node）可靠——但即使后端补齐保留/构造，标准
   Callable 按官方语义也**不应**保活接收者，令牌式 hook 归属依旧不可行；共享字段/
   计数器 + 单飞不变量是与引擎语义一致的正确设计。
 
-Phase 0 探针分三级（任一级失败即阻塞后续阶段，先补 gdcc 能力，独立任务不在此展开）：
+自举能力探针（`src/test/resources/editor_addon_probe/*.gd3`，不进插件目录；
+`EditorAddonIntegrationProbeTest` 为门禁，任一级别失败即先补 gdcc 能力）：
 
-**P0-A 编译探针**（`src/test/resources/editor_addon_probe/*.gd3`，不进插件目录；
-`EditorAddonIntegrationProbeTest` 做 `analyze(includeLowering=true)`，要求
-`COMPLETED` 且无 ERROR）：
-
-| 探针 | 内容 |
-|---|---|
-| 虚函数覆盖 | `ProbeLang extends ScriptLanguageExtension`（含 `_validate(...) -> Dictionary`、`_get_recognized_extensions() -> PackedStringArray`、`_create_script() -> Object`）；`ProbeScript extends ScriptExtension`（`_get_language() -> ScriptLanguage` 等）；`ProbeLoader extends ResourceFormatLoader`（`_load(...) -> Variant`）；`ProbeSaver extends ResourceFormatSaver` |
-| `_init` 语义 | 在 `ProbeLang` 上定义 `func _init() -> void`，确定 gdcc 将其视为构造钩子还是 engine virtual override（§3.2） |
-| 跨类引用 | 字段 `var lang: ProbeLang`、`as ProbeScript` 转换、`ProbeScript.new()` 实例化 |
-| 注册 | `Engine.register_script_language` / `unregister_script_language`、`Engine.get_script_language_count/get_script_language` |
-| 资源 | `ResourceLoader.add_resource_format_loader/remove_resource_format_loader`、`ResourceSaver.add_resource_format_saver/remove_resource_format_saver`、`ResourceLoader.get_cached_ref`、`Resource.take_over_path`、`ResourceLoader.load_threaded_request/load_threaded_get_status/load_threaded_get` |
-| 网络 | `StreamPeerTCP.connect_to_host/poll/get_status/get_available_bytes/get_partial_data/put_data/disconnect_from_host`（含 `get_partial_data` 的 `[err, PackedByteArray]` 数组解包） |
-| 文件 | `FileAccess.open/get_file_as_string/store_string/file_exists`、`DirAccess` 递归遍历 |
-| 文本 | `String.find(String.chr(0xFFFF))`、`substr`、按 `\n` 分行、`begins_with`、`unicode_at`、`PackedInt32Array`、`Color(1, 1, 1)` |
-| 时间/系统 | `Time.get_ticks_msec`、`OS.get_process_id` |
-| 编辑器类型 | 形参/局部变量标注 `EditorInterface`（编辑器专用类经元数据可达性验证） |
-| 生命周期 | `is_instance_valid`（防御性检查用） |
-
-**P0-B native 编译探针**（Zig 门控）：对探针模块执行完整 `compile`，断言产物生成。
-analyze+lowering 不覆盖 C 代码生成/链接，此级是后端能力门禁。
-
-**P0-C 运行时冒烟**（`GODOT_BIN` 门控，非编辑器 `-s` SceneTree 驱动，复用现有
-bootstrap 模式）：加载探针扩展，断言 `ClassDB.class_exists` 命中探针类、
-`Engine.register_script_language(ProbeLang.new())` 返回 `OK`、虚函数可被
-`Engine.get_script_language(i)` 取回后经绑定方法（如 `_get_name()`）调用返回预期值。
-（`ScriptLanguageExtension` 是 core api_type，运行时注册可行；编辑器专属行为留待
-Phase 1 的编辑器内 harness。）
+- **P0-A 编译探针**：`analyze(includeLowering=true)` 要求 `COMPLETED` 且无 ERROR。
+  覆盖：虚函数覆盖（ScriptLanguageExtension/ScriptExtension/ResourceFormatLoader/
+  ResourceFormatSaver 各核心签名）、`_init` 语义、跨类引用（字段/`as`/实例化）、
+  注册 API（`Engine.register_script_language` 等）、资源 API
+  （`add/remove_resource_format_loader/saver`、`get_cached_ref`、`take_over_path`、
+  线程加载三件套）、网络 API（`StreamPeerTCP` 全套含 `get_partial_data` 数组解包）、
+  文件 API（`FileAccess`/`DirAccess`）、文本 API（`String.find(0xFFFF 哨兵)`、`substr`、
+  分行、`unicode_at`、`PackedInt32Array`、`Color`）、时间/系统（`Time.get_ticks_msec`、
+  `OS.get_process_id`）、编辑器类型标注（`EditorInterface`）、`is_instance_valid`。
+- **P0-B native 编译探针**（Zig 门控）：对探针模块执行完整 `compile`，断言产物生成。
+- **P0-C 运行时冒烟**（`GODOT_BIN` 门控，非编辑器 `-s` SceneTree 驱动）：加载探针
+  扩展，断言 `ClassDB.class_exists` 命中探针类、
+  `Engine.register_script_language(ProbeLang.new())` 返回 `OK`、虚函数经
+  `Engine.get_script_language(i)` 取回后可经绑定方法调用返回预期值。
 
 ---
 
@@ -2076,919 +1648,193 @@ Phase 1 的编辑器内 harness。）
 
 ---
 
-## 7. 分阶段实施计划
+## 7. 特性合同
 
-每阶段结束跑 `./gradlew classes --no-daemon --console=plain` + 相关定向测试
-（`pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests ...`）。
+### 7.1 编译期类元数据（`_gdcc_get_metadata`）
 
-### Phase 0：编译与运行时探针 ✅（2026-09-23 验收通过）
+背景：运行时设施（及 §7.2 的擦除准入）需要按类查询"该类由本项目编译而来"的来源
+证明。所需事实（源路径、类名、模块、版本）在编译期全部可得，故**不提供调用方自定义
+元数据入口**——元数据完全由编译器自动生成，`gdcc.format` 版本号为未来演进（如调试器
+行号表）预留。
 
-实施：§5 探针文件（`src/test/resources/editor_addon_probe/`：`probe_lang.gd3`、
-`probe_script.gd3`、`probe_loader.gd3`、`probe_saver.gd3`、`probe_engine_calls.gd3`）
-+ `EditorAddonIntegrationProbeTest`（P0-A）+ Zig 门控 compile 断言（P0-B）+
-`GODOT_BIN` 门控运行时冒烟（P0-C，最小工程 + `-s` SceneTree 驱动，断言
-`ClassDB.class_exists`、注册返回 `OK`、`get_script_language` 取回后经
-`_get_name`/`_get_extension`/`_get_recognized_extensions` 绑定调用返回预期值、
-`_create_script` 全链路往返）。
-验收：P0-A/B/C 全绿（3/3，无跳过）；探针覆盖 §5 表中每一行；`_init` 语义结论与
-typed array 返回探针结论已写入本文档（§3.2/§2.3）；探针暴露的两个 gdcc 后端缺陷
-已修复并附回归测试（见文档状态节）。
+- 每个编译类生成合成静态方法 `static func _gdcc_get_metadata() -> Dictionary`：C 实现
+  返回从内嵌 JSON 字符串字面量**惰性解析**（解析一次后缓存）的 Dictionary，且返回
+  **深拷贝**（载荷自身含嵌套 `gdcc` 子字典，浅拷贝共享子表会让调用方污染共享缓存）。
+  运行时经 `ClassDB.class_call_static(name, "_gdcc_get_metadata")` 读取。内部类同样
+  逐类生成（注册名即 canonical `Outer__sub__Inner`），每个内部类携带自己的元数据。
+- 运行时 Dictionary 形状（全部键由编译器生成，收进 `gdcc` 子字典）：
 
-### Phase 1：资源骨架（无诊断）+ 服务拉起 ✅（2026-09-23 自动化验收通过，手动验收通过）
+  ```gdscript
+  {
+    "gdcc": {
+      "format": 1,                            # 元数据格式版本
+      "source_res_path": "res://src/test2.gd3",  # displayPath 为 res:// 时产出
+      "source_path": "E:/.../src/test2.gd3",  # 绝对路径已知时产出（见下）
+      "source_name": "Test2.Inner",           # 源级名（嵌套类用点号路径）
+      "module": "game",
+      "compiled_at": "2026-09-27T12:34:56Z",
+      "version": "<gdcc 版本>",
+    }
+  }
+  ```
+- 编译期事实来源（全部自动，无调用方输入）：
+  - `source_res_path` ← 源快照 `displayPath`（复用诊断的 logical→display 重映射通道，
+    `DiagnosticSourcePathRemapper` 同款；仅当形如 `res://` 时产出该键）；
+  - `source_path` ← 源快照可选 `absolutePath` 字段（`vfs.putFile` 的可选参数，向后
+    兼容；addon 上传时填 `ProjectSettings.globalize_path(path)`，CLI 填规范化绝对输入
+    路径；缺省时省略该键）。**消费方自行 globalize `source_res_path` 的兜底已删除**——
+    res 标签无法证明同项目来源（同类名+同 res 相对路径的第三方扩展会误判），缺省即
+    不擦除（§7.2）；
+  - `source_name` ← 骨架 relation：前端骨架构建期把点号源级名直接写入
+    `LirClassDef.sourceClassName`（顶层 = relation `sourceName`，嵌套沿 inner 链拼点号），
+    codegen 只读该字段；LIR XML 装载的类无此字段，回退 canonical 名（仅测试夹具路径，
+    生产不经 XML）；
+  - `module` / `compiled_at` / `version` ← 编译上下文。
+  plumbing：`vfs.putFile` 的可选 `absolutePath` 经 `RpcParams`/API/`ModuleState`/
+  `VfsNode`/`SourceSnapshot`/`CompileTaskRunner.SourceSnapshot` 透传，codegen 经
+  `CodegenContext.sourceFileFacts`（键 = 与 `LirClassDef.sourceFile` 同规约的 logical
+  路径文本，两侧统一走 `FrontendDiagnostic.sourcePathText` /
+  `DiagnosticSourcePathRemapper.logicalPathKey`）取回；`entry.c.ftl` 逐类生成；JSON→C
+  转义复用 `StringUtil.escapeStringLiteral`。
+- 合成时机在 `CCodegen.prepare`（`CGenHelper` 收集绑定形状之前），且幂等：管线夹具
+  会对同一 module 二次 prepare，重复合成会触发 `validateFileScopeSymbolsDisjoint`
+  冲突（已加 `hasFunction` 守卫）。`compiled_at` 使同一模块两次编译的 entry.c 不再
+  逐字节相等——名称稳定性断言归一化该字段后比较（该断言的本意是符号名稳定，时间戳
+  是唯一已知变动字段）。
+- `_gdcc_` 前缀保留：前端语义分析拒绝用户声明 `_gdcc_` 前缀成员（落入既有 member 级
+  `RESERVED_PREFIXES`，与类级 `_gdcc_coro_state_` 保留前缀同族——类名合同）；合成
+  符号纳入 `validateFileScopeSymbolsDisjoint()`。边界：const/enum 不纳入拒绝——
+  `RESERVED_PREFIXES` 机制对 const/enum 本就同样不覆盖（与 `_field_*` 同边界）；
+  const/enum 不产生 ClassDB 方法或 C 文件级符号，与合成访问器无碰撞面。
+- 插件侧通道边界：**ClassDB 枚举 + 元数据探测只服务已编译类**的身份与来源证明
+  （§7.2 擦除、未来调试器）——初次编译前它天然为空，不承担"项目里有哪些类"的发现；
+  枚举 `ClassDB.get_class_list()` + 探测 `class_has_method(name, "_gdcc_get_metadata")`
+  即得 `源文件 ↔ 注册类名` 映射（自描述含嵌套类），备忘后随
+  `GDExtensionManager.extensions_reloaded` 失效。未编译类清单属编译器分析面事实
+  （骨架 relation 已含 sourceName/canonicalName/unit 路径），若 Stage C 需要，从同一
+  analyze 管线收割（§9 Stage B 大纲的最小子集）。注：配置 canonical 重命名后注册名
+  ≠ 源类名，撞名根本不发生——擦除仅在默认无映射配置下需要。
+- C 侧调用卫生：静态访问器体内失败分支销毁已构造的 `result` Variant（引擎
+  `gdextension_object_method_bind_call` 对 r_return 总是 placement 构造）；兄弟路径
+  （`godot_fixed_binding.c` 的 `godot_Object_call`、`engine_method_binds.h.ftl` 的
+  call helper、`gdcc_helper.h` 的 `godot_Variant_call`）同规约——错误分支先
+  `godot_Variant_destroy`，成功路径在 unpack/consume 之后销毁，每路恰销毁一次。
+  字面量由编译器生成且经测试验证可解析，惰性解析失败闩锁是有意选择（失败重试无
+  收益）；编辑器消费路径在主线程，竞争代价最多一次重复解析。
 
-实施：`GdccScript`、加载器/保存器、`GdccScriptLanguage`（`_validate` 暂恒返回
-`{"valid": true}`）、`GdccEditorService` 常驻单实例与注册/注销、`plugin.gd` 接线
-（含 use_thread 暂存/恢复）、安装器多源文件收集与 `reloadable=false` 全出口后处理。
-外加服务拉起功能（§3.7）：服务端新增 `server.shutdown` RPC（方法 handler 只置
-`AtomicBoolean` 并返回 `{}`，幂等；`JsonRpcHttpHandler` 在该 exchange 写完并
-close 之后，由**不属于请求 executor** 的平台线程调 `System.exit(0)`——禁止在方法
-handler 内启动退出线程、禁止用 sleep 赌写回完成，否则与 hook 里的
-`executor.close()`/`stop(0)` 死锁，§2.8；同步更新
-`json_rpc_service_implementation.md` 方法表与编解码测试）、`server_launcher.gd`、
-dock"启动命令"输入框与 EditorSettings 读写（**2026-10 配置迁移**：host/port/启动
-命令改入项目级 ProjectSettings，dock 输入框随之移除，见 §3.7 配置项与文档状态节
-修订记录）、`ensure_server_hook` 注入、低功耗
-busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造与 launcher busy
-首批接入，§3.5/§3.6）。
-验收：
-- `EditorAddonScriptLanguageAnalysisTest`（新增）：全部 `.gd3` analyze+lowering 干净；
-  沿用客户端合同检查（无 `await` 等）；断言所有安装产物 `reloadable = false`；
-  `plugin.gd`/`gdcc_dock.gd`/`server_launcher.gd` 仅语法解析。
-- 服务端测试（真实 HTTP，非仅 dispatcher 单测）：`POST /rpc` 调 `server.shutdown`
-  读到 200 与 body **之后**进程才退出（退出码 0，shutdown hook 完成收尾）；
-  连接仍可用时重复调用幂等返回相同 `{}`（§2.8 时序合同）。
-- `EditorAddonScriptLanguageEngineTest`（新增，`GODOT_BIN`+Zig 门控；harness 见
-  §8.2）：语言已注册（遍历 `Engine.get_script_language*` 找到 `GD3`）；
-  `ResourceLoader.load("res://.../sample.gd3")` 返回对象的
-  `_get_language()._get_name() == "GD3"`（`Script` 在 4.5 不绑定公开 `get_language()`，
-  只有 `ScriptExtension` 上的 `_get_language` 可调）且源码往返一致；`ResourceSaver.save` 后文件
-  内容更新；`ResourceLoader.load_threaded_request` + `load_threaded_get_status` 轮询
-  + `load_threaded_get` 的 worker 线程加载路径同样成功（覆盖 §2.4 约束）；
-  直接调用语言的 `_validate` 返回 `valid == true`。
-- 拉起功能引擎测试（同 harness）：Java 侧先找一个空闲端口但不侦听，驱动插件把
-  项目设置 `gdcc/compilation_server/launch_command` 设为
-  `java -cp <测试 classpath> gd.script.gdcc.Main serve --host {host} --port {port}`
-  （占位符由 launcher 替换为该端口；测试自包含，不依赖预构建 jar——与生产推荐的
-  zig 启动器 `gdcc serve` 形式不同，见文档状态节偏差 3；2026-10 前写入
-  EditorSettings，迁移后写入 ProjectSettings，harness 项目天然隔离）——冷启动无服务时 dock
-  连接经自动拉起最终成功（`ping` 通过）；
-  随后禁用插件，断言被拉起的进程退出（端口关闭/`is_process_running == false`）。
-  负例：启动命令指向不存在的可执行文件 → 状态行报错且不崩溃（launcher 的具体报错行
-  随平台分叉，见 §3.7：Windows 同步报 `OS.create_process failed`；Unix-like 报
-  `exited before accepting connections`，引擎另输出 `Could not create child
-  process`；两种报告均被测试接受，且都必须保持端口未监听、编辑器存活）；启动命令
-  留空且无服务 → 维持现状 fail-fast 报错（回归既有行为）。
-- 禁用/启用循环（引擎测试或手动）：禁用插件（不关 `.gd3` 页签）→ 在页签中继续
-  编辑触发校验，无崩溃无报错（UNINSTALLED 早退）→ 重新启用 → 断言旧页签的
-  `script.get_language()` 与当前注册语言为**同一实例**，校验恢复工作。
-- 手动：打开 `src/editor_addon`，FileSystem 面板出现 `.gd3`，双击在内置编辑器打开，
-  编辑保存后磁盘内容一致；配置启动命令后冷启动编辑器，无需手工 `gdcc serve` 即可
-  Compile，退出编辑器后该服务进程消失（外部手动启动的服务不受影响）；冷启动后
-  **不再移动鼠标**（编辑器低功耗窗口），服务仍在 15s 内就绪（§3.7 低功耗活性）。
+### 7.2 `class_name` 条件擦除（LSP 同步视图）
 
-### Phase 2：LSP 客户端与 GDScript 诊断 ✅（2026-09-23 自动化验收通过）
-
-实施：`GdccLspClient`（§3.4）、`_validate` 的 LSP 分支（§4.2 第 1–2 步）、降级路径。
-验收（实际执行见文档状态节 Phase 2 条目）：
-- 引擎测试：LSP 连接在重试后 READY（全新编辑器启动路径，验证"插件先加载、LSP 后
-  监听"）；重连韧性以端点强制断开 + 插件禁用/启用循环覆盖（运行期 `use_thread`
-  切换触发服务端重启的链路不可脚本驱动，§2.6 修正）；
-  对含语法错误的样例调用语言的 `_validate`，断言 `valid == false`、`errors` 非空、
-  行号与预期一致且每条含 `path`；干净样例 `valid == true`；警告样例的 `warnings[]`
-  五键齐全；发送 g1 后不读响应立即发送 g2，再依次接收两个 `publishDiagnostics`，
-  按 FIFO 队列分别归属 g1/g2（§3.4 队列规则，旧通知不得错标为新 generation——经
-  per-generation 绑定历史断言，水位线语义见 §3.4）。
-- 手动：同一段错误代码分别在 `.gd` 与 `.gd3` 中打开，错误行号/条数一致；编辑后错误
-  随动更新；无错误文件无误报；含中文注释的样例补全/诊断列位置正确（§9 R11）。
-
-### Phase 3：gdcc 诊断合并 ✅（2026-09-26 自动化验收通过）
-
-实施：私有模块生命周期、标脏/防抖/单飞/版本校验、缓存合并（§4.2 第 3 步、§4.4）、
-文件集合对账（§3.5）、诊断调度接入低功耗 busy 协调（协调器已在 Phase 1 落地，
-§3.5/§3.6）。
-验收：
-- 引擎测试：`.gd3` 中使用路径式 `extends "res://base.gd"`（GDScript 合法、gdcc
-  前端拒绝）——LSP 无错误时，异步分析完成后经下一次校验节拍出现带
-  `[gdcc ...]` 前缀的错误；再制造 GDScript 语法错误，确认 gdcc 诊断不叠加；修复后
-  经下一轮分析+校验诊断消失。补一个 `sema.compile_check` 类样例（
-  `includeLowering=true` 路径），具体构造在实现期从前端测试中选取。
-  另加负例：不同目录同名 `.gd3` 的诊断分别落回各自页签（验证 displayPath
-  键控）；预置同 ID 残留模块（模拟上次崩溃），启用后仍能完成分析（验证
-  `-32001` 重建路径）；删除/跨目录重命名 `.gd3` 后，旧路径诊断不再出现（验证
-  文件集合对账与 `vfs.deletePath`）。
-- 手动：连续输入后停顿，gdcc 诊断最迟在下一次校验节拍出现；停键且不移动鼠标
-  （编辑器低功耗窗口）诊断仍能出现（验证 §3.5 空闲活性缓解）；dock 执行 Compile
-  期间编辑器不卡死、诊断只是变旧（异步串行），且 dock 进度轮询照常推进（专用
-  客户端队列隔离）；分析会话中手工杀掉 gdcc 服务进程，下一次心跳失败经
-  `ensure_server_hook` 自动重新拉起并恢复分析（已配置启动命令时）。
-  **2026-09-27 手动测试修正**：首项的"下一次校验节拍"被证实可能永远不到来
-  （版本匹配缓存 × 无主动重校验通道，见 Phase 5 背景 (a)）——该验收改由 Phase 5
-  的信号触发路径承担。
-
-### Phase 4：代码补全 ✅（2026-09-27 自动化验收通过，手动项待 §8.3）
-
-实施：`_complete_code`（§4.3）——哨兵定位/剔除与码点位置计算在语言侧，同步+有界
-阻塞请求封装为无状态子节点 `GdccCompletionService`（§3.5 配方），服务根以
-`request_completion` 门面做前置守卫（ACTIVE + LSP READY + 线程模式）。2026-10-14
-起该子节点在补全成功后追加有界 `textDocument/signatureHelp`，语言侧把
-`signatures[activeSignature].label` 与 `activeParameter` 映射为 `call_hint`。
-验收：
-- 引擎测试：~~对固定样例（类体内空行，含 0xFFFF 哨兵）~~ **实施期修正**：类体内纯
-  空行在引擎侧得到 `COMPLETION_NONE` 上下文而合法返回零选项（与 `.gd` 一致），
-  关键字样例改为标识符前缀触发（`f` + 哨兵），断言 `result == OK`、`options` 非空
-  且含 `func`、每项七键齐全（§2.2 必填键；`matches` 可选）；空行行为保留为
-  "OK + 空选项"边界锚点；无哨兵输入返回降级字典；另含成员补全、CJK 码点锚定、
-  补全流量的 FIFO 按代绑定锚定、禁用态安全应答与循环后 `_validate` 健康检查
-  （见文档状态节 Phase 4 条目）。
-- 手动：真实编辑器中 `.gd3` 内触发补全，成员/关键字弹窗与 `.gd` 行为相当；函数调用
-  输入 `(`/`,` 时显示参数提示；输入无可感知卡顿（补全 ≤400ms，签名提示 ≤200ms）。
-
-### Phase 5：诊断可见性修复（手动测试回归驱动）
-
-背景（2026-09-27 手动测试发现，成因链经评审复核）：gdcc 诊断在编辑器中完全不
-显示。断点有二：(a) 异步分析完成后没有任何机制让编辑器重跑 `_validate`——引擎
-4.5 无绑定的主动校验 API（§2.5），且缓存按内容版本精确匹配，"打字→停顿→再打字"
-节奏下校验节拍与可读版本可能永远错开；(b) service 的 RPC 端点在 `plugin.gd`
-硬编码 `127.0.0.1:6099`，与 dock 的端点设置分叉，且后台
-通道失败按设计静默降级、无可观测面。
-实施：
-1. **主动重校验信号**：scheduler 合并分析结果时记录本轮"哪些 (path, version)
-   首次变为缓存可读"（注意：诊断内容不变但版本前进也必须计入——此前的校验可能
-   因版本不匹配而显示空结果）；当前编辑脚本命中时由 service 帧泵在门禁通过后发射
-   **自有**信号 `revalidation_requested(path)`，解释型 `plugin.gd` 将其
-   `call_deferred` 跳出泵栈后对当前页签的 `CodeTextEditor` 发射 `validate_script`
-   （接线事实与"编译代码泵内直发外来信号不送达"的缺陷实证见 §2.5 末条——中继是
-   针对该实证的必要形态，不是风格选择）。门禁两段式：service 帧泵内**初筛**（当前
-   页签路径 + registry 版本 + **缓冲区文本与分析文本逐字一致**——registry 版本只在
-   校验时前进，用户键入后合并前会有滞后，文本比对兜住这一拍——+ 补全弹窗未开，
-   弹窗期间暂缓并排队、关闭后补发）；插件 `call_deferred` 跳出泵栈后经
-   `should_still_revalidate` **复核**同一组门禁（一帧间用户可能又键入或打开弹窗；
-   弹窗刚开则重新入队而非丢弃）再发射。无反馈循环：相同文本的重校验不会重新标脏。
-2. **诊断通道可观测**：dock 的单行状态显示诊断模块 READY 对应的连接状态、上次
-   成功合并分析轮距今时间及上次成功构建距今时间（2026-10-13 精简）。诊断状态
-   仍只读既有 lifecycle/scheduler 数据；端点和最近失败原因保留于状态 API。
-3. **端点同源**：service install 读 `gdcc/compilation_server/host|port`（2026-10 起为项目级
-   ProjectSettings；此前为与 dock 同一对 EditorSettings）。Project Settings 对话框的
-   host/port 编辑经插件 `settings_changed` 继电器调 service 专用 retarget 入口同步
-   切换（复用 §3.5 模块生命周期的 channel-reset，不重装语言、不断开 LSP 连接）；
-   继电器只对**配置值相对上次中继的变化**触发，配置非法时 fail-closed 保持现有通道
-   （§3.6 第 3 项）。dock 自 2026-10 起不再有端点提交入口。
-验收：
-- 引擎测试：分析完成后无任何输入，gdcc 诊断经信号触发的重校验浮现（语言侧
-  `_validate` 调用计数器锚定）；同诊断新版本必刷；弹窗暂缓后补发；运行中改
-  端点后后台通道恢复 READY。
-- 手动：连续输入→停顿后 gdcc 错误自行浮现（无需切页签/再键入）；dock 状态区
-  与通道实际状态一致。
-
-### Phase 6：编译期类元数据（编译器自动生成）
-
-背景：调试器等运行时设施需要按类查询元数据（如源磁盘路径）；Phase 7 的擦除准入
-也需要"该类由本项目编译而来"的来源证明。后端已具备静态方法注册能力
-（`entry.h.ftl:890` 的 `GDEXTENSION_METHOD_FLAG_STATIC`）；所需事实（源路径、
-类名、模块、版本）在编译期全部可得（见实施第 3 项），故**不提供调用方自定义
-元数据入口**——元数据完全由编译器自动生成，`gdcc.format` 版本号为未来演进
-（如调试器行号表）预留。
-实施：
-1. 每个编译类生成合成静态方法 `static func _gdcc_get_metadata() -> Dictionary`：
-   C 实现返回从内嵌 JSON 字符串字面量惰性解析（解析一次后缓存）的 Dictionary；
-   运行时经 `ClassDB.class_call_static(name, "_gdcc_get_metadata")` 读取。内部类
-   同样逐类生成（注册名即 canonical `Outer__sub__Inner`，类名合同 §3.1 注册面），
-   每个内部类携带自己的元数据。
-2. 运行时 Dictionary 形状（全部键由编译器生成，收进 `gdcc` 子字典）：
-   ```gdscript
-   {
-     "gdcc": {
-       "format": 1,                            # 元数据格式版本
-       "source_res_path": "res://src/test2.gd3",  # displayPath 为 res:// 时产出
-       "source_path": "E:/.../src/test2.gd3",  # 绝对路径已知时产出（见第 3 项）
-       "source_name": "Test2.Inner",           # 源级名（嵌套类用点号路径）
-       "module": "game",
-       "compiled_at": "2026-09-27T12:34:56Z",
-       "version": "<gdcc 版本>",
-     }
-   }
-   ```
-3. 编译期事实来源（全部自动，无调用方输入）：
-   - `source_res_path` ← 源快照 `displayPath`（复用诊断的 logical→display 重映射
-     通道，`DiagnosticSourcePathRemapper` 同款；仅当形如 `res://` 时产出该键）；
-    - `source_path` ← 源快照新增可选 `absolutePath` 字段：`vfs.putFile` 参数加
-      可选项（向后兼容，旧调用方行为不变）；addon 上传时填
-      `ProjectSettings.globalize_path(path)`，CLI 填规范化绝对输入路径；缺省时
-      省略该键，~~消费方自行 globalize `source_res_path` 兜底~~ **该兜底已由
-      Phase 7 评审删除**（res 标签无法证明同项目来源，见 Phase 7 评审记录第 3 条）
-      ——缺省即不擦除；
-   - `source_name` ← 骨架 relation（顶层 `sourceName`；嵌套类沿 inner 链拼点号
-     路径）；
-   - `module` / `compiled_at` / `version` ← 编译上下文。
-   plumbing：`CompileRequest` 快照携带快照级 `absolutePath` → codegen 上下文 →
-   `entry.c.ftl` 逐类生成；JSON→C 转义复用 `StringUtil.escapeStringLiteral`。
-4. `_gdcc_` 前缀保留：前端语义分析拒绝用户声明 `_gdcc_` 前缀成员（落入既有
-   member 级 `RESERVED_PREFIXES`，与类级 `_gdcc_coro_state_` 保留前缀同族——
-   类名合同 §1.3）；合成符号纳入 `validateFileScopeSymbolsDisjoint()`。
-5. 插件侧通道边界（2026-09-27 评审确认）：**ClassDB 枚举 + 元数据探测只服务
-   已编译类**的身份与来源证明（Phase 7 擦除、未来调试器）——初次编译前它天然
-   为空，不承担"项目里有哪些类"的发现；枚举 `ClassDB.get_class_list()` + 探测
-   `class_has_method(name, "_gdcc_get_metadata")` 即得 `源文件 ↔ 注册类名` 映射
-   （自描述含嵌套类），备忘后随 `GDExtensionManager.extensions_reloaded` 失效。
-   未编译类清单属编译器分析面事实（骨架 relation 已含 sourceName/canonicalName/
-   unit 路径），若 Stage C 需要，从同一 analyze 管线收割（Stage B 大纲的最小
-   子集），不在本阶段引入。注：配置 canonical 重命名后注册名 ≠ 源类名，撞名
-   根本不发生——擦除仅在默认无映射配置下需要。
-验收：
-- 单元/集成测试：每个编译类（含嵌套类）的生成 C 含元数据方法且读回内容正确；
-  `source_res_path` 与 displayPath 一致（res:// 形态）；`absolutePath` 经
-  `vfs.putFile` 可选字段透传、缺省时该键省略且旧调用方行为不变；JSON 转义
-  （引号/反斜杠/换行/Unicode，含 Windows 路径反斜杠双层转义）；`_gdcc_` 前缀
-  冲突报错。
-- 引擎测试（Zig 门控）：编译产物（含嵌套类）加载后 `ClassDB.class_call_static`
-  读回内容一致；插件按 `class_has_method` 枚举可重建 `源文件 ↔ 注册类名` 映射。
-- 手动：无（引擎测试覆盖）。
-
-### Phase 7：LSP 同步文本的 `class_name` 条件擦除
-
-背景：编译安装扩展后 `class_name Test2` 与 ClassDB 扩展类同名，GDScript analyzer
-报 error 级 `Class "X" hides a native class.`（`gdscript_analyzer.cpp:394-403`——
-`push_error` 而非 warning，`@warning_ignore` 与项目设置均不可抑制），既污染显示
-又触发 `_validate` 的 LSP-error 抑制门禁（§4.2 第 3 步）压制 gdcc 诊断。
-已否决方案（评审复核）：仅在显示端过滤 `hides a native class`（服务端视图仍被污染——标识符解析 ClassDB
+背景：编译安装扩展后 `class_name Test2` 与 ClassDB 扩展类同名，GDScript analyzer 报
+error 级 `Class "X" hides a native class.`（`gdscript_analyzer.cpp:394-403`——
+`push_error` 而非 warning，`@warning_ignore` 与项目设置均不可抑制），既污染显示又
+触发 `_validate` 的 LSP-error 抑制门禁（§4.2 第 3 步）压制 gdcc 诊断。已否决方案：
+仅在显示端过滤 `hides a native class`（服务端视图仍被污染——标识符解析 ClassDB
 优先于 ScriptServer，`gdscript_analyzer.cpp:4530`，补全仍解析到滞后的编译类）；
 全项目合成改名（跨文件成员解析对非 `.gd` 脚本类走 `ResourceLoader.load` + Script
-资源内省——`gdscript_analyzer.cpp:787-801`、`gdscript_editor.cpp:1266-1333`——
-不读 LSP 同步文本，中心赌注不成立；另需令牌级改写、逐行映射表、诊断消息回译，
-且合成名经 `_get_global_class_name` 注册会污染创建对话框且无干净隐藏手段）。
-实施：
-1. 统一入口 `GdccEditorService.lsp_safe_text(path, text)`：`_validate` 同步与补全
-   同步共用；只改 LSP 视图，磁盘内容与 gdcc 分析输入不变。（实现后重构：逻辑落在
-   子节点 `GdccClassNameEraser`（hub-and-spoke），service 保留同名 facade 委托 +
-   翻转的编辑器侧重同步 `resync_current_document_lsp()`——调用合同不变。）
-2. 准入四条件（全部满足才擦除）：本文件声明 `class_name X`（行首无缩进正则、
-   首个匹配）；`ClassDB.class_exists(X)`；`ClassDB.class_get_api_type(X)` ∈
-   {API_EXTENSION, API_EDITOR_EXTENSION}；`ClassDB.class_call_static(X,
-   "_gdcc_get_metadata")` 的 `gdcc` 命名空间 `source_path` 绝对路径与本文件一致
-   （Phase 6 产物；无元数据 → 不擦除，安全默认；同时排除非 gdcc 编译的第三方扩展
-   撞名）。
-   附加校验：`ClassDB.get_parent_class(X)` 与声明基类一致。撞核心/编辑器原生类
-   （API_CORE/API_EDITOR，如 `class_name Node`）不擦除——错误保留以促改名。
-3. 两种行形式：独立行 → 整行等长空白（行列零漂移）；`class_name X extends Y`
-   同行 → 删除 `class_name X ` 前缀、保留 `extends Y`（仅该行尾部列漂移；helper
-   返回双向映射：补全请求位置正映射、返回诊断列反映射；映射随诊断缓存按代存储）。
-4. 决策翻转：监听 `GDExtensionManager.extensions_reloaded`（4.5 支持编辑器内扩展
-   重载，`reloadable = true`）与扩展装卸 → 失效按类名的备忘缓存 → 重同步当前
-   文档 → 触发 Phase 5 的重校验。
-5. 性能：C 侧元数据惰性解析缓存；addon 按类名备忘、重载信号失效。
-6. 擦除视图携带通过准入的 `class_name`（未擦除时为空），供 §4.2 精确过滤同一类型的
-   路径/原生类身份误报。例如 `var a: Test2 = self` 的路径类型不兼容诊断不会显示；
-   `int` 赋给 `Test2` 等真实错误不受影响。这不替代本阶段对 `hides a native class`
-   的服务端视图修复：后者仍不得仅在显示端过滤。
-验收：
-- 引擎测试：准入矩阵白盒（扩展类+路径匹配→擦除；核心类冲突→不擦；无元数据
-  扩展类→不擦；路径不匹配→不擦）；两种行形式的改写文本与双向映射断言（含 CJK
-  行）；端到端（Zig 门控，复用 Phase 6 编译夹具）：编译安装后继续编辑源文件，
-  `hides a native class` 不再出现、gdcc 诊断经重校验浮现；决策翻转后自动重同步；
-  正则陷阱（注释/多行字符串内的 `class_name` 文本不误命中）。
-- 类型身份误报过滤回归：准入矩阵覆盖四类消息、反向别名及真实类型/来源不匹配反例；
-  真实 LSP 的 `var a: Gd3Phase7Subject = self` 诊断保留在原始缓存但不进入编辑器，
-  gdcc 诊断仍可见；改为 `= 42` 后真实类型错误保留并继续阻断 gdcc 级联显示。
-  Godot 4.5.1、4.6.3、4.7 自定义构建均通过；含分析门禁、诊断合并及异步大纲回归，
-  本次共 13 次定向测试执行全部通过，无跳过；独立复审结论 APPROVE。
-- 手动：编译→安装→继续编辑全流程中编辑器无伪错误、gdcc 错误正常显示、补全可用。
+资源内省——`gdscript_analyzer.cpp:787-801`、`gdscript_editor.cpp:1266-1333`——不读
+LSP 同步文本，中心赌注不成立；另需令牌级改写、逐行映射表、诊断消息回译，且合成名经
+`_get_global_class_name` 注册会污染创建对话框且无干净隐藏手段）。
 
-### Phase 8：LSP workspace 镜像 ✅（2026-09-28 自动化验收通过，手动项待 §8.3）
+实施形态：
+
+1. 统一入口 `GdccEditorService.lsp_safe_text(path, text)`：`_validate` 同步、补全同步
+   与镜像发送共用；只改 LSP 视图，磁盘内容与 gdcc 分析输入不变。逻辑落在子节点
+   `GdccClassNameEraser`（hub-and-spoke，§3.5）：视图变换/双向映射/扫描器/准入探测/
+   备忘/三个 GDExtensionManager 信号监听全在子节点；service 保留
+   `lsp_safe_text`/`lsp_safe_forward_position`/`lsp_safe_reverse_column`/
+   `erasure_memo_size` 四个 facade 委托与翻转的编辑器侧重同步
+   `resync_current_document_lsp()`（依赖编辑器上下文/registry/LSP/重校验队列）；
+   卸载延迟重同步经 `_on_diag_frame` 在 `_pump_revalidation` 前调用子节点
+   `process_deferred_resync()`。
+2. 准入四条件（全部满足才擦除）：本文件声明 `class_name X`（行首无缩进、首个匹配）；
+   `ClassDB.class_exists(X)`；`ClassDB.class_get_api_type(X)` ∈ {API_EXTENSION,
+   API_EDITOR_EXTENSION}；`ClassDB.class_call_static(X, "_gdcc_get_metadata")` 的
+   `gdcc` 命名空间 `source_path` 绝对路径与本文件一致（§7.1 产物；无元数据 → 不擦除，
+   安全默认；同时排除非 gdcc 编译的第三方扩展撞名）。附加校验：
+   `ClassDB.get_parent_class(X)` 与声明基类一致。撞核心/编辑器原生类
+   （API_CORE/API_EDITOR，如 `class_name Node`）不擦除——错误保留以促改名。准入的
+   路径比较双侧归一化为 `/` 形态（Windows 下 globalize 与编译期绝对路径的反斜杠
+   分歧）。
+3. 两种行形式：独立行 → 整行等长空白（行列零漂移）；`class_name X extends Y` 同行 →
+   删除 `class_name X ` 前缀、保留 `extends Y`（仅该行尾部列漂移；helper 返回双向
+   映射：补全/查找请求位置正映射、返回诊断列反映射；映射随诊断缓存按代存储）。
+   同行形式的行尾部为**顺序解析**（名称 → 可选图标字符串（转义感知跳过）→ 位置锚定
+   的 extends），不做全文自由搜索（注释/图标字符串内的 `extends` 不会误当基类）。
+   独立 `extends` 行空基类/纯注释尾标 `base_resolvable = false`（中途编辑的未完成
+   声明不误准入）；`extends ,` 空 token 同样标 unresolvable。
+4. 扫描器为行级迷你词法器（无 RegEx 依赖）：字符串状态携带（分隔符, 是否三引号）
+   二元组，理解转义对、`#` 注释、`"""`/`'''` 两种三引号（闭合需未转义三连）、
+   **普通字符串跨物理行**（4.5 tokenizer 的字符串读取循环从不把换行当终止符）。
+   已知残余为词法近似的极端角落（§10 R25）；根治待编译器引用区间输出（评估项）。
+5. 决策翻转：监听 `GDExtensionManager` 的 `extension_loaded` / `extension_unloading`
+   / `extensions_reloaded` 三个信号 → 失效按类名的备忘缓存；unloading（类集合变化
+   **前**触发）只清备忘不重同步（类消失后伪错误不可能存在），loaded/reloaded 清备忘
+   + 重同步当前文档 + 触发 §4.5 的重校验。白盒可观察性：`erasure_memo_size()` 与
+   `GdccLspClient.document_version_for` / `debug_sent_text`（卸载后发送的是原文、
+   加载后是擦除视图）。
+6. 性能：C 侧元数据惰性解析缓存（§7.1）；addon 按类名备忘、重载信号失效。
+7. 擦除视图携带通过准入的 `class_name`（未擦除时为空），供 §4.2 精确过滤同一类型的
+   路径/原生类身份误报。例如 `var a: Test2 = self` 的路径类型不兼容诊断不会显示；
+   `int` 赋给 `Test2` 等真实错误不受影响。这不替代服务端视图修复：`hides a native
+   class` 不得仅在显示端过滤。
+8. 已知残余：超时回退的旧代诊断按**当前**视图反映射，擦除形态在两代间变化时擦除行
+   的列可能瞬偏（成立需超时 ∧ 形态变化 ∧ 擦除行有诊断同时命中；"陈旧诊断位置引用
+   旧文本"是 `_validate` 既有合同 stale-beats-none 的同类边界；根治需按代绑定视图，
+   记入 §10 R25）。
+
+### 7.3 LSP workspace 镜像
 
 背景：GDScript LSP 的 workspace 磁盘扫描只收 `.gd`（`gdscript_workspace.cpp` 的
 `list_script_files`），`.gd3` 仅经客户端 didOpen 进入解析缓存；该缓存服务于
 `resolve_symbol`（hover/定义跳转），**不**服务补全成员枚举（补全走 ClassDB/Script
-资源内省，见 Phase 9 `_get_global_class_name` 条目），故本阶段收益限于跨文件
-hover/定义跳转的数据面。reconciler 已有全项目 `.gd3` 磁盘扫描与文本（§3.5），
-镜像直接复用。
-实施：
-1. LSP READY 后分帧批量 didOpen 全部项目 `.gd3`（文本经 Phase 7 `lsp_safe_text`
-   改写），每帧限额避免启动卡顿；didOpen/didChange 为 notification，不占
-   `_validate` 的 150ms 阻塞预算。
-2. 变更跟随：registry 版本驱动 didChange（已打开文件以编辑器缓冲区为准，未打开
-   文件用 reconciler 磁盘文本）；删除时 didClose；LSP 断线重连后全量重放（客户端
-   断开即清空 `_open_docs`，不自动恢复）。
-验收：
-- 引擎测试：未打开的 `.gd3` 进入服务端文档集；磁盘变更后镜像刷新；删除后
-  didClose；重连后重放；批量同步期间 `_validate` 仍满足 150ms 预算。
-- 手动：跨文件 hover/定义跳转命中（`_lookup_code` 属 Phase 9，本阶段只验收镜像
-  数据面）。
+资源内省，§9 Stage C 条目），故本特性收益限于跨文件 hover/定义跳转的数据面。
 
-#### 暂缓项与已否决方案（2026-09-27 评审落档）
+形态：常驻子节点 `GdccWorkspaceMirror`（`gdcc_workspace_mirror.gd3`），服务根接线
+（install 构建块、`service_tick` 于 scheduler 之后、`busy_wanted` 聚合项、
+`notify_filesystem_changed` 同源转发、`service_shutdown`、访问器）。镜像**不依赖**
+reconciler 的磁盘采用结果——reconciler 的采用被模块就绪门控，无 gdcc 服务时
+registry 永远学不到未打开文件，而跨文件 hover/定义必须在无 gdcc 服务时可用；故镜像
+自行做事件驱动磁盘扫描（复用 reconciler 的遍历函数 `project_gd3_files()`），纯磁盘
+路径直接读盘且永不标脏。
 
-- **Stage B（gdcc 大纲通道 + 补全合并）暂缓**：`analyze.outline` RPC（收割点已
-  定位：`AnalysisRunner` 语义分析返回后、`FrontendAnalysisData` 丢弃前；骨架在
-  COMPLETED-含错误时保留、解析失败时无）+ `_complete_code` 对 `self.`/`X.`/显式
-  标注上下文合并缺失成员。排期条件：Phase 5–8 落地后按残余补全缺口的实证需求。
-  这不再阻止编辑器左侧成员大纲：该区域已由 `_validate.functions` 的 LSP 通道独立提供，
-  不新增 gdcc RPC，也不依赖 Stage C 的资源成员内省。
-- **Stage C（全局类注册 + `GdccScript` 成员内省虚函数）暂缓**：见 Phase 9 的
-  `_get_global_class_name` 条目（含必须同批实施与对话框行为的已核实约束）。
-- **已否决**：全项目合成改名、仅在显示端过滤 `hides a native class`（证据链见 Phase 7
-  背景）。同文件路径/编译类的类型身份误报使用 §4.2 的精确显示过滤，不在此否决项内。
+镜像语义：
 
-### Phase 9：打磨（可并行子项，各自独立验收）
+- LSP READY epoch 变化即全量重放（清 `_mirrored` 与发送队列并重扫）；文本经 §7.2
+  `lsp_safe_text` 在**发送时**求值（决策翻转不会带出陈旧视图）；registry 路径按内容
+  版本逐帧比对（无 syscall），纯磁盘路径仅在事件驱动扫描时比对文本。
+- 每帧 8 条发送预算（`MAX_SYNC_OPS_PER_TICK`），批量同步不饿死其他帧工作；发送失败
+  清空队列由 epoch 重放接管（不重复入队）。
+- 待发送队列为 FIFO（队头索引 + 摊销压缩）+ 字典结构（批量建队 O(1) 去重）；sync
+  意图**不携带文本**——出队时经 `_resolve_current_text` 重解析（`_disk_seen` 已消失
+  且通过关闭决策的路径直接判失、registry 优先、磁盘兜底、双双缺失即丢弃）；close
+  意图发送时同样重判（文件已复现或保留规则成立则改排 sync）；排队期间的新编辑/
+  删除/复建/页签开合永远不会带出陈旧内容、复活已删文件或误关已恢复文件。
+- 镜像自维护 `_disk_seen` 磁盘来源与 `_disk_texts` 末次磁盘文本（registry 的
+  disk-known 被模块门控、dirty 语义是"待分析"而非"未保存编辑"，均不可用作判据）。
+  关闭决策统一走 `_should_close`：**任一已打开页签持有该路径**（服务门面
+  `is_path_open_in_editor`，页签自己的 `_validate` 会持续刷新 LSP 副本）、registry
+  文本与末次磁盘文本**确实不一致**（真正的未保存编辑）、或镜像从未在磁盘见过该路径
+  （纯缓冲区新文件）时保留，其余删除一律 didClose。
+- 共享客户端被其他功能外部关闭的镜像文档经逐帧 `document_version_for` 核对自愈重开；
+  `busy_wanted` 计入未处理的 READY epoch，且客户端 `ready_advanced` 信号在 READY
+  跃迁沿即时触发 `refresh_busy`（低功耗窗口内重放不被饿死）。
+- 与 tombstone 的交错：逐帧 tombstone 分支先查磁盘存在性，存在即落入正常 heal/漂移
+  流程（避免"close 入队、发送时改 sync、下一帧再入队"的每帧全量 didChange 循环）。
+- 与排除 glob 的交互见 §7.4（排除路径恒 didClose）。
+- 已知边界：每次扫描事件在单帧内完成目录遍历与已镜像纯磁盘文件的文本比对——典型
+  项目可接受；超大项目的可续跑遍历与分帧读盘留待后续评估（§10 R30）。
 
-- 左侧成员大纲：`_validate` 在 `validate_functions=true` 时，仅通过
-  `GdccEditorService.outline_functions()` 读取缓存并登记需求，不在该路径发送网络请求。
-  `GdccOutlineService` 子节点在服务帧泵中同步所需 `lsp_safe_text` 擦除视图并异步请求
-  `textDocument/documentSymbol`，按 §2.5 的原生规则
-  扁平化为 `functions: PackedStringArray`。使用声明 `range.start.line + 1`；擦除保持
-  行数不变，顶层不加脚本类名前缀，内部类递归限定。仅递归类节点，不进入方法、变量或
-  属性子树，因此不会把局部 lambda 或 getter/setter 混入大纲。
-  请求键包含路径、源码内容版本、连接 READY 代次及擦除视图；同键只发一次，空列表也作为
-  已完成结果缓存。新源码/擦除决策使旧请求失效，断线清除可见缓存，重连重新请求；删除、
-  墓碑、关闭的排除路径及卸载取消并清理相关请求。模块诊断服务不可用不影响大纲。
-  响应消费前重新检查版本和视图；同文本的诊断/镜像同步可能推进 LSP 文档版本，不因此
-  丢弃仍对应相同视图的结果。等待更新时保留上次成功的大纲；失败/超时不重复请求同键，
-  内容、擦除视图或连接代次改变后才重试。
-  `GdccLspClient.request_async/take_response/cancel_request` 使用已有帧驱动收包；读取挂起
-  状态不轮询 socket，也不阻塞。大纲请求超时为 2s，仅移除该 id，迟到响应忽略，不断开连接。
-  每帧最多发起两个查询；只有在途/未处理请求及待刷新工作持有忙标记。异步查询无
-  `use_thread` 前提，非线程服务端随正常帧推进即可回答。原诊断路径的 150ms 有界等待及
-  非线程降级逻辑保持独立，不为大纲额外等待。
-  新结果通过 `outline_revalidation_requested` → 解释型插件延迟发射 `validate_script`
-  刷新实际大纲；发送前和延迟回调均检查当前页签、实际缓冲区、缓存新鲜度，弹出补全时
-  延后。该门禁独立于 gdcc 诊断缓存的 READY/版本门禁，因此纯 LSP 会话也会主动刷新。
-  重验证只读已完成缓存，不重新发起同键请求。离线、禁用或不支持的路径返回空列表；
-  关闭 `validate_functions` 不登记新需求；错误仍令 `valid=false`，
-  不为强制刷新大纲而隐藏诊断。`safe_lines` 仍不提供。
-  此查询不沿用 lookup 的 4.6 门槛：4.5.1 的
-  [`documentSymbol`](https://github.com/godotengine/godot/blob/4.5.1-stable/modules/gdscript/language_server/gdscript_text_document.cpp#L170-L180)
-  仅从工作区现有解析缓存读取并序列化符号，不经过 hover/definition 的浅层脚本加载；
-  同步引起的分析与既有诊断通道相同。`lsp_outline` 验收锚定映射、过滤、行号、标志、
-  降级、错误、空脚本、真实 Members Overview、点击跳转和未保存刷新；
-  `class_name_erasure.outline_erased` 覆盖编译态擦除后的行号，
-  `lookup_suspended.outline_keeps_path` 覆盖查询后的原脚本路径与 ResourceCache 身份。
-  异步回归 `lsp_outline` 的 22 步还覆盖纯缓存读取、同键去重、过期响应、超时不断线、
-  空结果缓存、非线程查询、删除/排除清理和重连；`lsp_runtime_enable` 在真实非线程服务端
-  验证异步大纲可达。异步修订验收：Godot 4.5.1、4.6.3、4.7.0 的大纲、真实非线程
-  查询、诊断、类名擦除与资源身份/保存回归均通过；4.6.3 另通过分析门禁 5 项及补全、
-  lookup、工作区镜像、诊断 FIFO、gdcc 诊断合并与主动重验证，共 26 次测试执行全部通过。
-  异步修订由 `review-expert-a` 独立审阅并逐项复核，最终结论 APPROVE，无遗留问题。
-- `_lookup_code` **按版本恢复**：Godot >= 4.6.0 转发 `hover`/`definition`，更早版本
-  返回 `{"result": ERR_UNAVAILABLE, "type": 0}` 且不同步文档、不发送查询。
-  Godot [PR #109345](https://github.com/godotengine/godot/pull/109345)（4.6）将
-  `GDScriptCache.get_shallow_script` 的 `set_path(path, true)` 改为 `set_path_cache(path)`，
-  浅层脚本不再替换全局 `ResourceCache` 中的原脚本。4.8 开发版
-  [PR #120487](https://github.com/godotengine/godot/pull/120487) 进一步把 lookup 结果
-  改为路径表示，并移除结果构造中的浅层脚本获取（保留 `ScriptLanguageExtension` 适配）。
-  客户端继续用 `languageId: "gdscript"` 打开 `.gd3`；这不是正式的自定义语言支持，
-  也不是非 GDScript 文档过滤带来的修复。`GdccLookupService.lookup_code` 定位并移除
-  0xFFFF 哨兵（无哨兵时整词回退），计算 0 基码点位置，发送 Phase 7 擦除视图及前向
-  映射位置，再把有界查询结果映射为 LookupResult。`lsp_lookup` 仅在 >= 4.6.0 运行；
-  `lookup_suspended` 在各版本验证门槛、真实编辑器符号信号、资源身份及原路径保存。
-  分类与文档检查附加 `lookup_markup`、`lookup_classification` 锚点，覆盖原生/内建
-  类型及成员、脚本方法/属性/常量/枚举/信号/内部类、局部变量/常量/参数与遮蔽，
-  以及 BBCode 文档发布、代码/链接转换、代码结束标签转义、文档失效和检查失败时导航。
-  `_get_documentation` 是按需 LSP 大纲缓存，不在资源加载或文档虚函数内发网络请求；
-  源码变化时清空资源侧当前缓存，但保留上次发布的类名/文档快照，以便编辑器线程
-  在源更新通知或重新发布时清除帮助缓存中的全部旧类（含内部类）。未命名脚本的
-  相同文档不重复更新帮助缓存；命名脚本每次 lookup 都恢复源文档帮助条目。
-  `lookup_class_names` 覆盖同文件/跨文件/内部类与未保存头部改名（含目标资源与磁盘
-  均保留旧文本的跨文件查询）；
-  `lookup_named_erased` 覆盖编译态头部擦除后类名与文档重生成后的源码导航。
-  `nativeSymbol` 为
-  Godot 内置 LSP 扩展方法，其响应保留原始 BBCode；原生符号直接引用引擎帮助。
-- `_auto_indent_code` ✅（2026-09-28 自动化验收通过）：逐字镜像 4.5 GDScript 参考
-  算法（空白宽度栈嵌套；计划条文的"冒号后增缩进等最小规则"即该参考实现）；验收：
-  `auto_indent` 8 步精确输出锚点全绿 + 编辑器内手动对照（待 §8.3）。
-- `_get_global_class_name`（**Stage C，暂缓**）：行扫描解析 `class_name`/`extends`
-  返回字典。已核实的实施约束：(a) **必须同批**实现 `GdccScript` 成员内省虚函数
-  （`_get_script_method_list`/`_get_script_property_list`/`_get_script_signal_list`/
-  常量表，由大纲缓存供给），否则出现"类名可解析但成员为空"的倒退窗口——analyzer
-  对非 `.gd` 全局脚本类走 `ResourceLoader.load` + 资源内省
-  （`gdscript_analyzer.cpp:787-801`）；(b) 创建对话框中同名时 ClassDB 条目占槽、
-  按名去重（`create_dialog.cpp:175-198, 295-298`），已编译态不会产生双份条目；
-  (c) 未编译态脚本条目默认出现且**可选中**（对话框不查 `can_instantiate`）——
-  `.gd3` 无法运行时挂载，故注册字典置 `is_abstract: true` 使条目禁用显示，但
-  `GdccScript._is_abstract()` 必须保持 `false`：analyzer 的抽象类实例化检查看
-  资源而非注册标志，资源侧 abstract 会让 `X.new()` 报伪错误；(d) 对话框打开时会
-  加载每个全局脚本类资源（非懒加载），loader 必须保持廉价且永不失败（加载失败 =
-  条目消失，属安全降级）；(e) 引擎怪癖：`ScriptServer.add_global_class` 仅在
-  base/path/language 变化时更新 abstract/tool 标志（`script_language.cpp:408-418`），
-  本计划的 abstract 恒定不变故不受影响。验收：手动检查创建节点/资源对话框条目
-  （含同名已编译类的占槽行为），回归确认不产生重复/不可实例化条目。
-- 模板：`_make_template` 已实现，复用语言工厂返回已关联语言的有效脚本；空模板生成
-  `class_name <类名>\nextends <基类>\n`，类名由无扩展名的文件名转 PascalCase 并规范为
-  合法标识符。非空模板替换 `_BASE_`、`_CLASS_`、`_CLASS_SNAKE_CASE_`、`_TS_`，
-  类名占位符按 Godot 规则转换，缩进使用编辑器设置，不额外插入 `class_name`。
-  `_get_built_in_templates` 仍返回空列表，`_is_using_templates` 仍为 false。
-  原生创建即使关闭模板也调用 `_make_template`，因此不能返回 null，否则引擎在设置
-  脚本路径时空指针崩溃。回归锚点：`languageSkeletonWorksInRealEditor` 的
-  `template_default`、`template_substitutions`、`template_identifier` 和 `native_script_create`。注意
-  "创建脚本"对话框的 GD3 项仅在 Godot > 4.6.0 时可选（§2.1）；旧版本 `.gd3` 新建入口仍为
-  dock 按钮或在文件面板外创建。
-- `--lsp-port`/host 手动覆盖设置项（dock 状态行已前移至 Phase 5 第 2 项）。
+### 7.4 同步排除 glob 与临时纳入
 
-### Phase 10：编译工作流（`module.copy` + 编译副本）
+**设置**：项目设置 `gdcc/sync/excluded_globs`（`PackedStringArray`，默认
+`["addons/gdcc/*"]`；plugin.gd 注册属性与初始值，名称与默认值由常驻服务单源
+（`EXCLUDED_GLOBS_SETTING` / `default_excluded_globs()`））。匹配语义：对 `res://`
+相对路径做 `String.match`；`*` 跨 `/`（Godot 语义），故默认 glob 覆盖 addon 全部
+嵌套文件；**无通配符的目录名同时排除其子树**（判词额外尝试 `<glob>/*`）。服务端
+4.5 实证：`ProjectSettings.set_setting` 经 `_set` 延迟合帧发射 `settings_changed`
+（4.5 无 `get_changed_settings`，插件无法按 key 过滤，故全量转发、由对账合并吸收）。
 
-背景：dock 的 Upload 按钮只上传当前页签单文件且 VFS 路径为 `/src/<basename>`
-（同名互相覆盖、丢失完整 `source_path` 映射），"忘记先上传"是常态错误；而
-reconciler 自 Phase 3 起已把全项目自动同步进私有诊断模块。2026-09-28 三方案
-调研（含服务端代码实证）：A（第二模块持续同步）双份流量 + 双套生命周期；B
-（直编诊断模块）编译持门冻结诊断（≤120s）且打破所有权隔离；**D（服务端模块
-复制 + 编译副本）零额外同步流量、诊断不冻结、所有权隔离不破、编译输入为显式
-一致快照**——采纳 D。服务端可行性实证：`ModuleState` 无分析缓存
-（analyze/compile 每次自冻结源码快照重建），模块 = VFS 树 + CompileOptions +
-顶层类名映射 + 运行态（lastCompileResult/输出发布/任务槽）；VFS 目录节点可
-变、叶子节点不可变（内存 String），复制 = 新根 + 递归新目录节点 + 共享叶子，
-纯内存操作。
-实施：
-1. 服务端 `module.copy` RPC ✅（2026-09-28）：`API.copyModule(sourceModuleId, newModuleId)`
-   持有**源模块门**完成整份快照（VFS + options + 类名映射一次性一致；经
-   `runExclusive` 排在在途操作之后——禁止多次 RPC 读拼快照的混合时间态）；
-   复制 VFS（新目录节点、共享不可变叶子并保留
-   displayPath/absolutePath/updatedAt）、CompileOptions、顶层类名映射、
-   moduleName；**不复制运行态**（lastCompileResult = null、输出发布清零、任
-   务槽空闲）；`freezeCompileRequest` 按 moduleId 派生逻辑路径，副本是全新
-   `ModuleState`。错误：目标已存在 -32001（先快速失败再等待源门）、源缺失
-   -32000、源忙按既有门语义等待（不新增忙失败）。注册面：`JsonRpcMethodRegistry`
-   + `RpcParams.ModuleCopyParams` + 错误映射（路由 26→27）；事实源同步：
-   `json_rpc_service_implementation.md` §2.2 方法表与计数/§5 测试锚点/状态与
-   变更记录，`rpc_api_implementation.md` §3.1/§8。
-2. dock 改造（Compile 流程）✅（2026-09-28）：Compile 前先校验 dock 端点字段与服务
-   `diag_channel_status()` 的有效端点一致（防止对错误服务器按 id 复制/删除）→ 从服
-   务取诊断模块 id 并就绪校验 → 经 dock 自有 RPC 客户端（与诊断流量分队列的既有设
-   计）`module.copy(诊断id, 副本id)` → `options.set` 重写 `projectPath`
-   （`res://.godot/gdcc/<副本id>/<端点hash>`，与诊断模块的宿主目录隔离）→ `compile.start` →
-   现有轮询；再次编译命中 -32001 → 仅当服务端 owner token 属于本 dock，且本地
-   记录证明副本由本 dock 创建时，删除旧副本后重新复制（永远编译最新快照）；
-   -32002（旧副本编译仍在进行，如上次轮询超时）→ 取消本 dock 发起的旧任务并等待
-   终态后重试删除一次。副本 id 和构建目录现已固定为基于项目名称和根路径的身份
-   （2026-10-10 修订，见下节），不再从诊断 id 的 PID 派生。副本按端点逐条记录
-   （端点可在两次编译间重定向），插件空闲卸载时对每条记录用**阻塞 HTTPClient**
-   （绕过已离树的帧泵客户端）核对服务器上的所有权后做有界删除；未知响应或忙副本
-   不释放占用，在途请求卸载保留占用，避免卸载后的 RPC 写入新所有者的模块。已删除 Upload 按钮与
-   `_on_upload_script_pressed`；`auto_setup_module` 简化为仅确保服务可达并把检查用
-    模块字段指向诊断模块（2026-10-13 已移除 dock 检查字段及 Analyze 按钮，操作由
-    共享管理器承载）；旧服务端无此方法（-32601）时报错
-   提示升级服务端，不回退有损的手动上传路径。`gdcc_rpc_client.gd3` 增补类型化
-   `copy_module` 包装（dock 为兼容旧扩展仍走 `call_rpc`）。
-3. 服务端测试 ✅（2026-09-28）：API 层（`ApiModuleCopyTest`——复制保真（内容/
-   displayPath/absolutePath/updatedAt/options/类名映射逐项相等）；运行态重置逐项为
-   初始；目标存在 -32001；源缺失 -32000；复制后源继续写不污染副本（目录节点独
-   立）；副本经 RecordingCompiler 编译成功；源忙时复制按门等待）；RPC 层
-   （dispatcher 错误码与路由数 27、codec wire 形状、HTTP 工作流
-   create→put→copy→options.set→analyze→delete 且双模块操作互不阻塞）。
-4. 引擎测试 ✅（2026-09-28 自动化验收通过）：`dock_compile` 用例（真实 gdcc RPC 服
-   务 + 真实 zig 构建）：诊断模块自动同步后驱动标题栏 Build 按钮→ 副本经
-   `module.list` 观察注册（**不能用 `module.get`/`read_file`——它们走模块门，副本
-   编译期间会阻塞**）（`copy_created`）→ 编译期间诊断模块 analyze 在任务非终态时返
-   回（`diag_alive_during_compile`，任务状态锚点替代耗时门限——不冻结证明）→ 副
-    本编译成功且产物落入独立 `.godot/gdcc/<副本id>/<端点hash>` 目录（`compile_succeeded`）→ 修
-    改 fixture 并等待再同步（`fixture_resynced`）→ 再次编译走 -32001，在服务端 token
-    和本地创建记录均确认属于本 dock 后删除重复制，任务 id 严格递增且新副本内容为
-    新源（`recompile_replaces_copy`）→ 全程后诊
-   断模块仍可 analyze（`diag_still_responsive`）。配套修正：`--quit-after` 帧数上限
-   按用例可配置（真实原生构建耗时远超交互用例）；用例副本中删除工程自带的故意错
-   误样例 `src/test2.gd3`（其前端错误会阻断整工作区编译），删除需先等初始同步波把
-   它传上去再等删除落库（竞态防护）。
-验收：
-- 自动化 ✅（2026-09-28）：`ApiModuleCopyTest`（7 项，含已发布输出链接剥离与用户
-  内容保留）、`JsonRpcDispatcherTest`（路由 27 + copy 错误码）、
-  `RpcJsonCodecTest`（ModuleCopyParams wire 形状）、`RpcApiRoundTripHttpTest`
-  （copy 工作流，含副本 options.set 而源不变）全绿；`gd.script.gdcc.api.*` +
-  `gd.script.gdcc.rpc.*` 全量回归无回归（含全部既有引擎用例）。
-- 手动：dock 无 Upload 按钮；编译期间编辑器诊断/补全/hover 照常；编译产物与
-  诊断模块互不影响。
-非目标：不引入第二个持续同步模块；编译仍为显式手动动作（不自动触发）。初始阶段
-不包含安装/热重载；当前 Build 的部署与启用合同见下节。
-评审记录（2026-09-28，review-expert-a + review-expert-c 并行，两轮）：第一轮
-REQUEST_CHANGES —— 卸载时经帧泵客户端的副本删除实际发不出去（子节点先离树）；端点
-分叉时可对错误服务器按 id 复制/删除；副本继承已发布输出链接但丢失清理指针；跨端
-点副本无清理记录；120s 轮询超时后旧任务使重编译卡 -32002；三处测试锚点可假绿
-（5s 耗时门限、二次编译未换源、HTTP 测试未对副本 options.set）。第二轮各剩一处、
-同根因：Cancel 改写共享客户端端点（-32002 取消重试端点错绑 / 编译流程中途被
-Cancel 改道）——Cancel 改用钉住任务端点的临时客户端，重试加端点一致条件。修复
-中还发现并修正引擎测试驱动缺陷：`module.get`/`read_file` 走模块门，副本编译期间
-会阻塞，改由 `module.list` 观察注册、内容校验移到编译结束后。终审双双 APPROVE。
-
-### Build 部署与启用（2026-10-06）
-
-**根因**：旧 Compile 只启动编译并打印成功结果，产物留在 Godot 不扫描的
-`.godot/gdcc/<副本id>`；没有项目可见的库或 `.gdextension`，因此原生类不生效。
-副本还继承了固定的诊断模块名称，而不是项目名称。
-
-**当前合同**：
-
-- 按钮为 **Build**，每次从 `application/config/name` 读取、trim 项目名称，空白时
-  提示设置名称而不启动构建。`module.copy` 的可选 `newModuleName` 只覆盖副本的
-  `moduleName`，诊断模块仍保持 PID 作用域隔离；旧调用缺省时仍继承源名称。即使在
-  诊断 setup 后修改项目名，新构建仍使用当前名称。服务端忽略覆盖字段、回显名称不符
-  时中止并提示升级。
-- 编译副本 id 固定为 `gdcc_editor_compile_<安全化项目名前32字符>_<hash>`。
-  安全化使用 Godot `String.validate_filename()`，再将 U+0000–U+001F 和 U+007F 控制
-  字符替换为 `_`（引擎的 filename 校验本身不处理这些字符）；hash 为
-  `ProjectSettings.globalize_path("res://") + "\n" + trim 后项目名` 的 SHA-256 前16个
-  十六进制字符，区分同名不同路径、非法字符替换碰撞及长名称截断碰撞。不含 PID，
-  相同项目路径和名称在重启编辑器后仍复用 `.godot/gdcc/<副本id>` 身份目录和后端产物名。
-  项目改名或移动路径会产生新的身份；不自动删除旧 PID 目录或其他身份的历史产物。
-- 实际构建路径为 `.godot/gdcc/<副本id>/<端点hash>`，端点 hash 为
-  `host + "\n" + port` 的 SHA-256 前16字符，不含 PID 或任务 id。相同服务端点跨会话
-  复用子目录；切换端点或其他编辑器使用不同服务器时分开生成 C、对象和原始库，
-  不自动删除旧端点目录。原因是占用模块仅在单个服务内互斥，后端构建锁也仅限同一
-  JVM，且生成 C 发生在原生编译锁之前；上一次轮询超时的旧服务可能仍在写入。
-- 同一服务上同一项目身份只允许一个项目管理器拥有构建模块：先用既有 `module.create`
-  原子创建 `<副本id>_owner`，其 `moduleName` 为每个项目管理器随机生成的 token，该占用
-  模块不编译、无磁盘产物。重复构建先核对服务端 token，再替换自己已创建的快照；
-  其他 token、无占用但已存在的未知副本均拒绝接管，不删除/取消他人的模块或任务。
-  正常空闲卸载核对 token 后先删副本，确认成功/不存在后再删占用；服务器重启后
-  本地记录不能证明所有权。异常退出、忙副本、网络清理失败或在途请求卸载保留占用，
-  提示关闭占用编辑器或重启 gdcc 服务恢复。这替代旧的多编辑器独立构建目录约定，
-  诊断/补全仍为每个编辑器独立通道，不修改 API/RPC 协议。
-- C 和内部编译产物仍在独立 `.godot/gdcc/<副本id>/<端点hash>`。只从**当前终态任务的**
-  `CompileResult.artifacts` 选择目标平台对应的唯一动态库，不查询后续 lastResult，
-  不扫描旧构建目录猜产物；缺库、多个库、库在编辑器机器上不可访问时部署失败。
-  RPC 服务必须能提供编辑器可读的本地/共享文件路径，尚无跨机器二进制下载协议。
-- 已打开的被排除插件脚本仍会临时进入诊断快照；若成功结果的 `sourcePaths` 包含
-  `res://addons/gdcc/`，拒绝部署并提示关闭这些页签或恢复同步排除规则，避免项目库
-  重复注册驻留编辑器扩展的类。诊断本身仍允许检查这些打开的脚本。
-- 库部署到 `res://bin/[lib]<安全化项目名>_<平台>_<debug|release>_<架构>-<hash>.<后缀>`，
-  hash 是库内容 SHA-256 的前 16 个十六进制字符。不同内容发布到新路径，避免 macOS
-  dyld 的同路径映像缓存，以及覆盖被编辑器/游戏进程映射的库；相同内容复用已校验的
-  路径，不重复换库。此规则沿用后端 hot_reload 文档 §10 的换库合同。
-  平台和架构来自结果冻结的 CompileOptions，而非当前 OS 猜测；Godot 标签转换为
-  `AARCH64 → arm64`、`RISCV64 → rv64`。只有动态库进入 `bin`，生成 C、对象文件
-  及辅助调试文件保留在内部构建目录。
-- 描述文件固定为 `res://bin/gdcc.gdextension`，避免项目改名留下多个启用同组类的
-  描述文件。`entry_symbol = "gdextension_entry"`、`compatibility_minimum = "4.5"`、
-  `reloadable = true`；`gdcc_managed = true` 标记插件管理的文件，拒绝覆盖未标记或
-  无法解析的已有文件。用 ConfigFile 正确转义路径并保留其他目标条目。
-  `[libraries]` 只生成 `<platform>.<architecture>`（例如 `windows.x86_64`），不使用
-  debug/release 标签或模式别名；同一目标的后续构建覆盖该条目，因此 Debug 编辑器也
-  加载本次选择的 Release 库。库文件名仍保留优化级别，描述文件键与编译优化选项分离。
-  已托管描述文件中的旧 `<platform>.<debug|release>.<architecture>` 条目合并为新键；
-  其他目标优先保留已有新键，没有新键时优先选择当前编辑器原来匹配的模式，缺少该模式
-  则保留已有库路径。当前构建目标始终改指本次产物，删除所有被迁移的模式条目，避免
-  Godot 的更具体标签匹配盖过新键。旧 `gdcc_library_aliases` 校验类型后移除，不再生成。
-  `gdcc_libraries` 继续以 PackedStringArray 记录插件拥有的库文件；该字段及存在的旧
-  别名字段若类型非法，在文件发布前拒绝。重载比较迁移前实际匹配的旧模式路径或新键
-  路径与本次路径，不能因旧 Debug 路径保留而跳过 Release 重载。
-  此合同仅作用于 addon 的项目 Build；CLI 和 `gdcc_for_editor` 安装器的独立元数据
-  生成合同不变。
-- 等待现有编辑器扫描结束，再暂存库并通过 rename 发布到内容哈希路径，不直接截断
-  可能被映射的库文件；描述文件使用 ConfigFile.save，不使用 Windows 会先删除旧
-  目标的 rename。成功启用后仅清理 `res://bin` 直接目录中、不再被任何目标条目引用
-  的插件库，不通过目录穿越路径删除项目文件；删除被游戏进程
-  锁定的旧库失败只记日志，留待后续构建重试。所有文件操作检查错误，失败不报告启用成功。编译失败/取消不部署，
-  无效结果或缺产物不改动上次安装。文件发布不是跨两个文件的事务；发布或引擎重载
-  失败会明确记日志，不能把“编译 SUCCESS”当作“已启用”。
-- 编译协程结束后延迟发起 `EditorFileSystem.scan()`，由 `filesystem_changed` 回调
-  确认主线程扫描动作已完成，让 Godot
-  `ensure_extensions_loaded()` 发现描述文件、加载并写入 `.godot/extension_list.cfg`。
-  **不能先手动 load 再 scan**：manager 已有此扩展时扫描可能看不到成员变化，从而
-  不写加载清单，下一次运行又失效。插件不直接改写此引擎维护文件。
-- `is_scanning() == false` 不足以确认扫描完成：Godot worker 会在主线程 join 和
-  扩展对账前清除此标志。定时器重试被在途 worker 拒绝的 scan，只在完成信号后检查
-  描述文件已被资源树识别。首次扩展成员变化还会触发引擎全脚本软重载，取消解释型
-  脚本的悬挂协程，因此构建收尾不能 await 此扫描；按钮在回调结束/超时前保持禁用。
-- 首次扫描后检查 manager 已加载；重建时调用 `reload_extension` 并检查 LoadStatus。
-  引擎加载/重载失败或扫描超时提示检查引擎错误、重启编辑器；非本机目标只报告已安装，
-  不把它当成本机已启用。Godot 单扩展 reload 的 `extension_loaded` 信号由既有类名
-  擦除服务处理；无需伪造 batch `extensions_reloaded` 信号。项目库的 reloadable
-  合同不改变 `gdcc_for_editor` 必须 `reloadable = false` 的 ScriptServer 安全规则。
-
-**引擎实现依据（Godot 4.5）**：
-
-- `core/extension/gdextension_library_loader.cpp`：配置解析、feature tags 最具体匹配、
-  相对库路径与修改时间检测。
-- `core/extension/gdextension_manager.cpp`：`ensure_extensions_loaded` 的清单更新条件、
-  `reload_extension` 状态与单扩展信号。
-- `editor/file_system/editor_file_system.cpp`：`scan` / `_scan_extensions`，扫描完成信号
-  在扩展成员对账之后；scan 本身不等于二进制重载。
-- [Godot 4.5.1 Windows 库加载](https://github.com/godotengine/godot/blob/4.5.1-stable/platform/windows/os_windows.cpp)：
-  编辑器通过 `~<库名>` 临时副本加载 DLL；
-  [macOS](https://github.com/godotengine/godot/blob/4.5.1-stable/platform/macos/os_macos.mm) 和
-  [Unix](https://github.com/godotengine/godot/blob/4.5.1-stable/drivers/unix/os_unix.cpp)
-  直接 `dlopen` 原库，因此固定内部构建身份不等于取消 `bin` 的内容哈希路径。
-  Godot 不扫描或加载 `.godot/gdcc` 中的库，仅发布到 `bin` 后经引擎启用。
-
-**测试锚点**：`ApiModuleCopyTest`、`RpcJsonCodecTest`、`JsonRpcDispatcherTest`、
-`RpcApiRoundTripHttpTest` 覆盖副本名称覆盖、旧请求继承和非法空白；
-`CCodegenTest.moduleDisplayNameIsEscapedInEntryMessages` 覆盖 C 字符串边界。
-`EditorAddonScriptLanguageEngineTest.dockCompileCopiesDiagnosticsModule` 驱动真实 Build：
-固定模块身份与非法字符替换碰撞隔离、未知副本/其他所有者不被删除、卸载释放占用、
-新诊断会话和新 dock 复用同一身份及目录、Debug/Release 两次真实构建复用同一内部目录、控制字符
-安全化（实际项目名含换行仍能构建及部署）、两个真实 RPC 服务的构建目录隔离，
-构建期间诊断仍响应、setup 后更改含引号的项目名、库字节一致、描述文件配置与实际加载、
-清单持久化、无效结果不覆盖安装，以及二次构建后存活实例的方法返回值从 1 变为 2。
-还覆盖旧 debug/release 条目迁移、单一 OS.arch 条目切换、其他目标保留，以及真实
-Release DLL 在 Debug 编辑器中重载并改变存活实例行为；非法配置类型、
-未托管描述文件、误包含编辑器插件源码以及 bin 外/目录穿越路径不删除项目文件也有
-失败路径锚点。引擎测试驱动在
-此模式将自身脚本资源置为无路径，避免被 Godot 按资源路径收集的全脚本软重载取消；
-  被测插件与 dock 保留正常资源路径，仍经过真实引擎扫描/重载。
-
-### 共享项目管理与标题栏 Build（2026-10-12）
-
-- `plugin.gd` 创建唯一 `GdccProjectManager` 子节点，注入独立 RPC 客户端、launcher、
-  驻留诊断服务和 busy 协调器。`gdcc_dock.gd` 与 `gdcc_build_toolbar.gd` 仅持有同一
-  管理器实例，不各自创建模块、客户端或构建副本。Ping/Create/Analyze、构建/取消、
-  所有权核验、部署及延迟启用均由管理器执行，日志和动作状态通过信号传播。
-- 管理器使用解释型 `.gd` 而不是 `.gd3`：既有异步操作依赖信号 `await`，构建部署使用
-  EditorFileSystem/GDExtensionManager；编译型 addon 的无协程自举约束不变。
-  不为 UI 拆分另建一套编译状态机，不改诊断服务的自动模块创建、全项目递归同步、
-  排除 glob、打开排除脚本临时纳入以及关闭后的剔除行为。
-- 所有普通动作在修改 RPC 端点前检查共享 busy 与待启用状态；构建在首次 `await` 前
-  同步占用 busy。两个视图因此无法重入构建或将同一客户端改道。Cancel 继续使用任务
-  启动时端点上的独立客户端。待扫描/重载阶段仍禁用 Build，轮询超时保留任务 ID，
-  不阻止原有取消旧任务并重建路径。
-- 标题栏根控件是 `HBoxContainer`：左侧为 GDCC 图标与 **Build** 文本的动作按钮，
-  右侧独立箭头打开 `PopupPanel`。使用公开 `CONTAINER_TOOLBAR` 添加后，在其实际
-  父容器中按原生类名找到 `EditorRunBar` 并 `move_child` 到其左侧；不进入私有
-  `get_buttons_container()`。Godot 4.5.1 的该公开容器实际追加到渲染选择器后，故需
-  显式重排。内部类名不存在时警告并保留可用入口；插件退出时按原公开容器移除。
-  Build 与箭头均使用 `FOCUS_ACCESSIBILITY`，普通鼠标点击不会留下持续的焦点框，
-  同时保留读屏聚焦能力。
-  构建准备、编译、部署及待启用期间，Build 文本显示 `Building ` 加点阵序列
-  `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`；每帧检查距上次切换是否超过 100ms，满足时仅推进一个字符，
-  不补帧。成功启用或构建操作失败、取消、轮询超时后恢复 `Build`；空闲时不运行动画。
-  管理器单独发布构建状态，不把 Ping/Create/Analyze 等其他忙操作误显示为构建。
-- 弹出窗口显示 `server.info` 返回的版本/分支/commit 和 **Last successful build**。
-  服务版本与 `server.availableCCompilerKinds` 查询共用独立客户端，不能改写正在构建的
-  端点；诊断通道就绪后自动查询，每五秒及打开菜单时刷新。端点改变或断连后清除缓存，
-  且旧端点响应不更新 UI。查询使用具名信号回调，不依赖会被脚本重载取消的挂起 await，
-  避免查询状态和 busy 引用滞留。PopupPanel
-  显式使用编辑器主题，并随标题栏主题变化更新。
-  自动换行的版本标签具有与内容容器一致的最小宽度，避免隐藏窗口首次布局前按零宽度
-  折行、将弹窗最小高度放大；首次打开无需先构建或等待定时器即可按内容高度显示。
-   上次成功构建时间仅在扫描确认安装或本机加载/重载成功后记录，使用 Unix 秒时间戳，
-  保存于项目 editor metadata `gdcc/last_build_time`，不混入共享项目配置。
-- 新项目配置 `gdcc/build/optimization_level` 为字符串枚举 `DEBUG`/`RELEASE`，默认
-  `DEBUG`；`gdcc/build/strict_mode` 为 bool，默认 false，沿用 API 的编译策略字段。
-  `gdcc/build/c_compiler_kind` 默认为 `AUTO`；菜单始终额外保留 **Auto**，其他项仅来自
-  RPC 的可用后端列表，`ZIG_CC` 显示为 Zig，`TINY_CC` 显示为 Builtin。Auto 回传 null，
-  沿用服务端 Debug→TinyCC、Release→Zig 的规则，不按可用列表另行回退。
-  未连接到编译服务、无可用后端或查询失败时，Build 禁用，菜单显示以编辑器警告图标开头
-  的黄色提示；不可用的已保存显式选择同样禁用 Build，用户可重新选择 Auto 或可用后端。
-  下拉修改即时更新 ProjectSettings 并检查 `ProjectSettings.save()` 返回值。
-  构建点击时冻结选择，`options.get` 获取完整副本快照，仅改 `projectPath`、
-  `optimizationLevel`、`strictMode` 和 `cCompilerKind` 后整体回传；Auto 显式覆盖继承的
-  后端选择，不修改诊断模块选项。构建中的设置
-  编辑只影响下一次构建，不新增自动保存源码或排空诊断上传队列的保证。
-- 弹出窗口最底部为占满内容宽度的 **GDCC Project Settings** 按钮，打开真实的
-  Project Settings General 页面、启用 Advanced Settings 并过滤 `gdcc`，选中可编辑的
-  `gdcc/build` 子分类（`gdcc` 父分类不可选）；其他 GDCC 分类仍可从筛选树访问。4.5.1 没有
-  公开的项目设置导航入口，因此适配器先核验 `ProjectSettingsEditor` 及搜索行结构，
-  再调用继承的 Window API 和筛选控件；不能找到时提示手动打开，不替换成 Editor
-  Settings 或私有配置文件。该结构依赖需在更换 Godot 版本时复验。
-- 卸载先释放两个视图，再释放管理器（副本所有权清理及 busy 排空），之后注销诊断服务，
-  最后关闭本插件拉起的服务器。失败安装同样回收管理器，不留下半安装状态。
-- 测试锚点：`buildToolbarSharesProjectManagerAndNavigatesSettings` 检查真实标题栏位置、
-  首次/再次弹出的内容高度、箭头焦点策略、菜单内容、版本/后端查询、Auto 与显式选择
-  持久化、断连/无后端/查询失败提示、重连恢复、查询期间脚本重载与旧端点隔离、启动命令迁移、共享
-   busy/待启用门、点阵顺序/循环/单步节拍、动画恢复、设置导航及启停清理，另覆盖
-   精简 dock 布局、相对时间边界/定时刷新、忙时清空输出及旧时间元数据读取；
-   `dockCompileCopiesDiagnosticsModule` 两次均从标题栏构建，验证同一
-   所有权/快照/目录、参数冻结、上次成功时间和原有部署与存活实例重载合同。
-
-### 构建状态提示（2026-10-16）
-
-- `.gd3` saver 仅在写盘和读回校验均成功后记录项目脚本的最近保存时间；未保存的输入、
-  其他资源保存、失败保存及文件系统扫描不更新此记录。共享管理器在已有的一秒状态节拍
-  读取记录，退出时再读取一次；不依赖编译型信号投递到解释型脚本。
-- 空闲按钮在最近保存时间晚于最后一次构建尝试时显示 `Build*`。构建尝试以开始时的
-  时间为界，构建中再次保存仍保留星号，完成或启用事件不会误清除它；没有新保存时，
-  已失败的构建只显示错误标记，不继续显示星号。原有 `Building` 点阵动画不变。
-- 构建准备、启动、轮询、编译、部署或启用失败后，按钮在文字右侧使用编辑器原生
-  `StatusError` 红色图标，替换正常左侧的 GDCC 图标；菜单单独显示红色“上次构建失败”。
-  失败不禁用重试；下一次构建按新结果刷新，成功安装/启用后才确认成功，取消不作为编译失败。
-  尚在构建或等待启用时卸载插件，按未完成构建保存失败状态，避免重新启用后误显成功。
-- 按钮悬浮提示按优先级显示：断连时 `Cannot connect to the GDCC compilation server`，
-  后端不可用（含查询中、查询失败或已选后端不可用）时 `No compilation backend available`，
-  上次失败时 `Compile GDCC scripts [last build failed]`，其余情况仅显示
-  `Compile GDCC scripts`。中文编辑器使用翻译目录中的对应中文。
-- 最近保存时间、构建尝试时间和失败状态分别保存在项目 editor metadata 的
-  `gdcc/last_source_save_time`、`gdcc/last_compile_time`、`gdcc/last_build_failed`。
-  旧项目尚无构建尝试记录时沿用既有成功时间；`last_build_time` 仍只表示安装/启用成功，
-  不因失败构建改变。源码保存和构建尝试使用带小数的 Unix 秒，区分同秒内的先后事件。
-- 回归锚点：`buildToolbarSharesProjectManagerAndNavigatesSettings` 覆盖保存/未保存、
-  同秒边界、保存失败/非 `.gd3` 保存、构建中再次保存、四种悬浮提示、原生错误图标、
-  菜单状态、启用超时及待启用时卸载/重新启用；
-  `dockCompileCopiesDiagnosticsModule` 覆盖真实编译错误的提示与随后成功重建后的恢复。
-- 验收：Godot 4.5.1、4.6.3、4.7 自定义构建均通过上述两个引擎测试；4.6.3 另通过
-  `EditorAddonScriptLanguageAnalysisTest` 与 `EditorAddonClientAnalysisTest`。最终版本
-  共 15 次定向测试执行全部通过，无失败或跳过；IDE 构建及文件检查通过，独立复审 APPROVE。
-
-### 编辑器插件国际化（2026-10-16）
-
-- 英文是消息原文和未支持语言的回退；`addons/gdcc/locale/zh.po` 提供中文，使用原生
-  `Translation` 资源和独立的 `gdcc.editor` 翻译域。`Language: zh` 匹配旧版的 `zh_CN`
-  与新版的 `zh_Hans`，其他中文区域也使用此简体中文目录。
-- `plugin.gd` 在启用时注册目录，回滚或卸载时移除自己的翻译和域；不向 `godot.editor`
-  或游戏主域注入消息，不修改项目的语言、翻译资源设置或编辑器语言设置。`.po` 由核心
-  资源加载器直接读取，不依赖导入缓存；插件首次扫描前即可预加载。
-- 管理器和 launcher 继承插件的域；驻留 service 显式使用该域，卸载后恢复继承。
-  dock 与 toolbar 在 `setup` 中复制管理器的域，因为添加到编辑器容器后不再位于插件
-  子树内；其子节点（含 PopupPanel、OptionButton 菜单及原生悬浮 tooltip）继承该域。
-- 静态标签、选项和 tooltip 保留英文，使用节点自动翻译；状态、相对时间、构建点阵及
-  带参数的提示使用 `tr()`。语言变化通知会刷新动态文字，已有日志不回溯翻译。
-  管理器的 `_log` 先翻译完整模板、再插入参数，不对参数中的 `%`、路径或外部错误二次格式化。
-- 翻译范围包含构建菜单、dock、所有插件自有操作日志、launcher 输出及插件/诊断调度器
-  警告。技术标识（GDCC、GD3、Zig、设置键、RPC 方法、状态枚举、代码模板）及编译器/LSP
-  返回的原始诊断保留原文。日志 TextEdit 禁用自动翻译，避免再次翻译已格式化消息或源码。
-- 引擎限制：插件列表中的 `plugin.cfg` description 是插入引擎 tooltip 的原始元数据，
-  Godot 4.5–4.7 均不为其调用翻译；保留英文，不通过修改引擎或注入保留域绕过。
-- 原生项目设置使用 `EditorPropertyNameProcessor` 与 `godot.properties`，不会读取插件
-  自有域，也不使用控件自动翻译。`locale/zh_properties.po` 单独提供分类和属性名，
-  启用时向现有属性域注册；卸载或回滚只移除这份资源，绝不删除或清空引擎属性域。
-  目录使用处理器生成的英文显示名（如 `Compilation Server`、`C Compiler Kind`），
-  不包含已有引擎翻译的 `Host`、`Port`、`Sync`，避免覆盖通用属性名。
-- 设置名称遵循编辑器的“本地化设置”开关；`zh_CN` 与 `zh_Hans` 都匹配此简体目录。
-  Godot 4.6+ 切换语言会重载并清空属性目录，因此在翻译变化通知中幂等重加同一资源，
-  再由原生 inspector 刷新分类与标签。键名和 `DEBUG`、`RELEASE`、`AUTO`、`ZIG_CC`、
-  `TINY_CC` 等实际存储值保持不变，不通过翻译枚举提示修改配置格式。
-- 测试锚点：`chineseCatalogCoversEditorMessagesAndPreservesFormatArguments` 检查用户可见
-  消息的目录覆盖、英文原文、重复键和格式参数顺序；`buildToolbarSharesProjectManagerAndNavigatesSettings`
-  检查英文、中文、未支持语言回退、静态控件自动翻译、动态日志、原生悬浮 tooltip、
-  翻译域隔离与卸载/重新启用。`dockCompileCopiesDiagnosticsModule` 保留真实构建回归。
-- 验收：Godot 4.6.3 下静态门禁与两个引擎用例共 12 项通过，Godot 4.5.1 与 4.7
-  自定义构建各通过两个引擎用例；最终版本共 16 次定向测试执行全部通过，无跳过。
-  中文检查包含引擎真实悬浮生成的 tooltip Label，而非只读取未翻译的属性原文。
-  独立复审结论 APPROVE。
-- 项目设置翻译验收：`settingsCatalogContainsOnlyAddonPropertyNames` 保护专用目录边界；
-  引擎用例检查真实分类树与四个 GDCC 分区的属性标签、两种中文 locale、英文回退、
-  目录重载恢复及卸载后的引擎域身份。Godot 4.6.3 共 13 项静态/引擎测试通过，
-  Godot 4.5.1 与 4.7 自定义构建各通过两个引擎用例，共 17 次执行，无失败或跳过；
-  独立复审 APPROVE。
-
-### 编译服务器安装向导（2026-10-17）
-
-- 诊断通道未 READY 时隐藏输出 TextEdit 和 Clear，保留状态行，下方显示“手动配置编译服务器”
-  和“安装编译服务器”两个按钮。日志仍在后台保留；连接恢复后自动显示原输出。手动配置
-  复用 Build toolbar 的原生项目设置导航，明确选择 `gdcc/compilation_server`，不维护第二份设置。
-- 顶部“编辑器”菜单另提供“安装 GDCC 编译服务器”，连接与断连状态都可打开同一向导。
-  条目使用独立命令 ID，菜单重建后在打开时恢复，语言变化时刷新，插件卸载时移除。
-- 向导 UI 使用解释执行的 `gdcc_setup_dialog.gd`，安装服务编译为 `GdccInstallService`
-  （`gdcc_install_service.gd3`），文件/压缩包/版本解析编译为 `GdccInstallUtil`
-  （`util/gdcc_install_util.gd3`）。原生构建递归收集 `.gd3` 并保留 addon 相对路径。
-  服务内部保留信号和协程，UI 使用 `await_result` 等待原生挂起状态的 `completed`。
-  协程只在主线程运行；工作线程只承担同步文件操作。服务等待自己的帧信号，在离树时取消并排空
-  协程、join 工作线程，退出期间的剩余文件清理同步完成，不再创建新的挂起任务。
-  顶部使用可点击的“安装JRE » 安装GDCC”步骤链接，就绪步骤后显示绿色 ✔，右侧退出也为链接文本。
-  步骤与对勾按 2 像素间距分组，箭头两侧各保留 12 像素间距；行内符号不自动换行并与链接垂直居中。
-  头尾固定、内容区滚动；弹出前仅显示第一页，默认尺寸按 720×460 缩放并限制在父窗口 80% 内，
-  避免同时计算两页最小高度撑出屏幕。底部进度条与下载文字始终参与布局，空闲时通过透明度隐藏，
-  状态和下载文字单行裁剪，不使用自动换行；完整状态可悬停读取。这避免新增进度控件或文字在容器
-  尚未排序时增大 `AcceptDialog` 的内容最小尺寸，触发 `Window.wrap_controls` 单向扩窗。
-  底部全宽按钮在第一步为“下一步”，第二步为“完成编译器配置”。
-  检查 Java 或安装 JRE 成功只启用下一步，不自动跳转；需用户点击下一步或第二步链接。
-- Java 探测依次检查该项目上次确认的路径、`JAVA`、`JAVA_HOME`、`JDK_HOME`、`JRE_HOME`、
-  PATH 以及 Editor Data 中的缓存，去重后列出所有可识别 Java 供用户选择。每个候选通过非阻塞
-  进程管道执行 `--version`，必要时回退 `-version`；低于 25 的版本仍显示但不可选。管道同时排空
-  stdout/stderr，有截止时间并只终止自己创建的探测进程；不存在的可执行文件不发起子进程。
-- 安装 JRE 查询 `script-gd/gdcc-jre/releases/latest`，按平台/架构选择 Windows x64 ZIP、
-  Linux x64/aarch64 或 macOS aarch64 tar.gz，使用同次发布的 `SHA256SUMS` 强制校验。
-  没有对应资产的平台提示手动选择已有 Java，不猜测其他架构或静默使用模拟器版本。
-- 缓存根为 `EditorInterface.get_editor_paths().get_data_dir()/gdcc`，因此遵循 Godot 的
-  Windows/Linux/macOS 和便携模式路径：`runtimes/<发行包完整SHA256>[-<随机后缀>]/jre` 存运行环境，
-  `compilers/release-<id>`、`actions-<id>`、`local-<完整SHA256>` 分离编译器安装。
-  读取当前发布的 SHA256SUMS 后，先查找同校验和的主目录及复制副本，跳过 `.installing`，实际运行
-  Java 验证通过即复用，不再次下载、解压或创建目录。校验和统一小写，不按发布名称认定内容相同。
-  原先按发布包命名的缓存不删除，已保存的路径仍可扫描和选择，但不能推断为某一归档校验和。
-  列表读取 JAR 内 `gdcc-version.properties` 的 version/branch/commit，不依赖文件名推断版本。
-  下载的发行包验证 manifest Class-Path 依赖，本地导入按下面的 gdparser 标志库规则识别依赖。
-- 第二步的正式版和预览版标签页各按 20 条分页，按需加载；“加载更多”是列表末尾的特殊项，
-  选中即请求下一页，不作为独立按钮，也不允许把这一项当作可安装版本。
-  正式版只列非 draft/prerelease 的 `script-gd/gdcc` Releases，同时安装 JAR 与 `-libs.zip`。
-  正式版追加 `published_at` 的日期；预览版查询 `gdcc-jar-and-libs` Actions artifacts，排除 expired，
-  显示分支、commit、按当前系统时区偏移转换的本地日期时间，中文使用年月日格式，字段用 `·` 分隔，
-  不以分支名中已使用的 `/` 作分隔符，不直接显示 ISO 8601 时间戳。
-  通过 `https://nightly.link/script-gd/gdcc/actions/artifacts/<整数ID>.zip` 匿名下载；
-  nightly.link 已获仓库 Actions 读取授权，插件不收集 Token，也不依赖本机 gh 登录。
-  预览压缩包中的嵌套 libs ZIP 同样解压；界面不显示 nightly.link 下载说明。
-  “安装所选版本”和“从本地安装”位于同一行，中间显示“或”，按 2:1 分配按钮空间。
-  此操作行位于列表滚动区之外、进度区上方，仅在第二步显示，避免固定进度区压缩列表视口后
-  把安装按钮裁剪掉；列表继续在剩余空间内滚动，操作行不随列表滚动。
-  两按钮只取主题最小高度，避免垂直拉伸；“或”不换行、保留自然文字宽度并垂直居中，不被按钮覆盖。
-  选择本地 JAR 后要求相邻 `lib/` 中存在 `gdparser-*.jar`，否则显示错误对话框；满足此标志即认为
-  依赖库已找到，导入时复制 lib 中的文件，不逐项拒绝 manifest 中其他缺失项。完成配置前仍实际
-  运行 `java -jar ... --version`，不会在运行校验失败后保存启动命令。
-- 下载保持原始字节、有限重定向，直接流式写入 staging；进度显示已下载大小和文件总大小，取消时中止
-  请求/探测进程。哈希、解压和复制在工作线程执行，通过插件既有 busy 计数维持帧泵。
-  服务通过 `phase_changed` 更新当前阶段，明确显示读取发布信息、下载、SHA-256 校验、解压、
-  检验解压后的 Java、安装/复制校验、检验安装后的 Java、清理和完成；非下载阶段使用不确定进度动画。
-  JRE 必须有 SHA-256；编译器在 GitHub 提供 digest 时校验，旧资产无 digest 时依赖 HTTPS。
-  Windows 自动读取当前用户手动代理的 `ProxyEnable`/`ProxyServer`，忽略 PAC/绕过规则；
-  显式 Godot Editor HTTP 代理优先。系统策略强制机器级代理、SOCKS 和代理认证不在此接口范围。
-- ZIP 解包前检查中央目录的大小/条目数，拒绝路径穿越、加密和不支持的 ZIP64；tar.gz
-  有解压大小、头校验和及条目数上限，支持发行包的 PAX 时间戳和普通文件/目录，保留 Unix
-  执行位。法律声明符号链接在普通文件完成后物化为包内副本，不创建可用于逃逸的链接。
-  编译器验证完成后把 staging 原子移动为缓存，失败不修改项目设置，取消后清理 staging。
-  JRE 优先复用同校验和的有效目标（包括随机后缀副本）；目标不存在时尝试快速移动。Windows `MoveFileW` 失败只返回笼统的 `FAILED=1`，
-  因此移动失败或旧目标不可用时，改用独立随机后缀目录复制完整 JRE，逐文件 SHA-256 校验后再次运行 Java。
-  复制成功不要求最后再重命名，直接使用实际可执行路径；旧目标不被移动、覆盖或删除。
-  复制中的目录带 `.installing` 标记，扫描时跳过，校验成功才移除标记；失败/取消清理未完成目录，
-  清理包含隐藏文件。仅存在空目录、被占用的旧目标不再阻止安装，也不对不存在的 java.exe 发起探测。
-- “完成编译器配置”在 Java 和所选编译器就绪后启用，先验证 Java、JAR 依赖和 `java -jar ... --version`，再将本地启动命令
-  写入 `gdcc/compilation_server/launch_command`、host 设为 loopback，并保存项目；保存失败
-  恢复命令、host、port 三项内存设置。Java/JAR 路径另存项目 editor metadata。管理器忙时拒绝改写，
-  已连接不再构成拒绝条件。向导先用 `TCPServer.listen(0, "127.0.0.1")` 预留一个不同于旧端点的
-  本地空闲端口，保存后释放预留；新端点避免 `ensure_running` 把旧服务误判为可复用的外部服务。
-  随后共享项目管理器显式 retarget 诊断通道，使旧 epoch 失效，异步关闭本会话拥有的旧服务，
-  再通过共享 launcher 拉起新命令；外部旧服务继续运行。端点切换仍使用原有私有模块清理与重新同步，
-  不卸载语言或重启 Godot 的 GDScript LSP。旧服务停止失败保留跟踪并记录日志；新服务拉起失败
-  保留已保存配置，向导显示明确错误，不误报成功。设置窗口手工修改命令仍只影响下次启动。
-  `configured` 保留为对话框成功事件，仅在保存与新服务拉起成功后发出，不再由 dock 监听并重复拉起。
-  端口预留释放到 JVM 绑定之间并非原子交接，仍有被无关进程抢占的低概率窗口；当前 launcher
-  沿用 TCP 探测收养策略，无法保证抢占者就是本次命令对应的实例。若要消除此边界，需要服务实例
-  身份握手或端口交接协议；本次不扩展启动协议，也不放宽外部进程所有权约束。
-  此流程配置的是编译服务器启动程序，不擅自修改 `c_compiler_kind`、优化级别或其他构建偏好。
-- 测试锚点：`EditorAddonSetupEngineTest` 使用隔离真实编辑器、本地 HTTP 服务和 ZIP/JAR
-  fixture 检查断连/恢复、timeline、Java 进程探测、分页、nightly.link、依赖解包、缓存复用、
-  本地导入、SHA-256 失败和路径穿越；存在已下载离线发行包时额外校验并解压 Windows/Linux
-  JRE，实际执行 Windows Java。`buildToolbarSharesProjectManagerAndNavigatesSettings` 检查
-  连接后输出布局及手动设置导航，原构建部署引擎回归继续保留。新增界面与错误使用既有翻译域。
-- 初版验收记录：Windows 宿主的 Godot 4.5.1、4.6.3、4.7 自定义构建均通过向导 24 步检查，
-  包括真实 JRE 离线包、探测超时/取消、项目配置持久化和已连接服务保护；三个版本的原生
-  设置导航与构建部署两个回归也均通过。11 项静态门禁通过。Linux 包仅验证跨平台解压，
-  尚未在 Linux/macOS 宿主执行安装；不可将此记录解释为这些宿主的端到端验收。
-  `review-expert-a` 独立审阅及本地导入取消边界修复后的复核均为 APPROVE，无待确认的架构变更。
-  这 24 步只覆盖 JRE 解包和探测，未覆盖安装发布，不能视为完整 JRE 安装验收。
-- 上一轮布局修复在 Godot 4.6.3 下通过向导 38 步及 11 项静态检查。
-  新增真实 JRE 经本地 HTTP 服务下载、校验、首次发布、已有空目录修复、发布后 Java 25 执行，
-  以及窗口范围、步骤停留/切换、全部 Java 列表、列表内分页、操作按钮比例、本地缺库错误弹窗、
-  gdparser 标志依赖规则和全宽完成按钮状态的检查；未运行其他 Godot 版本。
-- 目录移动容错及对齐修复的最终验收显式指定 Godot 4.6.3，并核对日志 banner，避免继承本机默认引擎。
-  向导新增顶部链接/符号间距、按钮高度、“或”的居中与不遮挡、11 个 JRE 阶段即时显示、Windows 文件锁
-  导致移动失败后的完整复制与 Java 运行、未完成缓存排除及隐藏标记清理检查。
-  TAR 字段先按 NUL 字节截断再解码，避免构造 `String.chr(0)` 产生大量 Unicode 解析诊断。
-  最终在 `4.6.3.stable.official.7d41c59c4` 通过向导 44 步和 11 项静态检查，无 ERROR、SCRIPT ERROR
-  或 Unicode 解析诊断。版本由同次进程显式设置的 `GODOT_BIN` 和实际编辑器日志共同确认。
-- `.gd3` 迁移后在 Godot 4.6.3 通过 49 步原生向导验收，新增同步/挂起结果桥接、代理初始化、
-  进程/HTTP/文件工作线程运行期间释放服务，以及取消后的 staging 清理检查。
-  相关缓存与生命周期定向回归共 55 项通过；Zig 和 TinyCC 均通过四线程、300 缓存点、四代
-  重建与扩容检查，内建/工具/fixed/单例查找覆盖并发冷查找与后续缓存命中。
-  缓存同步不扩展 HRX 并发回收能力，卸载仍须先停止并 join 工作线程。
-- 安装向导三项回归在 Godot `4.6.3.stable.official.7d41c59c4` 通过 56 步：新增忙闲及长状态文字的
-  固定窗口检查、实际下载逐帧高度检查、完整 SHA-256 主目录/随机副本复用、大写校验和、同名发布
-  校验和改变时拒绝错误下载、已连接时重新配置、忙时拒绝以及新服务启动失败提示。
-  相关 17 项定向 JUnit 测试全部通过，无失败、错误或跳过；真实插件另外验证拥有服务替换后的
-  新 PID、诊断重新就绪、旧服务退出，以及外部旧服务在切换和插件禁用后仍存活。
-  `buildAddonNative` 成功更新工作区 DLL/PDB。此次未进行其他引擎版本或 Linux/macOS 宿主验收。
-
-### 精简 dock 与相对时间（2026-10-13；断连展示于 2026-10-17 扩展）
-
-- dock 连接时只有两块可视内容：顶部单行 `Connected/Disconnected | Diagnostics: ... | Build: ...`
-  与下方只读 `TextEdit`；断连时下方切换为配置入口，见上节。连接指示对应诊断通道 READY；诊断时间取最近成功合并轮的
-  单调时钟，构建时间沿用成功安装/启用后的记录。尚无记录时显示 `Never`。
-- 移除配置提示、模块输入及 Ping/Create/Analyze/Build/Cancel 按钮。构建入口仅保留
-  标题栏 Build；模块自动创建、同步、所有权核验和内部取消恢复流程不变。
-- 输出水平/垂直填满剩余区域，最小高度按实际行高容纳至少六行，并加上内边距及横向
-  滚动条预留高度；字体/主题变化后重新计算，不使用固定像素高度。状态文字不换行，窄宽度时
-  省略并可悬停读取完整内容；右侧主题图标 `Clear` 清空现有输出，构建忙时仍可使用，
-  不修改任务、诊断或构建记录，后续日志继续正常追加。
-- `gdcc_project_manager.gd.relative_time_text` 是两个视图唯一的相对时间格式化入口，
-  英文原文支持中文翻译；负间隔按 0 秒处理。少于 60 秒显示整数秒，如 `59s ago`；60–599 秒
-  向下取整到半分钟，如 `1min ago`、`1.5min ago`、`9.5min ago`；600–3599 秒
-  向下取整到整数分钟，如 `10min ago`、`59min ago`；3600–86399 秒向下取整到半小时，
-  如 `1h ago`、`1.5h ago`、`23.5h ago`；至少 86400 秒向下取整到半天，如
-  `1d ago`、`1.5d ago`、`2d ago`。
-- dock 状态行与 Build 菜单的 **Last successful build** 均每秒刷新，且状态变化/菜单
-  打开时立即刷新；不依赖用户再次触发诊断或构建，空闲 Build 动画仍保持关闭。
-- `gdcc/last_build_time` 仍是项目 editor metadata，不写共享项目设置；新记录改存 Unix
-  秒，避免显示时依赖本机时区。已有无偏移的本机日期字符串按当前本机 UTC 偏移一次性
-  转换并保存为 Unix 秒，后续启动不再重复解释；由于旧格式未记录历史时区偏移，
-  首次迁移跨夏令时的旧值可能有偏差。
-
-### Phase 10 后修复（编辑器体验，2026-10-05 自动化验收通过）
-
-Phase 10 完成后暴露的两个编辑器体验问题及其修复。均为局部合同修订，不改变模块
-结构；评审与引擎回归见本节末。
-
-#### 修复 1：编辑期间诊断保持可见（过期可见合同）
-
-**现象**：在编辑器中键入时既有报错立即消失，停键约 800ms 防抖 + 一轮异步分析后才
-重新出现——无法对照报错改代码。
-
-**根因链**：编辑器每次校验节拍用 `_validate` 的返回值**整体替换**该页签的错误显示
-（Godot `ScriptTextEditor._validate_script`：`errors.clear()` 后按新结果重建）；而
-gdcc 通道的缓存读路径按内容版本门控——`notify_source_changed` 先升版，同一次
-`_validate` 再读缓存时版本必然不匹配 → 返回空 → 编辑器把旧诊断清空。新版分析要等
-防抖与飞行结束才回填。LSP 通道本就"stale beats none"（读 URI 最新缓存），故仅
-gdcc 通道有此问题。
-
-**修复**：`GdccDiagCache` 读路径改为**过期可见**——条目在新鲜轮合并前持续返回（行
-列指向编辑前文本，属刻意取舍，与 Godot 自身"新结果到达才替换"的行为一致）；写侧
-合同不变（仅调度器合并可写、仅匹配版本可合并、outage/重定向/卸载仍清空）。
-`is_version_current` 保持严格新鲜度语义，供 Phase 5 重校验门与测试观测。
-**不破坏的合同**：LSP 错误仍抑制 gdcc 显示；合并仍按版本匹配写回；修复后的新一轮
-（空结果）合并 + 主动重校验仍是诊断消失的唯一途径。
-
-#### 修复 2：同步排除 glob（`gdcc/sync/excluded_globs`）
-
-**现象**：`res://addons/gdcc/` 下 addon 自身的 `.gd3` 被扫入诊断模块参与整模块分析，
-浪费分析轮次且其报错污染问题列表。
-
-**修复**：新增**项目设置** `gdcc/sync/excluded_globs`（`PackedStringArray`，默认
-`["addons/gdcc/*"]`；plugin.gd 注册属性与初始值）。匹配语义：对 `res://` 相对路径
-做 `String.match`；`*` 跨 `/`（Godot 语义），故默认 glob 覆盖 addon 全部嵌套文件；
-**无通配符的目录名同时排除其子树**（判词额外尝试 `<glob>/*`）。服务端 4.5 实证：
-`ProjectSettings.set_setting` 经 `_set` 延迟合帧发射 `settings_changed`（4.5 无
-`get_changed_settings`，插件无法按 key 过滤，故全量转发、由对账合并吸收）。
-作用于三处入口，保持"诊断模块 VFS 与 LSP 镜像对项目 `.gd3` 集合认知一致"的既有
-不变式：
+作用于三处入口，保持"诊断模块 VFS 与 LSP 镜像对项目 `.gd3` 集合认知一致"的不变式：
 
 1. `GdccFileReconciler._scan_gd3_files`（诊断对账与 LSP 镜像共用的唯一递归扫描）逐
    文件过滤；**不做目录剪枝**——按探针路径剪枝会被精确文件 glob 误伤（如
@@ -3001,15 +1847,15 @@ gdcc 通道有此问题。
    500ms 节流的关闭检查（遍历已跟踪路径中"排除且无页签"者）标记对账，页签关闭后
    下一趟对账自动将其移出模块（本地除名 + 服务端删除；未落盘路径不置墓碑——墓碑
    只随真实磁盘删除，否则取消排除后永不复纳）。**恢复回路**（镜像重建后的重传）
-   的门卫由 `is_disk_known` 改为 `vanished`：排除的 disk-known 临时纳入文件不在磁盘
-   扫描集合内，旧门卫会让它在模块重建后永远不再上传（评审发现）。
+   的门卫是 `vanished` 而非 `is_disk_known`：排除的 disk-known 临时纳入文件不在磁盘
+   扫描集合内，旧门卫会让它在模块重建后永远不再上传。
 4. `GdccWorkspaceMirror` 维持排除（不随临时纳入改变）：`_should_close` 对排除路径恒
    true（已镜像的排除路径 didClose，即使页签打开——该页签自身的 `_validate` 同步
    会独立维持其单文件 LSP 文档）；`_resolve_current_text` 对排除路径返回
    not-found（发送时重估原则：设置变更前入队的旧 sync 意图不得把刚排除的内容发
    出去）；drain 的 close→sync 复活分支以排除优先于"文件仍存在"（否则排除路径
    的 sync 解析为 not-found 会重新入队 close，两个转换分支均不耗预算，主线程
-   死循环——评审阻塞项）。
+   死循环）。
 
 **生效与时效**：判词每次调用现读设置（无缓存）；plugin.gd 将
 `ProjectSettings.settings_changed` 转发为对账触发，设置变更即刻生效——新排除的已
@@ -3024,145 +1870,246 @@ disk-known 路径置墓碑防复活），页签仍打开的排除路径保留（
 服务端 `didClose` 为空实现，此前已解析的内容在服务端缓存中可能残留。镜像侧
 didClose 的意义是停止客户端后续的 didChange 维护流量并释放客户端簿记。
 
-**已知限制的解除（2026-10-05 已修）**：临时纳入的文件若引用了模块外的类型（例如
-addon 文件引用其他 addon 类），此前 `includeLowering=true` 的分析会在 CFG lowering
-的 `requireLoweringReadyCall` 不变式上抛异常——根因是 `propagateStep` 只为动态链的
+**曾暴露的前端缺陷（已修）**：临时纳入的文件若引用模块外类型（如 addon 文件引用
+其他 addon 类），`includeLowering=true` 的分析曾在 CFG lowering 的
+`requireLoweringReadyCall` 不变式上抛异常——根因是 `propagateStep` 只为动态链的
 **属性**后缀发布 fact，**调用**后缀无 fact（前端 chain-reduction 合同的对称性缺口，
 任何 `x.foo().bar()` 动态链式调用都可触发，与排除功能无关）。已在前端补齐动态调用
-后缀的 DYNAMIC fact 发布（详见
-`frontend_chain_binding_expr_type_implementation.md` 2026-10-05 修订），回归锚点
+后缀的 DYNAMIC fact 发布（见
+`frontend_chain_binding_expr_type_implementation.md`），回归锚点
 `FrontendLoweringUnresolvedTypeFallbackTest` + 链绑定焦点测试。此类文件现在正常分析
 并给出 `sema.type_resolution` 警告，诊断通道不再因此进入 outage。
 
-#### 验收（2026-10-05）
-
-- 引擎用例 `gdcc_diag`：`stale_version_suppressed`（旧合同负例）翻转为
-  `stale_version_still_visible`——编辑后 gdcc 错误**仍显示**且新鲜轮落地替换；
-  `_wait_diag_items` 收紧为"新鲜且非空"防过期条目假绿。
-- 新引擎用例 `sync_exclusions`（21 步全绿）：默认排除使 `addons/gdcc/*.gd3` 不进模块
-  且不被 LSP 镜像（以 `src/test2.gd3` 双通道同步为正对照）；**临时纳入**——真实
-  页签打开排除文件后由编辑器自身 `_validate` 自然接纳并上传真实内容，跨一次完整对账
-  （以 canary 上传为对账已完成之证）仍保留于 registry 与 VFS（`excluded_open_*`）；
-  模拟准入（无页签 notify）随后**在无任何手动/设置触发的情况下**被节流关闭检查逐出
-  （registry 与 VFS 双消失——`excluded_simulated_*`；该窗口内唯一可能的对账触发源即
-  该检查。**上传与逐出的先后顺序刻意不作断言**：从未被页签持有的排除路径在上传前
-  被逐出是合法行为，"已上传内容的服务端删除"由 `settings_change_excludes` 与
-  `buffer_only_excluded` 确定性覆盖）；自定义目录形式 glob
-  （`excl_probe`，无通配符）先同步并经 LSP 镜像（`probe_mirrored_lsp`，兼作
-  close→sync 死循环守卫）、改设置后**不经手动 filesystem 通知**即被对账删除且镜像
-  didClose（实证 settings_changed 接线）；纯缓冲区（未落盘）源验证"上传→排除删除→
-  取消排除后无需落盘即可重新接纳"全链（排除不得对其置墓碑）；恢复默认后重新同步。
-  恢复路径回归（`recovery_*`）：已同步文件在页签打开期间被排除时于对账中保留
-  （以同批被排除的无页签 victim 删除为对账已运行之证），模块卸载重建后**无需编辑
-  缓冲区**即恢复上传并完成新一轮分析（缓存 v1 重新新鲜）。
-- 静态门禁（addon 全量 .gd3 analyze+lowering、无协程、解释脚本解析）、
-  `gd.script.gdcc.api.*` + `gd.script.gdcc.rpc.*` 全量回归（含全部引擎用例，
-  20 测 1 跳过）无回归。
-
-评审记录（2026-10-05，review-expert-c，两轮）：第一轮 REQUEST_CHANGES ——(1)（阻塞，
-已修）已镜像文件被排除时镜像 drain 在 close→sync→close 间死循环（两个转换分支均不
-耗预算，主线程冻结），修为排除优先于"文件仍存在"的复活判断；(2)（中，已修）未落盘
-的纯缓冲区已跟踪源在排除后残留模块，修为显式排除绕过缓冲区保留规则、且仅
-disk-known 路径置墓碑（否则取消排除后永不复纳）；(3)（低，已修）文档对 LSP 索引
-隔离的承诺超出 4.5 能力（服务端 didClose 为空实现），收窄为"停止自动镜像与模块
-同步"。评审同时指出首版 `sync_exclusions` 未让 LSP 就绪、镜像路径从未被覆盖——用例
-已按真实 LSP 双通道重构。临时纳入语义（同日后续需求）评审两轮：第一轮命中"disk-known
-临时纳入文件在模块重建后永不恢复"（恢复回路门卫改 `vanished`）、驱逐锚点可假绿、
-文档表述矛盾三项，修复并将用例扩至 21 步（真实页签保留/模拟路径节流逐出/重建恢复
-全链）；第二轮命中"上传先于逐出"的强制排序与生产语义冲突（间歇性 put 失败经 outage
-自愈后逐出合法抢先），改为不断言顺序 + 以 channel session 钉住窗口排除恢复路径假
-绿，并以**变异运行**（临时摘除节流检查）实证锚点致死、恢复后转绿；终审 APPROVE。
-测试期另暴露一项**与本功能无关的前端既有缺陷**（见上"已知限制"），按架构级变更
-流程保留待确认。
-
 ---
 
-## 8. 测试策略
+## 8. 测试策略与回归锚点
 
 ### 8.1 静态合同测试（无环境依赖）
 
-`EditorAddonScriptLanguageAnalysisTest`：与 `EditorAddonClientAnalysisTest` 同构——
-逐文件 `analyze(includeLowering=true)`、无 ERROR、无 `await` 等禁用构造；
-`plugin.cfg` 五字段不变；解释型 plugin/dock/项目管理器/构建工具栏/launcher/高亮器
-仅语法解析，不作为编译目标。
+- `EditorAddonScriptLanguageAnalysisTest`：与 `EditorAddonClientAnalysisTest` 同构——
+  逐文件 `analyze(includeLowering=true)`、无 ERROR、无 `await` 等禁用构造；
+  `plugin.cfg` 五字段不变；解释型 plugin/dock/项目管理器/构建工具栏/launcher/高亮器/
+  安装向导仅语法解析，不作为编译目标；断言所有安装产物 `reloadable = false`；无动态
+  库产物的安装抛 `IOException`（负例）。
+- `EditorAddonClientAnalysisTest`：客户端库的编译就绪门禁（挂起对象 API、帧泵纪律），
+  插件清单与 i18n 目录锚点（`chineseCatalogCoversEditorMessagesAndPreservesFormatArguments`
+  检查用户可见消息的目录覆盖、英文原文、重复键和格式参数顺序；
+  `settingsCatalogContainsOnlyAddonPropertyNames` 保护设置名称专用目录边界）。
+- `EditorAddonDiagnosticsFixtureTest`：Java 侧钉死引擎测试所用 fixture 的前端诊断事实
+  ——路径式 `extends` 报 `sema.class_skeleton`（ERROR，锚定 `class_name` 行）；
+  `@onready var camera = $Camera3D` 报 `sema.deferred_expression_resolution`
+  （WARNING）+ `sema.compile_check`（ERROR）配对（4 行 23 列）且 `includeLowering=false`
+  时后者不出现；两 fixture 同模块单轮齐报；同名文件经 displayPath 独立键控。
+- 服务端/后端锚点：`RpcServerShutdownTest`（`server.shutdown` 三层时序合同，§2.8）、
+  `ApiModuleCopyTest`（复制保真、运行态重置、-32001/-32000、源忙门等待、副本编译、
+  源续写不污染副本）、`JsonRpcDispatcherTest`（路由数与错误码）、`RpcJsonCodecTest`
+  （wire 形状含 `absolutePath` 可选绑定）、`ApiVirtualFileSystemTest`（空白
+  `absolutePath` -32602 负例）、`RpcCompileHttpIntegrationTest`（absolutePath-only
+  上传的 RPC 级锚定）、`RpcApiRoundTripHttpTest`（copy 工作流）、
+  `CClassMetadataSupportTest`（元数据 JSON 全键形状、转义矩阵经"渲染→C 反转义→JSON
+  解析"逐字往返、惰性解析+缓存+深拷贝）、`ApiCompileClassMetadataTest`（管线级：逐类
+  恰一个访问器、JSON 与 putFile 事实一致、静态绑定形状、无 absolutePath 的重传保留
+  既有 provenance）、`CCodegenEngineMethodBindHeaderTest`（名称稳定性断言归一化
+  `compiled_at`）、`CCodegenTest.moduleDisplayNameIsEscapedInEntryMessages`（C 字符串
+  边界）、`FrontendClassSkeletonTest` 的 `_gdcc_` 保留前缀用例、
+  `CustomReceiverCallableGapTest`（§5 Callable 边界）。
 
 ### 8.2 引擎集成测试（`GODOT_BIN` + Zig 门控，Assumptions 跳过）
 
 harness：复制 `src/editor_addon` 到 `tmp/test/editor_addon_script_language/<case>/`
 时排除 `.godot/` 和项目根 `bin/`，避免手动 Build 的游戏扩展在首次扫描中触发额外
-脚本重载。启动前清空副本的 `gdcc/compilation_server/launch_command`，由用例配置自己的端点
-和拉起命令，不能继承源工程的相对 jar 路径。
-并安装编译产物（复用 `EditorAddonBootstrapEngineTest` 模式），**额外注入一个仅测试
-用的解释型驱动插件** `addons/gdcc_test_driver/`（`plugin.cfg` + `driver_plugin.gd`，
-GDScript，不属于发布物）：编辑器就绪后驱动等待 `GdccEditorService` 就绪与 LSP 监听，
-逐项断言并逐行输出 `GD3_TEST_RESULT: ...`，最后 `get_tree().quit(exit_code)`。
-启动命令：`godot --headless --editor --path <copy> --quit-after <N>`，其中 N 为纯
-兜底的大帧数（如 100000；正常退出由驱动 `quit()` 触发），进程级超时
-`destroyForcibly()` 沿用现有模式。不使用 `-s EditorScript`：`-s` 要求
-`MainLoop`/`SceneTree` 入口，与 EditorScript 不兼容；驱动插件路径同时保证
-EditorPlugin 加载顺序与真实使用一致。
+脚本重载。启动前清空副本的 `gdcc/compilation_server/launch_command`，由用例配置自己的
+端点和拉起命令，不能继承源工程的相对 jar 路径。安装编译产物（复用
+`EditorAddonBootstrapEngineTest` 模式），**额外注入一个仅测试用的解释型驱动插件**
+`addons/gdcc_test_driver/`（`plugin.cfg` + `driver_plugin.gd`，GDScript，不随插件
+发布）：编辑器就绪后驱动等待 `GdccEditorService` 就绪与 LSP 监听，逐项断言并逐行
+输出 `GD3_TEST_RESULT: ...`，最后 `get_tree().quit(exit_code)`。启动命令：
+`godot --headless --editor --path <copy> --quit-after <N>`，其中 N 为纯兜底的大帧数
+（如 100000；正常退出由驱动 `quit()` 触发），进程级超时 `destroyForcibly()` 沿用
+现有模式。不使用 `-s EditorScript`：`-s` 要求 `MainLoop`/`SceneTree` 入口，与
+EditorScript 不兼容；驱动插件路径同时保证 EditorPlugin 加载顺序与真实使用一致。
+子进程配置目录经 `APPDATA`/`XDG_CONFIG_HOME`/`HOME` 重定向隔离，EditorSettings 写入
+不污染真实用户配置。
 
-Java 侧逐行匹配 `GD3_TEST_RESULT: `；RPC 服务端 `127.0.0.1:0` 起停沿用现有模式，
-临时端口由驱动插件在服务节点入树后、首个 `ping` 前注入（再调一次
-`install(..., rpc_host, rpc_port)`，或直接写服务下固定名 `GdccEditorRpcClient`
-子节点的 `host`/`port` 字段；§3.5 已要求每次 `install` 写回端点，两条路径等价）。
-拉起功能用例（Phase 1）反向操作：Java 侧只选定空闲端口而不启动服务，由驱动插件把
-项目设置 `gdcc/compilation_server/host|port|launch_command` 写好后触发连接（2026-10 前写
-EditorSettings；迁移后写 harness 项目的 ProjectSettings，随用例目录天然隔离），
-验证自动拉起与退出关闭路径（§7 Phase 1 验收）。
-若 headless editor 路径在实现期证实不稳定，降级为：(a) 现有非编辑器 bootstrap 断言
-（编译产物可加载、类可实例化、P0-C 冒烟）保持全量；(b) §8.3 手动清单逐项执行并记录。
+harness 实施期事实：
 
-### 8.3 手动验收（每个 Phase 的"手动"项汇总执行）
+- Java 侧逐行匹配 `GD3_TEST_RESULT: `；RPC 服务端 `127.0.0.1:0` 起停沿用现有模式，
+  临时端口由驱动插件在服务节点入树后、首个 `ping` 前注入（再调一次
+  `install(..., rpc_host, rpc_port)`，或直接写服务下固定名 `GdccEditorRpcClient`
+  子节点的 `host`/`port` 字段；§3.5 已要求每次 `install` 写回端点，两条路径等价）。
+- 拉起功能用例反向操作：Java 侧只选定空闲端口而不启动服务，由驱动插件把项目设置
+  `gdcc/compilation_server/host|port|launch_command` 写好后触发连接（harness 项目
+  天然隔离）；拉起命令为 `java -cp <测试 classpath> gd.script.gdcc.Main serve`
+  （自包含，不依赖预构建 jar），占位符替换路径与生产一致。
+- 携带 `lsp_port` 的用例由 harness 注入 `--lsp-port` CLI 覆盖（引擎支持且优先于
+  EditorSettings），服务端端口在插件代码运行前钉死（脚本改设置不重启服务，§2.6）。
+- 停机坪端点用**永远应答 HTTP 500 的黑洞服务器**——实证 Godot `HTTPRequest` 对连接
+  被拒端口会挂起至 30s 请求超时，快速失败使钩子路径可被确定性断言。
+- 引擎测试驱动 `DRIVER_PLUGIN` 文本超过 Java 单一字符串字面量 64KB class 文件上限：
+  拆为多个方法返回的文本块运行时拼接（方法调用非常量表达式，避免编译期折叠回原
+  限制）。
+- `dock_compile` 用例副本中删除工程自带的故意错误样例 `src/test2.gd3`（其前端错误会
+  阻断整工作区编译），删除需先等初始同步波把它传上去再等删除落库（竞态防护）；
+  `--quit-after` 帧数上限按用例可配置（真实原生构建耗时远超交互用例）。
+
+`EditorAddonScriptLanguageEngineTest` 当前用例（每个用例对应 `EXPECTED_STEPS` 键）：
+
+| 用例 | 覆盖 |
+|---|---|
+| `language` | 语言注册、加载/保存/重读/worker 线程加载往返、`_validate` valid、禁用/启用循环中语言实例同一性 |
+| `create_resource` | 模拟 CreateDialog→InspectorDock 序列（ClassDB 实例化 + 属性枚举 + 保存 + `edit_resource`），禁用态同路径不崩溃（§2.3 自愈回退） |
+| `launch` / `launch_bad` / `launch_none` / `launch_replace`（两个测试方法） | 冷启动自动拉起、退出关闭；不存在可执行文件的两种平台分叉报告；无命令被动失败；向导替换已拥有服务/保留外部服务 |
+| `lsp_connect` | 退避重连吸收启动窗口；强制断开重连与禁用/启用循环后重新握手（READY epoch 递增）；循环后内联等待仍可用 |
+| `lsp_validate` | 降级路径 valid+空、错误样例行号与 `path` 键、警告五键、非 BMP emoji 行/列锚定、禁用态安全应答 |
+| `lsp_fifo` | 背靠背发送按 FIFO 归属（per-generation 绑定历史）；等待超时不清队列；`request_blocking` 往返 |
+| `lsp_runtime_enable` | gdcc 启动时禁用 → 运行期启用 → 阻塞被拒（标记 + 快速返回）且异步诊断浮现 |
+| `gdcc_diag` | 路径式 extends 浮现 `[gdcc ...]` 前缀错误；WARNING/ERROR 配对映射；同名文件独立键控；过期可见；LSP 错误抑制 gdcc 叠加；删除/重命名对账（服务端 -32005 证据）；墓碑与整模块重分析；-32001 残留重建；HTTP 500 黑洞经 hook 恢复；busy 上报与排空；hook 单飞/超时/失败上限 |
+| `diag_revalidate` | 合并检出后无输入重校验（`_validate` 计数窗口）；同诊断新版本必刷；同版本重并不发；非当前页签不发；弹窗暂缓与关闭补发；端点 retarget（项目设置驱动）与状态区 |
+| `lsp_completion` | 降级形状、kind/insert 文本白盒映射、`call_hint` 0xFFFF 对标记、关键字（标识符前缀触发）、空上下文合法空结果、成员补全、CJK 码点锚、无哨兵降级、FIFO 按代绑定不受补全流量污染、禁用态安全、循环后 `_validate` 健康 |
+| `class_name_erasure` | 元数据读回（含嵌套类与缓存隔离）、准入矩阵、两种行形式改写与双向映射、CJK、陷阱组（注释/字符串/多行串/跨行串/转义闭合/空基类/空 token）、伪错误消失与 gdcc 诊断浮现、决策翻转（备忘清空 + LSP 文档版本前进 + 重校验）、真实 `unload_extension`/`load_extension` 双向翻转、擦除后大纲行号 |
+| `lsp_workspace` | 未就绪不镜像、初始同步进服务端文档集、缓冲区优先于磁盘、磁盘变更刷新、删除 didClose、tombstone+复建静默窗口、40 文件批量同步期间 `_validate` 逐次 < 400ms、断连重连全量重放 |
+| `lsp_outline` | 映射/过滤/行号/标志/降级/错误/空脚本、真实 Members Overview 与点击跳转、未保存刷新、纯缓存读取、同键去重、过期响应、超时不断线、空结果缓存、非线程查询、删除/排除清理、重连重请求 |
+| `lsp_lookup`（Godot >= 4.6.0） | 同步拒绝降级、白盒（MarkupContent/MarkedString/Location 各形、URI 方言往返、整词回退边界）、同文件方法、path-extends 跨文件、class_name 跨文件降级（负例）、CJK 锚、未知符号负例（三段式：文档已解析 + 双腿 ok+空结果 + 语言降级）、无哨兵回退、禁用态安全、符号分类（`lookup_markup`/`lookup_classification`：原生/内建/脚本成员/局部变量/遮蔽/BBCode 发布/代码与链接转换/文档失效/检查失败导航）、`lookup_class_names`（同文件/跨文件/内部类/未保存改名）、`lookup_named_erased`（擦除后类名与文档重生成后源码导航） |
+| `lookup_suspended` | 各版本验证门槛、真实编辑器符号信号后原资源身份、缓存路径与保存往返 |
+| `auto_indent` | 空白栈精确输出、注释/空行透传、退阶怪癖、from_line 门禁、空格设置切换、from>to 恒等负例 |
+| `syntax_highlighter` | 新页签自动选中、成员扫描计数、24 组逐列颜色断言（注解/类型提示/基类与自有成员/字符串含跨行与 raw/注释标记/数字/关键字）、主题改写即时生效、`.gd` 页签仍用原生高亮器 |
+| `dock_compile` | 真实 RPC 服务 + 真实 zig 构建：固定模块身份与非法字符替换碰撞隔离、未知副本/其他所有者不被删除、卸载释放占用、新会话复用同一身份及目录、Debug/Release 两次真实构建复用同一内部目录、控制字符安全化、两个真实 RPC 服务的构建目录隔离、构建期间诊断仍响应、setup 后改含引号项目名、库字节一致、描述文件配置与实际加载、清单持久化、无效结果不覆盖安装、二次构建后存活实例方法返回值变化、旧 debug/release 条目迁移、单一 OS.arch 条目切换、其他目标保留、真实 Release DLL 在 Debug 编辑器中重载并改变存活实例行为、非法配置类型/未托管描述文件/误包含插件源码/bin 外与目录穿越路径的失败锚点 |
+| `build_toolbar` | 真实标题栏位置、弹出内容高度、焦点策略、菜单内容、版本/后端查询、Auto 与显式选择持久化、断连/无后端/查询失败提示、重连恢复、查询期间脚本重载与旧端点隔离、启动命令迁移、共享 busy/待启用门、点阵动画节拍、设置导航及启停清理、精简 dock 布局、相对时间边界/定时刷新、忙时清空输出、旧时间元数据读取、保存/构建状态提示（`Build*`/错误图标/悬浮提示/启用失败边界）、双语界面（英文/中文/未支持语言回退、静态控件自动翻译、动态日志、原生悬浮 tooltip、翻译域隔离与卸载/重新启用） |
+| `sync_exclusions` | 默认排除不进模块且不被 LSP 镜像（正对照 `src/test2.gd3` 双通道同步）；真实页签打开排除文件经编辑器 `_validate` 自然纳入并跨对账保留；模拟准入被节流关闭检查逐出；自定义目录形式 glob（无通配符）改设置后不经手动通知即对账删除且镜像 didClose；纯缓冲区源"上传→排除删除→取消排除后无需落盘重新接纳"全链；恢复默认后重新同步；恢复路径回归（页签打开期间被排除保留、模块重建后无需编辑即恢复上传分析） |
+
+`EditorAddonSetupEngineTest`（隔离真实编辑器 + 本地 HTTP 服务 + ZIP/JAR fixture）：
+断连/恢复、timeline、Java 进程探测（含不发起不存在可执行文件、超时/取消）、分页、
+nightly.link、依赖解包、缓存复用（主目录/随机副本/大写校验和/同名校验和改变拒绝）、
+本地导入与 gdparser 标志库规则、SHA-256 失败、路径穿越、窗口范围与布局、步骤停留/
+切换、阶段即时显示、Windows 文件锁导致移动失败后的完整复制与 Java 运行、未完成缓存
+排除与隐藏标记清理、同步/挂起结果桥接、代理初始化、工作线程运行期间释放服务、
+忙时拒绝改写、新服务启动失败提示、已连接服务保护、项目配置持久化；存在已下载离线
+发行包时额外校验并解压 Windows/Linux JRE 并实际执行 Windows Java。真实插件回归另
+验证拥有服务替换后的新 PID、诊断重新就绪、旧服务退出、外部旧服务在切换和插件禁用
+后仍存活。
+
+若 headless editor 路径在某环境证实不稳定，降级为：(a) 非编辑器 bootstrap 断言
+（`EditorAddonBootstrapEngineTest`：编译产物可加载、类可实例化、P0-C 冒烟）保持
+全量；(b) §8.3 手动清单逐项执行并记录。
+
+### 8.3 手动验收
 
 打开 `src/editor_addon`：`.gd3` 出现在 FileSystem 面板并可双击打开；编辑保存往返；
-错误标注与 `.gd` 逐条一致（含行列号）；补全可用；禁用/启用插件循环、重建产物后
-重启编辑器均无崩溃、无悬空指针报错。
+错误标注与 `.gd` 逐条一致（含行列号）；补全可用；函数调用输入 `(`/`,` 时显示参数
+提示；连续输入→停顿后 gdcc 错误自行浮现（无需切页签/再键入）；停键且不移动鼠标
+（低功耗窗口）诊断仍出现；Build 期间编辑器不卡死、诊断只是变旧、进度轮询照常推进；
+编译→安装→继续编辑全流程无伪错误、gdcc 错误正常显示；配置启动命令后冷启动编辑器
+无需手工 `gdcc serve` 即可 Build，退出编辑器后该服务进程消失（外部手动启动的服务
+不受影响）；冷启动后不再移动鼠标，服务仍在 15s 内就绪；创建节点/资源对话框条目检查
+（Stage C 暂缓期间 GD3 不出现全局类条目）；禁用/启用插件循环、重建产物后重启编辑器
+均无崩溃、无悬空指针报错。
 
 ---
 
-## 9. 风险登记册
+## 9. 暂缓项与已否决方案
+
+- **Stage B（gdcc 大纲通道 + 补全合并）暂缓**：`analyze.outline` RPC（收割点定位：
+  `AnalysisRunner` 语义分析返回后、`FrontendAnalysisData` 丢弃前；骨架在 COMPLETED-
+  含错误时保留、解析失败时无）+ `_complete_code` 对 `self.`/`X.`/显式标注上下文合并
+  缺失成员。排期条件：按残余补全缺口的实证需求。这不再阻止编辑器左侧成员大纲：该区
+  域已由 `_validate.functions` 的 LSP 通道独立提供（§4.7），不新增 gdcc RPC，也不
+  依赖 Stage C 的资源成员内省。
+- **Stage C（全局类注册 + `GdccScript` 成员内省虚函数）暂缓**：`_get_global_class_name`
+  行扫描解析 `class_name`/`extends` 返回字典。已核实的实施约束：(a) **必须同批**实现
+  `GdccScript` 成员内省虚函数（`_get_script_method_list`/`_get_script_property_list`/
+  `_get_script_signal_list`/常量表，由大纲缓存供给），否则出现"类名可解析但成员为空"
+  的倒退窗口——analyzer 对非 `.gd` 全局脚本类走 `ResourceLoader.load` + 资源内省
+  （`gdscript_analyzer.cpp:787-801`）；(b) 创建对话框中同名时 ClassDB 条目占槽、按名
+  去重（`create_dialog.cpp:175-198, 295-298`），已编译态不会产生双份条目；(c) 未编译
+  态脚本条目默认出现且**可选中**（对话框不查 `can_instantiate`）——`.gd3` 无法运行时
+  挂载，故注册字典置 `is_abstract: true` 使条目禁用显示，但 `GdccScript._is_abstract()`
+  必须保持 `false`：analyzer 的抽象类实例化检查看资源而非注册标志，资源侧 abstract
+  会让 `X.new()` 报伪错误；(d) 对话框打开时会加载每个全局脚本类资源（非懒加载），
+  loader 必须保持廉价且永不失败（加载失败 = 条目消失，属安全降级）；(e) 引擎怪癖：
+  `ScriptServer.add_global_class` 仅在 base/path/language 变化时更新 abstract/tool
+  标志（`script_language.cpp:408-418`），本集成的 abstract 恒定不变故不受影响。
+  验收方式：手动检查创建节点/资源对话框条目（含同名已编译类的占槽行为），回归确认
+  不产生重复/不可实例化条目。
+- **`--lsp-port`/host 手动覆盖设置项未实施**：harness 测试经 `--lsp-port` CLI 覆盖
+  钉死端口（§8.2），面向用户的 dock 覆盖入口未提供（dock 状态行只读）。
+- **已否决**：全项目合成改名、仅在显示端过滤 `hides a native class`（证据链见
+  §7.2 背景）。同文件路径/编译类的类型身份误报使用 §4.2 的精确显示过滤，不在此
+  否决项内。
+
+---
+
+## 10. 风险登记册
 
 | # | 风险 | 等级 | 缓解 |
 |---|---|---|---|
-| R1 | `.gd3` 不在 GDScript LSP 的 workspace 索引内，跨文件符号/类缓存解析受限 | 中 | 以 `languageId: "gdscript"` didOpen 的文档可解析；**Phase 8 workspace 镜像**将全部项目 `.gd3` 主动 didOpen，提供跨文件查询的数据面；Godot >= 4.6.0 启用 `_lookup_code` hover/定义跳转，旧版本因浅层脚本接管资源路径而降级。未打开文件的磁盘扩展名过滤及 Stage C 全局类名边界仍存在；补全成员枚举不经过 workspace（引擎事实，§7 Phase 8），不受镜像影响 |
+| R1 | `.gd3` 不在 GDScript LSP 的 workspace 索引内，跨文件符号/类缓存解析受限 | 中 | 以 `languageId: "gdscript"` didOpen 的文档可解析；workspace 镜像（§7.3）将全部项目 `.gd3` 主动 didOpen，提供跨文件查询的数据面；Godot >= 4.6.0 启用 `_lookup_code` hover/定义跳转，旧版本因浅层脚本接管资源路径而降级（§4.6）。未打开文件的磁盘扩展名过滤及 Stage C 全局类名边界仍存在；补全成员枚举不经过 workspace（引擎事实，§7.3），不受镜像影响 |
 | R2 | 多编辑器实例/端口占用导致连错实例 | 中 | 握手后监听 `gdscript_client/changeWorkspace` 并与 `ProjectSettings.globalize_path("res://")` 比对，不符即 DEGRADED；host/port 可配；运行期改 `use_thread` 服务端自动重启、客户端重连接管（§2.6） |
-| R3 | `_complete_code`/`_validate` 同步等待卡顿编辑器 | 中 | 硬超时（LSP 150ms / 补全 400ms）+ 超时降级；阻塞形态约束写入 §1.2；线程模式硬前提 |
+| R3 | `_complete_code`/`_validate` 同步等待卡顿编辑器 | 中 | 硬超时（LSP 150ms / 补全 400ms / 签名提示与 lookup 单请求 200ms）+ 超时降级；阻塞形态约束写入 §1.2；线程模式硬前提 |
 | R4 | 热重载导致 ScriptServer 悬空指针 | 高 | `reloadable = false`（§6），安装器全出口断言钉死 |
-| R5 | `ScriptCreateDialog` 缓存语言列表，主题刷新却使用实时语言数（godot#106480） | 低 | 插件补齐 GD3 行并在注销后移除，避免索引越界；Godot ≤ 4.6.0 禁用该行并使用 dock/外部创建，> 4.6.0 允许选择（Phase 9） |
-| R6 | gdcc 前端/后端不支持所需 API 调用路由或类型 | 高 | Phase 0 三级探针门禁（含 native compile 与运行时冒烟），阻塞后续阶段 |
+| R5 | `ScriptCreateDialog` 缓存语言列表，主题刷新却使用实时语言数（godot#106480） | 低 | 插件补齐 GD3 行并在注销后移除，避免索引越界；Godot ≤ 4.6.0 禁用该行并使用 dock/外部创建，> 4.6.0 允许选择（§2.1） |
+| R6 | gdcc 前端/后端不支持所需 API 调用路由或类型 | 高 | 自举探针三级门禁（含 native compile 与运行时冒烟，§5/§8）；新增能力先探针后采用 |
 | R7 | `.gd3` 被误挂载到节点时无占位实例（`void*` 虚函数未实现） | 低 | `_can_instantiate() == false` + `_supports_builtin_mode() == false` 双重拒绝；文档声明非目标 |
 | R8 | LSP 同步模式假设不成立 | 低 | 握手校验 `textDocumentSync`（int `1` 或 `{change: 1}` 两种形状），否则 DEGRADED |
 | R9 | 诊断行号 0/1-based 转换错误 | 中 | 与同内容 `.gd` 文件逐条对比验收（§8.3） |
 | R10 | Godot 版本漂移（master 已废弃 `_create_script`/`_get_recognized_extensions`） | 低 | 锁定 4.5 元数据；升级 Godot 时重跑 §2 核查 |
-| R11 | 非 ASCII 文本下 LSP `character` 与 Godot 列口径不一致（UTF-16 vs 码点） | 中 | §2.6：4.5/4.6 诊断列为行首非空白字符，4.7 为真实 token 列，两者均按码点而非 UTF-16 单元计数；非 BMP emoji 回归分别锚定列 5/19。补全光标也按码点索引，`complete_cjk` 以"emoji 在光标同行之前且光标后有文本"的样例钉死（误算会丢失成员补全上下文） |
+| R11 | 非 ASCII 文本下 LSP `character` 与 Godot 列口径不一致（UTF-16 vs 码点） | 中 | §2.6：4.5/4.6 诊断列为行首非空白字符，4.7 为真实 token 列，两者均按码点而非 UTF-16 单元计数；非 BMP emoji 回归分别锚定旧版缩进列与 4.7 引号列。补全光标也按码点索引，`complete_cjk` 以"emoji 在光标同行之前且光标后有文本"的样例钉死（误算会丢失成员补全上下文） |
 | R12 | 编辑器-only 类进入导出构建 | 低 | 本扩展仅 addon 内使用，文档声明不随项目导出 |
-| R13 | `analyze.run` 是整模块分析，大项目延迟高 | 中 | 异步 + 防抖 + 单飞；服务专用客户端与 dock 队列隔离（§4.4）；后续在 RPC 侧评估增量分析（不在本计划） |
-| R14 | 外部 LSP 客户端并存时 `publishDiagnostics` 只发最近客户端 | 中 | 等待超时即回落缓存并继续；dock 状态行提示；记录为已知限制 |
-| R15 | 禁用插件后已打开页签持有语言/服务引用 | 高 | 常驻单实例 + 注销不释放 + 复用再注册（§3.5）；Phase 1 验收含禁用/启用循环与实例同一性断言 |
-| R16 | `_load` 在 worker 线程执行时的数据竞争 | 高 | 纯加载约束（§2.4）；Phase 1 引擎测试含 `load_threaded_request` 路径 |
-| R17 | 无公开 API 主动触发编辑器 revalidate，异步 gdcc 诊断存在节拍级延迟 | 中 | **Phase 5 已缓解**：`CodeTextEditor` 的注册信号 `validate_script` 可经 GDScript `emit_signal` 触发 `ScriptTextEditor._validate_script()`（4.5 已核实：`code_editor.cpp` `ADD_SIGNAL`、`script_text_editor.cpp` 连接）；残留风险是该接线非公开 API 承诺（R24） |
-| R18 | `use_thread` 设置被引擎在退出时持久化，影响用户其他项目 | 中 | 卸载时恢复原值（§4.1）；dock 状态行与文档明示该改动。另（Phase 2 评审实证）：运行期首次启用发生 false→true 翻转时服务端不会运行期重启（通知仅 C++ UI 可达），该会话置 `lsp_blocking_unsafe` 降级并提示重启编辑器（§4.1 第 2 步） |
+| R13 | `analyze.run` 是整模块分析，大项目延迟高 | 中 | 异步 + 防抖 + 单飞；服务专用客户端与项目管理器队列隔离（§4.4）；后续在 RPC 侧评估增量分析 |
+| R14 | 外部 LSP 客户端并存时 `publishDiagnostics` 只发最近客户端 | 中 | 等待超时即回落缓存并继续；记录为已知限制 |
+| R15 | 禁用插件后已打开页签持有语言/服务引用 | 高 | 常驻单实例 + 注销不释放 + 复用再注册（§3.5）；引擎测试 `language` 用例含禁用/启用循环与实例同一性断言 |
+| R16 | `_load` 在 worker 线程执行时的数据竞争 | 高 | 纯加载约束（§2.4）；引擎测试 `language` 用例含 `load_threaded_request` 路径 |
+| R17 | 无公开 API 主动触发编辑器 revalidate，异步 gdcc 诊断存在节拍级延迟 | 中 | 已缓解：§4.5 经 `CodeTextEditor` 的注册信号 `validate_script` 主动触发（4.5 已核实接线：`code_editor.cpp` `ADD_SIGNAL`、`script_text_editor.cpp` 连接）；残留风险是该接线非公开 API 承诺（R24） |
+| R18 | `use_thread` 设置被引擎在退出时持久化，影响用户其他项目 | 中 | 卸载时恢复原值（§4.1）；dock 状态与文档明示该改动。另：运行期首次启用发生 false→true 翻转时服务端不会运行期重启（通知仅 C++ UI 可达），该会话置 `lsp_blocking_unsafe` 降级并提示重启编辑器（§4.1 第 2 步） |
 | R19 | 拉起进程的 PID 在会话内被系统复用，`shutdown_owned` 误杀无关进程 | 低 | 仅跟踪本会话 `create_process` 返回的 PID；`OS.kill` 仅在 `server.shutdown` 不可达**且**记录端点仍接受 TCP 连接时使用（双条件，§3.7）；会话级窗口内复用概率极低 |
 | R20 | 编辑器崩溃导致拉起的服务成为孤儿进程 | 低 | 崩溃路径本就无法执行插件代码；下次会话端口探测将其收养为外部服务（只连不关），不会泄漏累积（§3.7） |
 | R21 | `server.shutdown` 不可达（服务挂起/半死连接）时服务残留 | 低 | 2s 有界等待后按 R19 双条件决定是否 `OS.kill`；服务已死但 PID 被复用时宁可残留也不误杀；Windows 下硬切不执行 shutdown hook 的事实写入 §2.8 |
 | R22 | 启动命令以编辑器权限执行任意本地命令 | 低 | 命令来自项目所有者显式配置，或安装向导经过确认后生成（项目级设置 `gdcc/compilation_server/launch_command`，旧项目键一次性迁移）；下载的 Java/JAR 亦属于用户确认执行的工具代码。项目级意味着 clone 他人项目即带入命令，与打开含 tool 脚本/编辑器插件的项目同属一类既有信任面，评审陌生项目时应一并检查该键及安装来源 |
-| R24 | `validate_script` 信号触发重校验依赖编辑器内部信号接线（非公开 API 承诺） | 中 | 4.5 已核实接线（§2.5 末条）；Godot 升级时重跑 §2.5 核查；引擎测试以"无输入后 `_validate` 调用计数前进"锚定该路径（§7 Phase 5） |
-| R25 | `class_name` 擦除的行扫描可能误命中字符串/注释内的同名文本 | 低 | 行级迷你词法器（字符串转义/注释/`"""` 状态机）+ 行首无缩进锚定 + 首个匹配 + 顺序尾部解析（图标串/注释尾不注入基类）+ 陷阱样例测试（§7 Phase 7）；已知残余：多行字符串内转义引号的闭合歧义（词法近似，方向安全）、超时旧代诊断按当前视图反映射的一拍级列偏移（§7 Phase 7 评审保留项 3）；根治待编译器引用区间输出（评估项，不阻塞） |
-| R26 | 元数据 JSON→C 双层转义缺陷，或 `_gdcc_` 合成方法与用户代码冲突 | 中 | 复用 `StringUtil.escapeStringLiteral` + 转义矩阵测试；前端 `_gdcc_` 前缀保留规则（用户声明冲突即报错）；合成符号纳入 `validateFileScopeSymbolsDisjoint`（§7 Phase 6） |
-| R27 | workspace 镜像批量同步造成启动卡顿，或重连后服务端文档集漂移 | 中 | 分帧限额 + notification 不占 `_validate` 阻塞预算；删除 didClose + 重连全量重放；引擎测试断言文档集（§7 Phase 8） |
-| R23 | 运行期注销脚本语言与编辑器子系统迭代 `ScriptServer` 语言表的引擎侧竞态 | 中 | Phase 1 引擎测试曾观测到一次（批量跑、高负载）：禁用窗口内引擎报 `ScriptServer::get_language(1)` 越界（`_language_count = 1`）后空指针崩溃（0xC0000005）。此后 13 次手动复现 + 6 次强制重跑 + 多轮批量均未再出现。引擎 4.5 的
-`get_language`/`unregister_language` 各自加锁而 `get_language_count` 是非锁定内联
-读取（`core/object/script_language.cpp/.h`），调用方先取的计数在按索引取值时可能已
-失效（TOCTOU），且越界返回 nullptr 后调用方未判空。无崩溃栈，调用点未最终定位；插件生产代码不按索引取语言（测试驱动的 `_find_gd3_language` 按索引遍历但每次循环重读计数，单线程下安全，不像肇事调用方）。候选缓解（未采纳，需评估）：禁用时不注销语言只置 UNINSTALLED（偏离 §3.5 合同，架构级变更）；或把注销延迟到编辑器静默帧（缩小窗口但不消除）。**当前视为已观测但尚未缓解的风险**：保持"禁用即注销"合同；经评估（2026-09-23）禁用插件属低频操作且崩溃仅观测到一次，暂不特殊处理，若重现率上升再评估 |
+| R23 | 运行期注销脚本语言与编辑器子系统迭代 `ScriptServer` 语言表的引擎侧竞态 | 中 | 引擎测试曾观测到一次（批量跑、高负载）：禁用窗口内引擎报 `ScriptServer::get_language(1)` 越界（`_language_count = 1`）后空指针崩溃（0xC0000005）；此后多次手动复现与强制重跑均未再出现。引擎 4.5 的 `get_language`/`unregister_language` 各自加锁而 `get_language_count` 是非锁定内联读取（`core/object/script_language.cpp/.h`），调用方先取的计数在按索引取值时可能已失效（TOCTOU），且越界返回 nullptr 后调用方未判空。无崩溃栈，调用点未最终定位；插件生产代码不按索引取语言。**当前视为已观测但尚未缓解的风险**：保持"禁用即注销"合同；经评估禁用插件属低频操作且崩溃仅观测到一次，暂不特殊处理，若重现率上升再评估候选缓解（禁用时不注销语言只置 UNINSTALLED——偏离 §3.5 合同，架构级变更；或把注销延迟到编辑器静默帧——缩小窗口但不消除） |
+| R24 | `validate_script` 信号触发重校验依赖编辑器内部信号接线（非公开 API 承诺） | 中 | 4.5 已核实接线（§2.5）；Godot 升级时重跑 §2.5 核查；引擎测试以"无输入后 `_validate` 调用计数前进"锚定该路径（§4.5） |
+| R25 | `class_name` 擦除的行扫描可能误命中字符串/注释内的同名文本 | 低 | 行级迷你词法器（字符串转义/注释/两种三引号/普通字符串跨物理行状态机）+ 行首无缩进锚定 + 首个匹配 + 顺序尾部解析（图标串/注释尾不注入基类）+ 陷阱样例测试（§7.2）；已知残余：多行字符串内转义引号的闭合歧义（词法近似，方向安全）、超时旧代诊断按当前视图反映射的一拍级列偏移；根治待编译器引用区间输出（评估项） |
+| R26 | 元数据 JSON→C 双层转义缺陷，或 `_gdcc_` 合成方法与用户代码冲突 | 中 | 复用 `StringUtil.escapeStringLiteral` + 转义矩阵测试；前端 `_gdcc_` 前缀保留规则（用户声明冲突即报错）；合成符号纳入 `validateFileScopeSymbolsDisjoint`（§7.1） |
+| R27 | workspace 镜像批量同步造成启动卡顿，或重连后服务端文档集漂移 | 中 | 分帧限额 + notification 不占 `_validate` 阻塞预算；删除 didClose + 重连全量重放；引擎测试断言文档集（§8.2 `lsp_workspace`） |
+| R28 | 安装向导端口预留释放到 JVM 绑定之间并非原子交接，存在被无关进程抢占的低概率窗口 | 低 | 当前 launcher 沿用 TCP 探测收养策略，无法保证抢占者就是本次命令对应的实例；消除此边界需要服务实例身份握手或端口交接协议（未扩展启动协议，不放宽外部进程所有权约束，§3.10） |
+| R29 | 端点重定向时共享 RPC 客户端的未发出队列请求在发送时按当时地址拼 URL，可能落到新服务器；切回某端点时若其清理在途，迟到删除可能命中刚重建的模块 | 低 | 有界残余：模块 id 按项目哈希+pid 作用域，错误端点上的残留模块随其进程退出消亡，且下次回访该端点时由既有 -32001 重建路径自愈；迟到删除命中表现为一次瞬时 outage，经 outage→重建路径自愈。彻底隔离（按端点/会话分客户端，或请求携带真实分发端点贯穿完成回调）属较大改造，未阻塞现状 |
+| R30 | 超大项目下镜像的单帧目录遍历与漂移读盘 | 低 | 当前每次扫描事件在单帧内完成目录遍历与已镜像纯磁盘文件的文本比对，典型项目可接受；可续跑遍历与分帧读盘留待后续评估（§7.3） |
 
 ---
 
-## 10. 验收总清单
+## 11. 工程反思
 
-- [ ] Phase 0–8 全部验收细则通过（含 Phase 1 服务拉起/关闭引擎用例与服务端
-      `server.shutdown` 单测），Phase 9 子项逐项记录结果或明确搁置原因。
-- [ ] `./gradlew clean build --no-daemon --info --console=plain` 通过。
-- [ ] 手动清单（§8.3）全部确认，含禁用/启用插件循环。
-- [ ] 本文档状态从"实施计划"转为"事实源维护中"，并回填实现偏差（含 `_init` 语义
-      结论与 typed array 探针结论）。
+1. **编译代码的泵内信号发射缺陷**：gdcc 编译代码经 `Object.emit_signal` method-bind
+   对外来对象发射，从 `SceneTree.process_frame` 泵调用栈发起时不送达任何连接（§2.5）。
+   凡是"泵 → 编辑器对象"的通知都走"自有信号 + 解释型 `call_deferred` 中继"两段式；
+   观测锚定用计数器窗口而非信号次序。
+2. **Godot `HTTPRequest` 对拒连端口挂起 30s**：任何"先探测再请求"的路径都必须用
+   `StreamPeerTCP` 快探（≤200ms）先行；测试用恒 500 黑洞服务器获得确定性。
+3. **编辑器 idle 校验节拍双间隔**（1.5s/0.5s，`set_error_count` 在有错误显示后才
+   切快）与防抖（800ms）的先后关系决定测试基线的取点顺序；涉及"无输入后自发刷新"
+   的断言先用 `_settle_past_idle` 排除 idle 节拍混入。
+4. **页签状态恢复踩点**：`.godot/editor/script_editor_cache.cfg` 会在原生高亮器自动
+   选择之后恢复用户上次选择；接管类功能必须在焦点信号上接力换回，并以
+   settle-once + 实例 ID 记忆尊重用户后续手动选择（§3.9）。
+5. **JDK HttpServer 关停死锁**：`server.shutdown` 的 handler 只置标志位，退出线程
+   必须在 exchange 写完并 close 之后、且不属于请求 executor（§2.8）；测试必须打
+   真实 HTTP 端口验证"200+body 先于进程退出"。
+6. **`OS.create_process` 平台分叉**：Windows 同步拒绝不存在的可执行文件，Unix-like
+   fork 成功后子进程 execvp 失败早退；测试断言必须接受两种报告（§3.7）。
+7. **EditorSettings 无会话级设置**：`set_setting` 在退出编辑器时被引擎持久化；改动
+   用户机器级设置必须登记恢复义务。项目级配置优先入 ProjectSettings（随项目版本化）。
+8. **Java 单一字符串字面量 64KB class 文件上限**：引擎测试驱动的大型 GDScript 文本
+   拆为多个方法返回的文本块运行时拼接。
+9. **模块门下的观测**：`module.get`/`read_file` 会阻塞于在途编译；观察副本注册用
+   `module.list`，内容校验移到编译结束后（§4.9）。
+10. **扩展清单是引擎维护文件**：不能先手动 load 再 scan（清单可能不写）；确认扫描
+    完成要看 `filesystem_changed` 回调而非 `is_scanning()`（worker 提前清标志）；
+    构建收尾不能 await 扫描（首次成员变化触发全脚本软重载会取消悬挂协程）（§4.9）。
+11. **内容哈希换库路径**：macOS dyld 同路径映像缓存 + 被映射库不可覆盖 → 库按内容
+    SHA-256 发布到新路径，描述文件改指向；Windows 描述文件用 ConfigFile.save 而非
+    rename（rename 先删旧目标）（§4.9）。
+12. **Windows `MoveFileW` 只报笼统 FAILED**：跨卷/被占用移动失败时按"独立随机后缀
+    目录复制 + 逐文件 SHA-256 校验 + 实跑验证"回退，不再尝试改名收尾（§3.10）。
+13. **"已镜像"不是"曾在盘"的证据**：删除判定只认 disk-known 记录；纯缓冲区（未落盘）
+    文件的生命周期与磁盘文件全程分开处理（§4.4/§7.4）。
+14. **临时纳入的驱逐不能依赖上传先发生**：从未被页签持有的排除路径在上传前被逐出
+    是合法行为，测试不得强制排序；用 channel session 钉住窗口排除恢复路径假绿，
+    并以变异运行（临时摘除节流检查）实证锚点致死（§7.4）。

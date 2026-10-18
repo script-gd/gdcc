@@ -5,7 +5,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 /// Caller-facing facts about one compiled source file, consumed by backend codegen for the
-/// Phase 6 class metadata (`_gdcc_get_metadata`): `displayPath` becomes `source_res_path` when
+/// compile-time class metadata (`_gdcc_get_metadata`): `displayPath` becomes `source_res_path` when
 /// it is `res://`-shaped, and the optional `absolutePath` becomes `source_path`.
 ///
 /// Instances are keyed in `CodegenContext.sourceFileFacts` by the normalized logical-path text

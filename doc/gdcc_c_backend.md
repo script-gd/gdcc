@@ -405,8 +405,8 @@ keep one source tree compilable by both toolchains and are part of the current c
   the call. Godot ALWAYS placement-constructs the return `Variant` — including on call errors (4.5
   `gdextension_interface.cpp` wraps `mb->call` in `memnew_placement` unconditionally) — so every exit path must destroy
   it exactly once: the error path destroys it before substituting the nil fallback, and the success path destroys it
-  after the value has been unpacked/consumed. (The previous "do not destroy on error paths" wording was wrong; fixed in
-  the 2026-09-28 Phase 6/7 review round.)
+  after the value has been unpacked/consumed. (The previous "do not destroy on error paths" wording was wrong; since
+  corrected.)
 
 ### Global Helper Raw Pointer Contract
 

@@ -22,8 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Unit anchors for the Phase 6 metadata payload shape and the JSON→C double-escaping contract
-/// (plan §7 Phase 6 acceptance / R26). The pipeline-level readback lives in
+/// Unit anchors for the class-metadata payload shape and the JSON→C double-escaping contract.
+/// The pipeline-level readback lives in
 /// `ApiCompileClassMetadataTest`; this class pins the builder itself.
 class CClassMetadataSupportTest {
     private static final String LOGICAL_KEY = "vfs/demo/src/meta_outer.gd3";
@@ -71,7 +71,7 @@ class CClassMetadataSupportTest {
     void metadataJsonOmitsOptionalKeysWhenFactsAreMissing() throws Exception {
         var module = new LirModule("game", List.of());
 
-        // Non-res:// display label: source_res_path must be omitted (plan item 3).
+        // Non-res:// display label: source_res_path must be omitted.
         var ctxAbsoluteOnly = contextWithFacts(Map.of(
                 LOGICAL_KEY,
                 new SourceFileFacts("/home/dev/src/meta_outer.gd3", "/home/dev/src/meta_outer.gd3")

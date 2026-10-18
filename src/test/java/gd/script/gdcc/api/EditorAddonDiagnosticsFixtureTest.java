@@ -10,7 +10,7 @@ import java.util.List;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-/// Behavioral anchors for the exact fixtures the Phase 3 engine test
+/// Behavioral anchors for the exact fixtures the gdcc diagnostics channel engine test
 /// (`EditorAddonScriptLanguageEngineTest` mode `gdcc_diag`) drives through the editor addon.
 /// The addon maps `analyze.run` diagnostics into editor errors/warnings keyed by
 /// `displayPath`; these tests pin what the frontend actually reports for each fixture
@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 class EditorAddonDiagnosticsFixtureTest {
 
     /// `extends "res://..."` is legal GDScript (the GDScript LSP stays silent) but rejected by
-    /// the gdcc frontend — the canonical Phase 3 "gdcc-only diagnostic" fixture.
+    /// the gdcc frontend — the canonical "gdcc-only diagnostic" fixture.
     static final String PATH_EXTENDS_SOURCE = """
             class_name DiagPathChild
             extends "res://diag_base.gd"
@@ -43,7 +43,7 @@ class EditorAddonDiagnosticsFixtureTest {
 
     private static AnalysisResult analyzeSingle(String displayPath, String source, boolean includeLowering) {
         var api = ApiCompileTestSupport.newApi(ApiCompileTestSupport.RecordingCompiler.succeeding());
-        api.createModule("fixtures", "Phase 3 Fixtures");
+        api.createModule("fixtures", "Diagnostics Fixtures");
         api.putFile("fixtures", "/src/" + displayPath.substring("res://".length()), source, displayPath);
         return api.analyze("fixtures", new AnalyzeOptions(includeLowering));
     }

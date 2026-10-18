@@ -2,14 +2,14 @@
 class_name GdccCompletionService
 extends Node
 
-## LSP-backed code completion and signature-help slice (plan §4.3), child feature of
+## LSP-backed code completion and signature-help slice, child feature of
 ## `GdccEditorService`.
 ## Stateless by design: the whole flow runs INLINE inside the language's `_complete_code`
 ## on the editor UI thread — the document full-sync lands on the shared connection first
 ## (FIFO, so both requests see the text that produced the request position) and
 ## `GdccLspClient.request_blocking` then pumps the socket inline with hard deadlines. No tick
 ## line, no busy term, no outage hooks: there is no frame-driven work to coordinate and no
-## state to invalidate. Completion gets the 400ms UI-stall bound pinned by plan §4.3; the
+## state to invalidate. Completion gets a 400ms UI-stall bound; the
 ## follow-up signature request has its own 200ms bound, and a signature timeout cannot
 ## invalidate an already valid completion answer.
 

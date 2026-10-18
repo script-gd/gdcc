@@ -88,7 +88,7 @@ class ApiVirtualFileSystemTest {
         var api = new API(FIXED_CLOCK);
         api.createModule("demo", "Demo");
 
-        // A present-but-blank absolutePath is a caller bug (it would poison the Phase 6
+        // A present-but-blank absolutePath is a caller bug (it would poison the class
         // metadata `source_path`), unlike an omitted one which simply stays absent.
         var exception = assertThrows(
                 IllegalArgumentException.class,

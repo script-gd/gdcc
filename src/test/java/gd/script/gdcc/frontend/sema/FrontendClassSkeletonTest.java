@@ -1204,7 +1204,7 @@ class FrontendClassSkeletonTest {
     }
 
     /// The `_gdcc_` member namespace is compiler-owned for backend-synthesized accessors
-    /// (`_gdcc_get_metadata`, Phase 6): a source function with that exact name would collide
+    /// (`_gdcc_get_metadata`): a source function with that exact name would collide
     /// with the synthesized C symbol and its ClassDB registration. Boundary names that lack the
     /// trailing separator (`_gdcc`, `_gdccx`) stay alive.
     @Test

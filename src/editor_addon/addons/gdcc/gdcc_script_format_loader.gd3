@@ -2,7 +2,7 @@
 class_name GdccScriptFormatLoader
 extends ResourceFormatLoader
 
-## Loads `.gd3` files as GdccScript resources (implementation plan §2.4/§3.3).
+## Loads `.gd3` files as GdccScript resources.
 ##
 ## HARD CONSTRAINT — thread safety: `_load` can run on a WorkerThreadPool thread (threaded
 ## resource loading), so it is a pure load: only the path arguments, `FileAccess`, and fresh

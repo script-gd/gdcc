@@ -114,7 +114,7 @@ class EditorAddonBootstrapEngineTest {
 
                 var script_source: String = "class_name RpcDriverDemo\\nextends RefCounted\\n\\nfunc value() -> int:\\n\\treturn 1\\n"
                 # Five arguments: gdcc-bound methods take no ClassDB default values, so the
-                # Phase 6 `absolutePath` parameter must be explicit (a real globalized path
+                # `absolutePath` parameter must be explicit (a real globalized path
                 # here, matching the production upload contract).
                 var uploaded: Dictionary = await client.put_file(
                         "demo", "/src/main.gd", script_source, "res://main.gd",

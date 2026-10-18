@@ -2,19 +2,19 @@
 class_name GdccWorkspaceMirror
 extends Node
 
-## LSP workspace mirror (plan §7 Phase 8), child feature of `GdccEditorService`.
+## LSP workspace mirror, child feature of `GdccEditorService`.
 ##
 ## The GDScript language server's workspace disk scan indexes only `.gd`
 ## (`gdscript_workspace.cpp::list_script_files`), so project `.gd3` files enter the
 ## server's parse cache — the data plane behind cross-file hover/definition
 ## (`resolve_symbol`) — exclusively through client `didOpen`. This node mirrors the whole
 ## project `.gd3` set onto the LSP connection: after every READY handshake it re-opens
-## every project `.gd3` in per-frame-budgeted batches (text through the Phase 7
-## `lsp_safe_text` view), follows later content changes with full-text `didChange`, and
+## every project `.gd3` in per-frame-budgeted batches (text through the
+## `lsp_safe_text` erasure view), follows later content changes with full-text `didChange`, and
 ## closes documents whose file vanished. didOpen/didChange/didClose are notifications:
-## they never consume `_validate`'s 150ms blocking budget (plan §7 Phase 8 item 1).
+## they never consume `_validate`'s 150ms blocking budget.
 ##
-## Text source rule (plan §7 Phase 8 item 2): a path the editor touched (present in the
+## Text source rule: a path the editor touched (present in the
 ## source registry) syncs the REGISTRY text — the editor buffer is newer by definition —
 ## while a disk-only path syncs the file content read at scan time. The mirror is
 ## deliberately independent of the gdcc diagnostics module: registry adoption through the
@@ -43,11 +43,11 @@ extends Node
 ## Drift detection is split by cost: registry-backed paths compare versions every tick
 ## (no syscalls); disk-backed paths compare text at scan time only (scans are
 ## event-driven, never per-frame). Drains are capped at MAX_SYNC_OPS_PER_TICK per tick
-## so bulk sends cannot starve other frame work (R27). The directory walk and the
+## so bulk sends cannot starve other frame work. The directory walk and the
 ## scan-time reads themselves run in one frame per event — acceptable for typical
 ## projects; a resumable walk for very large trees is a recorded, deferred concern.
 
-# Per-frame send budget (plan §7 Phase 8 item 1: 每帧限额避免启动卡顿). A var, not a
+# Per-frame send budget. A var, not a
 # const: class-level const is outside gdcc's bootstrap MVP.
 var MAX_SYNC_OPS_PER_TICK: int = 8
 
@@ -81,7 +81,7 @@ func notify_filesystem_changed() -> void:
 ## holds nothing (its own backoff keeps retrying regardless) and an idle mirrored set
 ## holds nothing either (a permanent busy would defeat the editor's low-power mode). An
 ## unprocessed READY epoch counts as pending work: the replay it implies must not wait
-## for a capped low-power frame to be discovered by the next tick (review finding); the
+## for a capped low-power frame to be discovered by the next tick; the
 ## client's `ready_advanced` signal provides the matching wake edge.
 func busy_wanted() -> bool:
     var client: GdccLspClient = service.get_lsp_client()
@@ -114,7 +114,7 @@ func service_tick(_now: int) -> void:
     if epoch != _ready_epoch:
         # (Re)connect: server-side documents died with the old connection and the client
         # dropped its open-document bookkeeping, so the whole set re-opens from scratch
-        # (plan §7 Phase 8 item 2: full replay — the client does not auto-restore).
+        # (full replay — the client does not auto-restore).
         # `_disk_seen`/`_disk_texts` survive: provenance is re-validated by the coming
         # scan anyway.
         _ready_epoch = epoch
@@ -147,13 +147,13 @@ func _refresh_mirrored_entries() -> void:
         # that would lift the tombstone is module-gated and may never run, so the
         # tombstone must not be honored here — treating it as a close candidate would
         # ping-pong with the drain's send-time re-check into a full-text didChange
-        # EVERY frame (review finding). Fall through to the normal heal/drift checks;
+        # EVERY frame. Fall through to the normal heal/drift checks;
         # the registry lifts its own tombstone on the next reconcile or `_validate`.
         var info: Dictionary = _mirrored[path]
         # External-close heal: a sibling sharing the client (e.g. the thread-mode
         # re-probe closing its probe document) can drop a mirrored document without this
         # node knowing; re-open it instead of waiting for a content change that may
-        # never come (review finding). No false positive against a pending close: with a
+        # never come. No false positive against a pending close: with a
         # close still queued the client-side document is still open.
         if client.document_version_for(str(info.get("uri", ""))) < 0:
             _enqueue_op("sync", path)
@@ -172,8 +172,8 @@ func _refresh_mirrored_entries() -> void:
 ## check. Reads cover only already-mirrored files — new paths are read at drain time.
 func _collect_disk_diff() -> void:
     var registry: GdccSourceRegistry = service.registry()
-    # The reconciler owns the project's `.gd3` walk (plan §7 Phase 8: 镜像直接复用其
-    # 磁盘扫描); it is a pure directory listing with no module-readiness gate.
+    # The reconciler owns the project's `.gd3` walk (the mirror reuses its
+    # disk scan verbatim); it is a pure directory listing with no module-readiness gate.
     var disk: Array = service.reconciler().project_gd3_files()
     var disk_set: Dictionary = {}
     for path in disk:
@@ -195,7 +195,7 @@ func _collect_disk_diff() -> void:
             _enqueue_op("sync", path)
 
 
-## Shared close decision, re-run at ENQUEUE time and at SEND time (review findings):
+## Shared close decision, re-run at ENQUEUE time and at SEND time:
 ## close unconditionally when the path is EXCLUDED from the project module
 ## (`gdcc/sync/excluded_globs` — the mirror's disk scan never proposes excluded paths, and a
 ## previously mirrored one must didClose even while a tab holds it; the open tab's own
@@ -235,11 +235,11 @@ func _enqueue_op(kind: String, path: String) -> void:
 
 
 ## Sends queued work within the per-tick budget, consuming the FIFO through a head index
-## (removing from the front of an Array would make a bulk replay O(N²) — review
-## finding). BOTH intents are re-evaluated at send time: a close is cancelled into a
+## (removing from the front of an Array would make a bulk replay O(N²)). BOTH intents are
+## re-evaluated at send time: a close is cancelled into a
 ## sync when the file exists again or the keep-rules now apply; a sync re-resolves the
-## current truth. The erasure view is computed at send time so a Phase 7 decision flip
-## in between cannot ship a stale view. A send failure disconnects the client per its
+## current truth. The erasure view is computed at send time so a class_name-erasure
+## decision flip in between cannot ship a stale view. A send failure disconnects the client per its
 ## own contract; the epoch change on re-READY replays the whole set, so the remaining
 ## queue is dropped, not requeued.
 func _drain_ops() -> void:
@@ -311,7 +311,7 @@ func _compact_op_fifo() -> void:
 ## settings change must not ship content for a path the project just excluded (the drain
 ## converts it into a close instead). A `_disk_seen` path that has VANISHED from disk is a
 ## deletion, not a sync candidate — unless the keep rules (`_should_close` false: open tab
-## or genuine unsaved edits) still apply to its registry buffer (review finding: a registry
+## or genuine unsaved edits) still apply to its registry buffer (a registry
 ## entry alone must never resurrect a deleted file onto the server).
 func _resolve_current_text(path: String) -> Dictionary:
     var registry: GdccSourceRegistry = service.registry()

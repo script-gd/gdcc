@@ -183,7 +183,7 @@ final class ModuleState {
         return putFile(path, content, displayPath, null);
     }
 
-    /// `absolutePath` is an optional host-absolute source path (Phase 6 compile-time class
+    /// `absolutePath` is an optional host-absolute source path (compile-time class
     /// metadata `source_path`); like `displayPath`, a re-put without it preserves the value the
     /// file already has, and it stays absent entirely for callers that never provide one.
     synchronized @NotNull VfsEntrySnapshot.FileEntrySnapshot putFile(
