@@ -80,6 +80,19 @@ Usage and lifecycle rules:
   the prefix header is safe: its mtime is pinned, as described above.
 - PCH files and probe litter never appear in `artifacts()`.
 
+### Symbol Stripping
+
+`CompileOptions.stripNativeSymbols` (wire: boxed `Boolean`, absent/null = `false`) opts a build
+into native size reduction on the zig backend. When set, `ZigCcCompiler` appends `-g0` to the
+shared language flags (TU compiles, PCH build, PCH probe — the flag is part of the PCH cache key,
+so stripped and unstripped PCH entries never mix) and `-s` to the link command. This matters
+because zig cc emits DWARF by default on ELF targets even without `-g`: unstripped RELEASE builds
+of the editor addon client library carried 73-76% `.debug_*` sections plus a full symbol table
+(e.g. 16.8 MB → 3.0 MB for `linux-x86_64`). A stripped link never emits a PDB, so a Windows round
+additionally deletes any stale `<outputBaseName>.pdb` left by an earlier unstripped round before
+linking — otherwise artifact collection would ship it. TinyCC ignores the flag (it never emits
+DWARF); every caller except the editor addon distribution packaging keeps the `false` default.
+
 ### TinyCC Object Cache
 
 `TinyCcCompiler` keeps its own content-addressed object cache under the cache root resolved by the

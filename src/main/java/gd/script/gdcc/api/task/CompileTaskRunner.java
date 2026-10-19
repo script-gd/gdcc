@@ -293,7 +293,8 @@ public final class CompileTaskRunner implements Runnable {
                     projectPath,
                     request.compileOptions().optimizationLevel(),
                     request.compileOptions().targetPlatform(),
-                    request.compileOptions().effectiveCCompilerKind()
+                    request.compileOptions().effectiveCCompilerKind(),
+                    request.compileOptions().isStripNativeSymbols()
             );
             var codegen = new CCodegen();
             throwIfCancellationRequested();
@@ -561,12 +562,12 @@ public final class CompileTaskRunner implements Runnable {
         }
     }
 
+    /// @param absolutePath Optional host-absolute source path forwarded to compile-time class metadata
+    ///                     (`source_path`); null when the caller never provided one.
     public record SourceSnapshot(
             @NotNull String displayPath,
             @NotNull Path logicalPath,
             @NotNull String source,
-            /// Optional host-absolute source path forwarded to compile-time class metadata
-            /// (`source_path`); null when the caller never provided one.
             @Nullable String absolutePath
     ) {
         public SourceSnapshot {

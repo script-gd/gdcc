@@ -300,6 +300,40 @@ class ZigCcCompilerCommandTest {
         }
     }
 
+    @Test
+    void stripNativeSymbolsSuppressDwarfAndStripTheLinkedArtifact() {
+        var objPath = objPath(COptimizationLevel.RELEASE, TARGET, 0, "entry.c");
+        var outputPath = PROJECT_DIR.resolve("libdemo.so");
+        var objPaths = List.of(objPath);
+        for (var opt : COptimizationLevel.values()) {
+            var lto = ZigCcCompiler.resolveLtoMode(TARGET, false, opt);
+            var strippedTu = ZigCcCompiler.buildTuCompileCommand(ZIG, TARGET, lto, opt, true, INCLUDE_DIRS, objPath, Path.of("entry.c"), null);
+            var strippedLink = ZigCcCompiler.buildLinkCommand(ZIG, TARGET, lto, opt, true, outputPath, objPaths);
+            assertTrue(strippedTu.contains("-g0"), "stripped TU compile must suppress DWARF: " + strippedTu);
+            assertTrue(strippedLink.contains("-s"), "stripped link must drop the symbol table: " + strippedLink);
+            assertEquals("-s", strippedLink.get(strippedLink.indexOf("-shared") + 1), "-s follows -shared: " + strippedLink);
+
+            var keptTu = ZigCcCompiler.buildTuCompileCommand(ZIG, TARGET, lto, opt, false, INCLUDE_DIRS, objPath, Path.of("entry.c"), null);
+            var keptLink = ZigCcCompiler.buildLinkCommand(ZIG, TARGET, lto, opt, outputPath, objPaths);
+            assertFalse(keptTu.contains("-g0"), "default TU compile keeps zig's default debug info: " + keptTu);
+            assertFalse(keptLink.contains("-s"), "default link keeps the symbol table: " + keptLink);
+            // The default-shape commands are exactly what the pre-strip signatures produce.
+            assertEquals(keptTu, ZigCcCompiler.buildTuCompileCommand(ZIG, TARGET, lto, opt, INCLUDE_DIRS, objPath, Path.of("entry.c")));
+            assertEquals(keptLink, ZigCcCompiler.buildLinkCommand(ZIG, TARGET, lto, opt, outputPath, objPaths));
+            assertEquals(ZigCcCompiler.languageFlags(lto, opt), ZigCcCompiler.languageFlags(lto, opt, false));
+        }
+    }
+
+    @Test
+    void pchBuildCommandCarriesTheStripFlagThroughTheSharedLanguageFlags() {
+        var prefix = Path.of("cache/pch/key/gdcc_godot_prefix.h");
+        var pchOut = Path.of("cache/pch/key/gdcc_godot_prefix.pch");
+        var stripped = ZigCcCompiler.buildPchBuildCommand(ZIG, TARGET, CLtoMode.NONE, COptimizationLevel.DEBUG, true, INCLUDE_DIRS, prefix, pchOut);
+        assertTrue(stripped.contains("-g0"), stripped::toString);
+        var kept = ZigCcCompiler.buildPchBuildCommand(ZIG, TARGET, CLtoMode.NONE, COptimizationLevel.DEBUG, INCLUDE_DIRS, prefix, pchOut);
+        assertFalse(kept.contains("-g0"), kept::toString);
+    }
+
     private static @NotNull Path objPath(COptimizationLevel opt, String zigTarget, int index, String cFileName) {
         return ZigCcCompiler.resolveObjectPath(PROJECT_DIR, opt, zigTarget, index, Path.of(cFileName));
     }

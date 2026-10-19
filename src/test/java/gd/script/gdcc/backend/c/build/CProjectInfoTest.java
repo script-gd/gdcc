@@ -6,8 +6,10 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Pins the [CProjectInfo] backend-selection contract: the five-arg compatibility constructor
 /// keeps the pre-selection behavior (zig), the canonical constructor carries the requested kind,
@@ -61,5 +63,26 @@ class CProjectInfoTest {
                         COptimizationLevel.DEBUG, TargetPlatform.LINUX_X86_64),
                 zig
         );
+    }
+
+    @Test
+    void stripNativeSymbolsDefaultsToFalseAndParticipatesInEquality() {
+        var compatibility = new CProjectInfo(
+                "demo", GodotVersion.V451, Path.of("p"),
+                COptimizationLevel.DEBUG, TargetPlatform.LINUX_X86_64, CCompilerKind.ZIG_CC);
+        assertFalse(compatibility.isStripNativeSymbols(),
+                "the pre-strip constructor shapes must keep artifacts byte-identical");
+
+        var stripped = new CProjectInfo(
+                "demo", GodotVersion.V451, Path.of("p"),
+                COptimizationLevel.RELEASE, TargetPlatform.LINUX_X86_64, CCompilerKind.ZIG_CC, true);
+        assertTrue(stripped.isStripNativeSymbols());
+        var kept = new CProjectInfo(
+                "demo", GodotVersion.V451, Path.of("p"),
+                COptimizationLevel.RELEASE, TargetPlatform.LINUX_X86_64, CCompilerKind.ZIG_CC, false);
+        assertNotEquals(stripped, kept);
+        assertEquals(kept, new CProjectInfo(
+                "demo", GodotVersion.V451, Path.of("p"),
+                COptimizationLevel.RELEASE, TargetPlatform.LINUX_X86_64, CCompilerKind.ZIG_CC));
     }
 }

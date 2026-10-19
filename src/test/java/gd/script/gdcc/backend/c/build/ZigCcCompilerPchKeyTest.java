@@ -32,6 +32,19 @@ class ZigCcCompilerPchKeyTest {
     }
 
     @Test
+    void stripNativeSymbolsChangesTheKey(@TempDir Path tempDir) throws IOException {
+        var includes = writeIncludeTree(tempDir.resolve("inc"));
+        for (var opt : COptimizationLevel.values()) {
+            var lto = ZigCcCompiler.resolveLtoMode(TARGET, false, opt);
+            var kept = ZigCcCompiler.resolvePchCacheKey(VERSION, TARGET, lto, opt, includes);
+            var stripped = ZigCcCompiler.resolvePchCacheKey(VERSION, TARGET, lto, opt, true, includes);
+            assertNotEquals(kept, stripped, "a stripped PCH must never be reused for an unstripped round");
+            assertEquals(kept, ZigCcCompiler.resolvePchCacheKey(VERSION, TARGET, lto, opt, false, includes),
+                    "the default-shape key stays stable for existing caches");
+        }
+    }
+
+    @Test
     void zigVersionChangeChangesTheKey(@TempDir Path tempDir) throws IOException {
         var includes = writeIncludeTree(tempDir.resolve("inc"));
         assertNotEquals(

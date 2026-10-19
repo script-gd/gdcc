@@ -158,6 +158,11 @@ public class ZigCcCompiler implements CCompiler {
 
     @Override
     public CCompileResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel, @NotNull TargetPlatform targetPlatform) {
+        return compile(projectDir, includeDirs, cFiles, outputBaseName, optimizationLevel, targetPlatform, false);
+    }
+
+    @Override
+    public CCompileResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel, @NotNull TargetPlatform targetPlatform, boolean stripNativeSymbols) {
         var zig = zigDiscovery.get();
         if (zig == null) {
             return new CCompileResult(false, "Zig executable not found on PATH or known locations", List.of());
@@ -192,14 +197,14 @@ public class ZigCcCompiler implements CCompiler {
 
             // PCH preparation (build/reuse + probe) finishes before any parallel TU starts, so
             // a PCH that zig would reject is never force-included into the TU phase.
-            var pch = preparePch(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, projectDir, cachePath, registry);
+            var pch = preparePch(zig, zigTarget, ltoMode, optimizationLevel, stripNativeSymbols, includeDirs, projectDir, cachePath, registry);
             // Log shape: PCH fallback line first (only when degraded), then PCH-phase sections,
             // then TU slots in input order, then the link section.
             var logPrefix = pch.logPrefix() != null ? pch.logPrefix() : "";
             var startedCommands = new ArrayList<>(pch.startedCommands());
             var slotOutputs = new ArrayList<>(pch.outputs());
 
-            var slots = createTuSlots(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, cFiles, projectDir, pch.pchPath());
+            var slots = createTuSlots(zig, zigTarget, ltoMode, optimizationLevel, stripNativeSymbols, includeDirs, cFiles, projectDir, pch.pchPath());
             runTuPhase(slots, registry, projectDir, cachePath);
 
             // The link consumes exactly this round's object paths in cFiles order; they are
@@ -214,7 +219,7 @@ public class ZigCcCompiler implements CCompiler {
                 // the whole round without -include-pch. Every object is rebuilt, so PCH and
                 // no-PCH objects never mix in one link.
                 logPrefix = PCH_REJECTED_RETRY_NOTE;
-                slots = createTuSlots(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, cFiles, projectDir, null);
+                slots = createTuSlots(zig, zigTarget, ltoMode, optimizationLevel, stripNativeSymbols, includeDirs, cFiles, projectDir, null);
                 runTuPhase(slots, registry, projectDir, cachePath);
                 failedTuExitCode = collectTuResults(slots, startedCommands, slotOutputs);
             }
@@ -226,7 +231,13 @@ public class ZigCcCompiler implements CCompiler {
             // A cancelled round must not launch the link; the check narrows the interrupt
             // window to the inherent check-then-start race closed by the registry.
             checkNotInterrupted();
-            var linkCmd = buildLinkCommand(zig, zigTarget, ltoMode, optimizationLevel, outputPath, objPaths);
+            if (stripNativeSymbols && targetPlatform.isWindows()) {
+                // A stripped (-g0) link never emits a PDB, so a sibling <name>.pdb can only be
+                // a leftover from an earlier unstripped round in the same build directory —
+                // remove it or the artifact collection below would ship the stale copy.
+                Files.deleteIfExists(projectDir.resolve(outputBaseName + ".pdb"));
+            }
+            var linkCmd = buildLinkCommand(zig, zigTarget, ltoMode, optimizationLevel, stripNativeSymbols, outputPath, objPaths);
             var linkRun = runProcess(linkCmd, projectDir, cachePath, registry);
             startedCommands.add(linkCmd);
             slotOutputs.add(linkRun.output());
@@ -262,14 +273,14 @@ public class ZigCcCompiler implements CCompiler {
     /// keeping the build log order deterministic. `pchPath` is force-included only into
     /// whitelisted TUs; null disables PCH for the whole attempt (fallback and the
     /// rejection retry).
-    private static @NotNull TuSlot[] createTuSlots(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull Path projectDir, @Nullable Path pchPath) throws IOException {
+    private static @NotNull TuSlot[] createTuSlots(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, boolean stripNativeSymbols, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull Path projectDir, @Nullable Path pchPath) throws IOException {
         var slots = new TuSlot[cFiles.size()];
         for (var i = 0; i < cFiles.size(); i++) {
             var cFile = cFiles.get(i);
             var objPath = resolveObjectPath(projectDir, optimizationLevel, zigTarget, i, cFile);
             Files.createDirectories(objPath.getParent());
             var tuPch = pchPath != null && isGodotBindingPchTu(cFile) ? pchPath : null;
-            slots[i] = new TuSlot(buildTuCompileCommand(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, objPath, cFile, tuPch), objPath);
+            slots[i] = new TuSlot(buildTuCompileCommand(zig, zigTarget, ltoMode, optimizationLevel, stripNativeSymbols, includeDirs, objPath, cFile, tuPch), objPath);
         }
         return slots;
     }
@@ -422,6 +433,13 @@ public class ZigCcCompiler implements CCompiler {
     /// makes that drift impossible. `-c`/`-x`/`-o`/source paths/`-include-pch` are
     /// deliberately excluded: they distinguish the command kinds and are added by the callers.
     static @NotNull List<String> languageFlags(@NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel) {
+        return languageFlags(ltoMode, optimizationLevel, false);
+    }
+
+    /// `stripNativeSymbols` adds `-g0`: zig cc emits DWARF by default on ELF targets even without
+    /// `-g` (73-76% of the editor addon's RELEASE `.so` was debug sections), so size-sensitive
+    /// callers must explicitly suppress debug info generation.
+    static @NotNull List<String> languageFlags(@NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, boolean stripNativeSymbols) {
         var flags = new ArrayList<String>();
         flags.add("-std=c23");
         flags.add("-fPIC");
@@ -430,6 +448,9 @@ public class ZigCcCompiler implements CCompiler {
             flags.add(ltoFlag);
         }
         flags.add(optimizationFlag(optimizationLevel));
+        if (stripNativeSymbols) {
+            flags.add("-g0");
+        }
         flags.add("-Wno-macro-redefined");
         flags.add("-Wno-pointer-sign");
         return List.copyOf(flags);
@@ -444,12 +465,16 @@ public class ZigCcCompiler implements CCompiler {
     /// `includePch` is non-null only for whitelisted TUs of a PCH round (see
     /// [isGodotBindingPchTu]); the PCH probe command is this same shape with a trivial source.
     static @NotNull List<String> buildTuCompileCommand(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull Path objPath, @NotNull Path cFile, @Nullable Path includePch) {
+        return buildTuCompileCommand(zig, zigTarget, ltoMode, optimizationLevel, false, includeDirs, objPath, cFile, includePch);
+    }
+
+    static @NotNull List<String> buildTuCompileCommand(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, boolean stripNativeSymbols, @NotNull List<Path> includeDirs, @NotNull Path objPath, @NotNull Path cFile, @Nullable Path includePch) {
         var cmd = new ArrayList<String>();
         cmd.add(zig.toString());
         cmd.add("cc");
         cmd.add("-target");
         cmd.add(zigTarget);
-        cmd.addAll(languageFlags(ltoMode, optimizationLevel));
+        cmd.addAll(languageFlags(ltoMode, optimizationLevel, stripNativeSymbols));
         cmd.add("-c");
         for (var inc : includeDirs) {
             cmd.add("-I" + inc.toAbsolutePath());
@@ -464,18 +489,27 @@ public class ZigCcCompiler implements CCompiler {
         return cmd;
     }
 
-    /// Link command: `zig cc -target <T> -shared [lto [-O2]] -o <out> <objs...>`.
-    /// `-O2` is passed only when LTO is active for a RELEASE build, because that is where the
-    /// link-time code generation happens; without LTO the objects are already final machine
-    /// code. Inputs are exactly this round's object paths in `cFiles` order — never a glob of
-    /// the obj directory — so stale objects can never leak into the artifact.
+    /// Link command: `zig cc -target <T> -shared [-s] [lto [-O2]] -o <out> <objs...>`.
+    /// `-s` (only under `stripNativeSymbols`) removes the linked artifact's symbol table and any
+    /// residual debug sections; `-O2` is passed only when LTO is active for a RELEASE build,
+    /// because that is where the link-time code generation happens; without LTO the objects are
+    /// already final machine code. Inputs are exactly this round's object paths in `cFiles`
+    /// order — never a glob of the obj directory — so stale objects can never leak into the
+    /// artifact.
     static @NotNull List<String> buildLinkCommand(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull Path outputPath, @NotNull List<Path> objPaths) {
+        return buildLinkCommand(zig, zigTarget, ltoMode, optimizationLevel, false, outputPath, objPaths);
+    }
+
+    static @NotNull List<String> buildLinkCommand(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, boolean stripNativeSymbols, @NotNull Path outputPath, @NotNull List<Path> objPaths) {
         var cmd = new ArrayList<String>();
         cmd.add(zig.toString());
         cmd.add("cc");
         cmd.add("-target");
         cmd.add(zigTarget);
         cmd.add("-shared");
+        if (stripNativeSymbols) {
+            cmd.add("-s");
+        }
         var ltoFlag = ltoMode.cliFlag();
         if (ltoFlag != null) {
             cmd.add(ltoFlag);
@@ -520,7 +554,7 @@ public class ZigCcCompiler implements CCompiler {
     /// PCH, while [InterruptedException] always propagates to the cancellation channel — a
     /// cancel is never swallowed into a fallback (that would report CANCELED only after the
     /// round finished and could leak orphan children).
-    private @NotNull PchOutcome preparePch(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull Path projectDir, @NotNull Path cachePath, @NotNull CProcessRegistry registry) throws InterruptedException {
+    private @NotNull PchOutcome preparePch(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, boolean stripNativeSymbols, @NotNull List<Path> includeDirs, @NotNull Path projectDir, @NotNull Path cachePath, @NotNull CProcessRegistry registry) throws InterruptedException {
         var startedCommands = new ArrayList<List<String>>();
         var outputs = new ArrayList<String>();
 
@@ -530,7 +564,7 @@ public class ZigCcCompiler implements CCompiler {
         }
         final String key;
         try {
-            key = resolvePchCacheKey(zigVersion, zigTarget, ltoMode, optimizationLevel, includeDirs);
+            key = resolvePchCacheKey(zigVersion, zigTarget, ltoMode, optimizationLevel, stripNativeSymbols, includeDirs);
         } catch (IOException exception) {
             return pchFallback("include tree hashing failed: " + exception.getMessage(), startedCommands, outputs);
         }
@@ -539,7 +573,7 @@ public class ZigCcCompiler implements CCompiler {
 
         if (isInstalledEntryComplete(keyDir)) {
             // Reused entry: probe it with this round's exact flag surface before any TU sees it.
-            if (probePch(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, keyDir, pchPath, projectDir, cachePath, registry, startedCommands, outputs)) {
+            if (probePch(zig, zigTarget, ltoMode, optimizationLevel, stripNativeSymbols, includeDirs, keyDir, pchPath, projectDir, cachePath, registry, startedCommands, outputs)) {
                 return new PchOutcome(pchPath, null, startedCommands, outputs);
             }
             // Self-heal: drop the poisoned entry and allow exactly one rebuild, so a single
@@ -547,14 +581,14 @@ public class ZigCcCompiler implements CCompiler {
             if (!deleteRecursively(keyDir)) {
                 return pchFallback("installed pch failed the probe and the poisoned cache entry could not be deleted", startedCommands, outputs);
             }
-            var rebuildFailure = buildAndInstallPch(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, keyDir, projectDir, cachePath, registry, startedCommands, outputs);
+            var rebuildFailure = buildAndInstallPch(zig, zigTarget, ltoMode, optimizationLevel, stripNativeSymbols, includeDirs, keyDir, projectDir, cachePath, registry, startedCommands, outputs);
             if (rebuildFailure != null) {
                 return pchFallback("installed pch failed the probe and the one allowed rebuild also failed (" + rebuildFailure + ")", startedCommands, outputs);
             }
             return new PchOutcome(pchPath, null, startedCommands, outputs);
         }
 
-        var buildFailure = buildAndInstallPch(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, keyDir, projectDir, cachePath, registry, startedCommands, outputs);
+        var buildFailure = buildAndInstallPch(zig, zigTarget, ltoMode, optimizationLevel, stripNativeSymbols, includeDirs, keyDir, projectDir, cachePath, registry, startedCommands, outputs);
         if (buildFailure != null) {
             return pchFallback(buildFailure, startedCommands, outputs);
         }
@@ -572,19 +606,19 @@ public class ZigCcCompiler implements CCompiler {
     /// are interchangeable by construction (identical prefix header, flags and include trees),
     /// so a racing rename simply lets the last writer's equivalent entry win. Returns `null`
     /// on success, otherwise the failure reason for the fallback line.
-    private @Nullable String buildAndInstallPch(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull Path keyDir, @NotNull Path projectDir, @NotNull Path cachePath, @NotNull CProcessRegistry registry, @NotNull List<List<String>> startedCommands, @NotNull List<String> outputs) throws InterruptedException {
+    private @Nullable String buildAndInstallPch(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, boolean stripNativeSymbols, @NotNull List<Path> includeDirs, @NotNull Path keyDir, @NotNull Path projectDir, @NotNull Path cachePath, @NotNull CProcessRegistry registry, @NotNull List<List<String>> startedCommands, @NotNull List<String> outputs) throws InterruptedException {
         var tmpPch = keyDir.resolve(PCH_FILE_NAME + ".tmp-" + randomSuffix());
         try {
             Files.createDirectories(keyDir);
             var prefixHeader = keyDir.resolve(PCH_PREFIX_HEADER_NAME);
             installPrefixHeader(prefixHeader);
-            var buildCmd = buildPchBuildCommand(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, prefixHeader, tmpPch);
+            var buildCmd = buildPchBuildCommand(zig, zigTarget, ltoMode, optimizationLevel, stripNativeSymbols, includeDirs, prefixHeader, tmpPch);
             var buildRun = runPchProcess(buildCmd, projectDir, cachePath, registry, startedCommands, outputs);
             if (buildRun.exitCode() != 0 || !Files.isRegularFile(tmpPch)) {
                 return "pch build failed (exit " + buildRun.exitCode() + ")";
             }
             // Probe before publishing: an entry zig would reject never reaches consumers.
-            if (!probePch(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, keyDir, tmpPch, projectDir, cachePath, registry, startedCommands, outputs)) {
+            if (!probePch(zig, zigTarget, ltoMode, optimizationLevel, stripNativeSymbols, includeDirs, keyDir, tmpPch, projectDir, cachePath, registry, startedCommands, outputs)) {
                 return "pch probe failed for the freshly built entry";
             }
             FileUtil.moveReplacing(tmpPch, keyDir.resolve(PCH_FILE_NAME));
@@ -609,13 +643,13 @@ public class ZigCcCompiler implements CCompiler {
     /// The probe source embeds the round-unique suffix so zig's content cache can never
     /// replay an earlier probe's verdict — every probe really compiles against the CURRENT
     /// candidate file.
-    private boolean probePch(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull Path keyDir, @NotNull Path pchCandidate, @NotNull Path projectDir, @NotNull Path cachePath, @NotNull CProcessRegistry registry, @NotNull List<List<String>> startedCommands, @NotNull List<String> outputs) throws InterruptedException {
+    private boolean probePch(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, boolean stripNativeSymbols, @NotNull List<Path> includeDirs, @NotNull Path keyDir, @NotNull Path pchCandidate, @NotNull Path projectDir, @NotNull Path cachePath, @NotNull CProcessRegistry registry, @NotNull List<List<String>> startedCommands, @NotNull List<String> outputs) throws InterruptedException {
         var suffix = randomSuffix().replace("-", "_");
         var probeSource = keyDir.resolve(PCH_PROBE_SOURCE_PREFIX + suffix + ".c");
         var probeObject = keyDir.resolve(PCH_PROBE_SOURCE_PREFIX + suffix + ".o");
         try {
             Files.writeString(probeSource, PCH_PROBE_SOURCE_CONTENT.formatted(suffix));
-            var probeCmd = buildTuCompileCommand(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, probeObject, probeSource, pchCandidate);
+            var probeCmd = buildTuCompileCommand(zig, zigTarget, ltoMode, optimizationLevel, stripNativeSymbols, includeDirs, probeObject, probeSource, pchCandidate);
             var probeRun = runPchProcess(probeCmd, projectDir, cachePath, registry, startedCommands, outputs);
             return probeRun.exitCode() == 0 && Files.isRegularFile(probeObject);
         } catch (IOException exception) {
@@ -705,10 +739,14 @@ public class ZigCcCompiler implements CCompiler {
     /// carry a same-named header must change the key). `GodotVersion`/`REAL_T_IS_DOUBLE`
     /// never appear: they reach zig only through header contents, which the tree hashes cover.
     static @NotNull String resolvePchCacheKey(@NotNull String zigVersion, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs) throws IOException {
+        return resolvePchCacheKey(zigVersion, zigTarget, ltoMode, optimizationLevel, false, includeDirs);
+    }
+
+    static @NotNull String resolvePchCacheKey(@NotNull String zigVersion, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, boolean stripNativeSymbols, @NotNull List<Path> includeDirs) throws IOException {
         var document = new StringBuilder();
         document.append("zig-version=").append(zigVersion).append('\n');
         document.append("zig-target=").append(zigTarget).append('\n');
-        document.append("language-flags=").append(String.join(" ", languageFlags(ltoMode, optimizationLevel))).append('\n');
+        document.append("language-flags=").append(String.join(" ", languageFlags(ltoMode, optimizationLevel, stripNativeSymbols))).append('\n');
         for (var i = 0; i < includeDirs.size(); i++) {
             var dir = includeDirs.get(i).toAbsolutePath().normalize();
             document.append("include[").append(i).append("]=").append(dir).append('\n');
@@ -746,12 +784,16 @@ public class ZigCcCompiler implements CCompiler {
     /// PCH build command: the TU language flags with `-c`/source replaced by header mode —
     /// `zig cc -target <T> <languageFlags> -I... -x c-header <prefix.h> -o <pch>`.
     public static @NotNull List<String> buildPchBuildCommand(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull Path prefixHeader, @NotNull Path pchOutput) {
+        return buildPchBuildCommand(zig, zigTarget, ltoMode, optimizationLevel, false, includeDirs, prefixHeader, pchOutput);
+    }
+
+    public static @NotNull List<String> buildPchBuildCommand(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, boolean stripNativeSymbols, @NotNull List<Path> includeDirs, @NotNull Path prefixHeader, @NotNull Path pchOutput) {
         var cmd = new ArrayList<String>();
         cmd.add(zig.toString());
         cmd.add("cc");
         cmd.add("-target");
         cmd.add(zigTarget);
-        cmd.addAll(languageFlags(ltoMode, optimizationLevel));
+        cmd.addAll(languageFlags(ltoMode, optimizationLevel, stripNativeSymbols));
         for (var inc : includeDirs) {
             cmd.add("-I" + inc.toAbsolutePath());
         }

@@ -1088,7 +1088,10 @@ lifecycle/reconciler/scheduler/mirror/outline）、LSP 通道门面与对外公�
 - 分发入口：`./gradlew buildAddonAllPlatform --args=--package --no-daemon --info
   --console=plain`。独立编译 Windows x86_64、Linux x86_64、Linux AArch64、macOS
   AArch64 四套 **Release** 库，不覆盖源码目录的手工安装；生成
-  `build/distributions/gdcc_editor_addon.zip`。ZIP 仅包含
+  `build/distributions/gdcc_editor_addon.zip`。四套库以 `stripNativeSymbols=true`
+  编译（`-g0` 抑制 zig 在 ELF 目标上默认产生的 DWARF，链接 `-s` 剥离符号表；
+  Windows 轮次在链接前清理早期未剥离构建遗留的同名 `.pdb`），仅此分发路径启用，
+  其余构建保持默认符号输出。ZIP 仅包含
   `src/editor_addon/addons/gdcc/` 的运行时内容，路径前缀固定为 `addons/gdcc/`；保留
   解释型 `.gd`、插件配置、翻译和图标，排除已编译的 `.gd3`、其 UID、导入缓存、
   `.godot/` 和源码目录原有的 `bin/`。重新生成的 `bin/` 仅来自本次四平台构建，

@@ -69,7 +69,8 @@ class RpcJsonCodecTest {
                     "targetPlatform": "LINUX_X86_64",
                     "strictMode": false,
                     "outputMountRoot": "/__build__",
-                    "cCompilerKind": null
+                    "cCompilerKind": null,
+                    "stripNativeSymbols": null
                   },
                   "topLevelCanonicalNameMap": {"Player": "game.Player"},
                   "hasLastCompileResult": true,
@@ -93,7 +94,8 @@ class RpcJsonCodecTest {
                   "targetPlatform": "LINUX_X86_64",
                   "strictMode": false,
                   "outputMountRoot": "/__build__",
-                  "cCompilerKind": null
+                  "cCompilerKind": null,
+                  "stripNativeSymbols": null
                 }
                 """, codec.toJsonTree(withNullPath));
         // Path crosses the wire as host `Path.toString()` text, so the pinned expectation follows
@@ -139,7 +141,8 @@ class RpcJsonCodecTest {
                     "targetPlatform": "LINUX_X86_64",
                     "strictMode": false,
                     "outputMountRoot": "/__build__",
-                    "cCompilerKind": null
+                    "cCompilerKind": null,
+                    "stripNativeSymbols": null
                   },
                   "topLevelCanonicalNameMap": {"Player": "game.Player"},
                   "sourcePaths": ["/src/main.gd"],
@@ -759,6 +762,29 @@ class RpcJsonCodecTest {
                 parse(baseShape.formatted(", \"cCompilerKind\": \"GCC\"")),
                 CompileOptions.class
         ));
+    }
+
+    @Test
+    void compileOptionsStripNativeSymbolsBindsFalseForMissingAndRoundTrips() {
+        // Wire compat: clients predating the field omit it, and the boxed component keeps the
+        // `false` default instead of failing record binding.
+        var baseShape = """
+                {"godotVersion": "V451", "projectPath": null, "optimizationLevel": "RELEASE", \
+                "targetPlatform": "LINUX_X86_64", "strictMode": false, "outputMountRoot": "/__build__"%s}""";
+        var missing = codec.bindParams(parse(baseShape.formatted("")), CompileOptions.class);
+        assertNull(missing.stripNativeSymbols());
+        assertFalse(missing.isStripNativeSymbols());
+        var explicitNull = codec.bindParams(parse(baseShape.formatted(", \"stripNativeSymbols\": null")), CompileOptions.class);
+        assertFalse(explicitNull.isStripNativeSymbols());
+        // The codec serializes nulls, so the unset component rides the wire as an explicit
+        // null — which older and newer peers both bind back to the `false` default.
+        assertTrue(codec.toJsonTree(missing).getAsJsonObject().get("stripNativeSymbols").isJsonNull());
+
+        var stripped = codec.bindParams(parse(baseShape.formatted(", \"stripNativeSymbols\": true")), CompileOptions.class);
+        assertTrue(stripped.isStripNativeSymbols());
+        var serialized = codec.toJsonTree(stripped).getAsJsonObject();
+        assertTrue(serialized.get("stripNativeSymbols").getAsBoolean());
+        assertTrue(codec.bindParams(serialized, CompileOptions.class).isStripNativeSymbols());
     }
 
     private static CompileOptions options(Path projectPath) {

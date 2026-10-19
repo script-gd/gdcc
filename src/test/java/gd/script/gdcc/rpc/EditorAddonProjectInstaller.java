@@ -133,7 +133,7 @@ public final class EditorAddonProjectInstaller {
         var artifactsByPlatform = new LinkedHashMap<TargetPlatform, List<Path>>();
         for (var platform : DISTRIBUTION_PLATFORMS) {
             System.out.println("Compiling " + ADDON_SOURCE_DIR + "/*.gd3 for " + platform + " (Release) ...");
-            var result = compileClientLibrary(buildDirFor(platform).resolve("release"), platform, COptimizationLevel.RELEASE);
+            var result = compileClientLibrary(buildDirFor(platform).resolve("release"), platform, COptimizationLevel.RELEASE, true);
             requireBuildSuccess(result, platform);
             artifactsByPlatform.put(platform, result.artifacts());
         }
@@ -240,6 +240,19 @@ public final class EditorAddonProjectInstaller {
             TargetPlatform targetPlatform,
             COptimizationLevel optimizationLevel
     ) throws IOException {
+        return compileClientLibrary(projectPath, targetPlatform, optimizationLevel, false);
+    }
+
+    /// `stripNativeSymbols` is set only by the distribution packaging (`buildDistribution`):
+    /// shipped libraries suppress zig's default DWARF output (`-g0`) and drop the linked symbol
+    /// table (`-s`), which together removed ~80% of the RELEASE `.so` size. Debug and in-place
+    /// development installs keep full symbols for diagnosability.
+    private static CompileResult compileClientLibrary(
+            Path projectPath,
+            TargetPlatform targetPlatform,
+            COptimizationLevel optimizationLevel,
+            boolean stripNativeSymbols
+    ) throws IOException {
         try (var api = new API()) {
             api.createModule(MODULE_ID, "GDCC Editor Extension");
             api.setCompileOptions(MODULE_ID, new CompileOptions(
@@ -247,7 +260,7 @@ public final class EditorAddonProjectInstaller {
                     optimizationLevel, targetPlatform,
                     false, CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT,
                     // The client library supports cross-compilation; TinyCC is host-native only.
-                    CCompilerKind.ZIG_CC));
+                    CCompilerKind.ZIG_CC, stripNativeSymbols));
             for (var source : listAddonSources()) {
                 // Preserve addon-relative paths, including utility subdirectories. The
                 // res:// display label and the host-absolute path feed the compile-time class

@@ -198,7 +198,7 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
         // The forced shape deliberately ignores the requested kind: pinning a compiler must pin
         // it for every project info, which is what existing single-compiler callers rely on.
         var compiler = forcedCompiler != null ? forcedCompiler : compilers.get(projectInfo.getCCompilerKind());
-        var compileResult = compiler.compile(projectPath, includeDirs, cFiles, outputName, opt, tp);
+        var compileResult = compiler.compile(projectPath, includeDirs, cFiles, outputName, opt, tp, projectInfo.isStripNativeSymbols());
         var nativeCompileDuration = elapsedSince(nativeCompileStart);
         var timing = new CBuildResult.Timing(
                 includeDuration,
