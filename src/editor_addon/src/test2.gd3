@@ -1,16 +1,19 @@
 @tool
+## This is a GDCC class, which is the same as GDScript,
+## but safer + faster, with the power of GDCC AOT compiler.
 class_name Test2 extends MeshInstance3D
 
+## Almost all features in GDScript is available.
 @export var rotating_speed: float = 30;
 @export var bouncing_speed: float = 1;
 var time: float = 0.0;
 
+# With a recompilation and hot update < 1s, the experience of using 
+# GDCC AOT compiler is as smooth as that of Godot GDScript interpreter
 func _init() -> void:
     time = 0.0;
 
 func _process(delta: float) -> void:
     time += delta;
-    
     self.rotation.y = fmod(rotating_speed * time / 180.0, TAU);
-    
     self.position.y = abs(sin(time * self.bouncing_speed));
