@@ -3,28 +3,761 @@ extends EditorPlugin
 
 # Editor plugin entry point — interpreted only, never a gdcc compile target.
 #
-# The `GdccRpcClient` class comes exclusively from the installed compiled GDExtension: the
-# `.gd3` source is never loaded by the engine, so this plugin can only be enabled in a project
-# where the compiled extension is installed (the bootstrap engine test produces exactly such a
-# project copy). The plugin owns one client node (placed inside the editor SceneTree so its
-# frame pump runs) and one dock.
+# The compiled classes (`GdccRpcClient`, `GdccEditorService`, ...) come exclusively from the
+# installed GDExtension: the `.gd3` sources are never loaded by the engine, so this plugin can
+# only be enabled in a project where the compiled extension is installed. This script owns the
+# dock/setup dialog, build toolbar, shared project manager/client, launcher and low-power coordinator;
+# the language integration lives in the process-resident `GdccEditorService`,
+# which survives plugin disable/enable cycles so open `.gd3` tabs keep a
+# valid language instance.
 
 const DockScript := preload("res://addons/gdcc/gdcc_dock.gd")
+const LauncherScript := preload("res://addons/gdcc/server_launcher.gd")
+const ProjectManagerScript := preload("res://addons/gdcc/gdcc_project_manager.gd")
+const BuildToolbarScript := preload("res://addons/gdcc/gdcc_build_toolbar.gd")
+# Interpreted like the dock: a compiled `.gd3` class can never extend EditorSyntaxHighlighter
+# (extension classes register at the GDExtension SCENE level, editor-only base classes only
+# exist after `register_editor_types()`), so the highlighter lives outside the module.
+const HighlighterScript := preload("res://addons/gdcc/gdcc_syntax_highlighter.gd")
+const SCRIPT_ICON_PATH := "res://addons/gdcc/gdcc_script.svg"
+const TRANSLATION_DOMAIN := &"gdcc.editor"
+const CHINESE_TRANSLATION := preload("res://addons/gdcc/locale/zh.po")
+const CHINESE_SETTINGS_TRANSLATION := preload("res://addons/gdcc/locale/zh_properties.po")
+const SETUP_MENU_ID := 0x47444343
+
+const SERVICE_NODE_NAME := "GdccEditorService"
+const SETTING_LSP_USE_THREAD := "network/language_server/use_thread"
+const SETTING_LSP_HOST := "network/language_server/remote_host"
+const SETTING_LSP_PORT := "network/language_server/remote_port"
+const SETTING_LAUNCH_COMMAND := "gdcc/compilation_server/launch_command"
+const SETTING_SERVER_HOST := "gdcc/compilation_server/host"
+const SETTING_SERVER_PORT := "gdcc/compilation_server/port"
 
 var _client: GdccRpcClient
 var _dock: DockScript
+var _project_manager: ProjectManagerScript
+var _build_toolbar: BuildToolbarScript
+var _launcher: Node
+var _service: GdccEditorService
+var _use_thread_saved: bool = false
+var _use_thread_applied: bool = false
+# True when THIS `_enter_tree` primed thread mode before the server listened; an install
+# rollback must unprime so the next enable re-probes (the restored setting makes the
+# server start main-thread-polled after all).
+var _primed_this_enter: bool = false
+var _busy_count: int = 0
+var _saved_low_processor_mode: bool = true
+var _filesystem_connected: bool = false
+var _settings_signal_connected: bool = false
+# The endpoint pair this plugin instance last relayed into the resident service (via install
+# or a settings-changed retarget). The settings-changed relay compares the CONFIGURED pair
+# against this — never against the service's live endpoint — so it fires exactly on
+# configuration edits and an out-of-band `service.install` (engine tests pin their own
+# endpoints) is never yanked back by an unrelated project-settings write.
+var _relayed_endpoint: Array = []
+# Dedupe for invalid configured pairs: `settings_changed` fires for ANY project-settings
+# write, so an unlogged-once invalid pair would spam one push_error per unrelated edit.
+# Tracks the last REJECTED pair; a valid read clears it so re-breaking the config re-logs.
+var _last_invalid_endpoint: Array = []
+# The registered syntax-highlighter template (per-tab instances come from its `_create()`).
+var _syntax_highlighter: EditorSyntaxHighlighter = null
+var _script_icon: Texture2D = null
+var _script_language_index: int = -1
+# CodeEdit instance IDs whose highlighter this plugin has already settled (manual assignment
+# or an observed native selection). The set is what stops the `editor_script_changed` relay
+# from re-assigning ours over a user's deliberate dropdown pick on a later focus: a pick
+# survives because the tab was recorded the first time we saw it with any highlighter state.
+# Instance IDs are session-unique, so closed-tab entries can never match a future editor.
+var _handled_highlighter_editors: Dictionary = {}
+var _translation_domain: TranslationDomain
+var _settings_translation_domain: TranslationDomain
+var _editor_setup_menu: PopupMenu
 
 
 func _enter_tree() -> void:
+    # Normal addon UI uses its own domain; native property names need a separate catalog.
+    _translation_domain = TranslationServer.get_or_add_domain(TRANSLATION_DOMAIN)
+    _translation_domain.add_translation(CHINESE_TRANSLATION)
+    # Native Project Settings resolves property names in this engine-owned domain.
+    _settings_translation_domain = TranslationServer.get_or_add_domain(&"godot.properties")
+    _settings_translation_domain.add_translation(CHINESE_SETTINGS_TRANSLATION)
+    set_translation_domain(TRANSLATION_DOMAIN)
+    # 1) Resident service node, BEFORE any settings change (a fail-closed abort must leave
+    #    zero side effects). A foreign node squatted on the fixed name means we must not
+    #    create a second service — two `GD3` language instances would corrupt the editor's
+    #    language table.
+    var existing := get_tree().root.get_node_or_null(SERVICE_NODE_NAME)
+    if existing != null:
+        if existing is GdccEditorService:
+            _service = existing
+        else:
+            push_error(tr("GDCC: root node '%s' exists with an unexpected type; script language integration is disabled.") % SERVICE_NODE_NAME)
+            _unregister_translation()
+            return
+    else:
+        _service = GdccEditorService.new()
+        _service.name = SERVICE_NODE_NAME
+        get_tree().root.add_child(_service)
+    _service.set_translation_domain(TRANSLATION_DOMAIN)
+
+    var editor_settings := get_editor_interface().get_editor_settings()
+    # 2) Endpoints first (the thread-mode probe below needs them): LSP follows the user's
+    #    language-server settings; the gdcc RPC endpoint reads the SAME ProjectSettings pair
+    #    the Project Settings dialog edits (`gdcc/compilation_server/host|port`) so the background
+    #    diagnostics channel and the configured endpoint can never diverge.
+    #    Defaults are registered a few lines below and therefore always exist by the
+    #    time install() runs.
+    var lsp_endpoint := _read_lsp_endpoint()
+    var lsp_host: String = lsp_endpoint[0]
+    var lsp_port: int = lsp_endpoint[1]
+    # 3) The GDScript LSP server only polls on the main thread unless threaded mode is on, and
+    #    the language's bounded synchronous waits deadlock without it. The engine persists
+    #    this setting on editor exit, so the original value must be restored on unload.
+    #    A programmatic flip does NOT restart an already-running server (the settings-changed
+    #    notification is emitted only by C++ UI flows), so the gate is whether the
+    #    endpoint is listening right now: a listening server stays main-thread-polled for the
+    #    rest of this process (mark the session blocking-unsafe, sticky across disable — the
+    #    scripted restore does not restart it either); a not-yet-listening server will read
+    #    the flipped value at start (primed — remembered so later disable/enable cycles don't
+    #    mislatch unsafe once the port is up).
+    if editor_settings.has_setting(SETTING_LSP_USE_THREAD):
+        _use_thread_saved = bool(editor_settings.get_setting(SETTING_LSP_USE_THREAD))
+        if not _use_thread_saved:
+            editor_settings.set_setting(SETTING_LSP_USE_THREAD, true)
+            _use_thread_applied = true
+            if not _service.lsp_blocking_unsafe and not _service.lsp_thread_primed:
+                if _lsp_endpoint_listening(lsp_host, lsp_port):
+                    _service.lsp_blocking_unsafe = true
+                    push_warning(tr("GDCC: plugin enabled while the GDScript language server is already running; it keeps its current polling mode until the editor restarts — .gd3 diagnostics will refresh on editor beats instead of synchronously."))
+                else:
+                    _service.lsp_thread_primed = true
+                    _primed_this_enter = true
+    # Launch command (empty = never auto-launch) plus the server endpoint. These are
+    # PER-PROJECT settings (project.godot) so a project's server setup is versioned and
+    # shared with its contributors; register the schema with defaults, seeding from the
+    # pre-2026-10 machine-local EditorSettings values when this project never customized the
+    # key (one-time migration; the machine-local keys are left untouched for downgrade safety, and
+    # the seeded values stay in-memory until the user saves the project).
+    var migrated := false
+    # Migrate saved project keys before registering defaults; canonical keys take precedence.
+    for key in [SETTING_SERVER_HOST, SETTING_SERVER_PORT, SETTING_LAUNCH_COMMAND]:
+        var legacy_key: String = key.replace("gdcc/compilation_server/", "gdcc/server/")
+        if ProjectSettings.has_setting(legacy_key):
+            if not ProjectSettings.has_setting(key):
+                ProjectSettings.set_setting(key, ProjectSettings.get_setting(legacy_key))
+            ProjectSettings.set_setting(legacy_key, null)
+            migrated = true
+    if not ProjectSettings.has_setting(SETTING_SERVER_HOST):
+        var host := "127.0.0.1"
+        if editor_settings.has_setting("gdcc/server/host"):
+            var legacy_host := str(editor_settings.get_setting("gdcc/server/host")).strip_edges()
+            if legacy_host != "" and legacy_host != "127.0.0.1":
+                host = legacy_host
+                migrated = true
+        ProjectSettings.set_setting(SETTING_SERVER_HOST, host)
+    ProjectSettings.set_initial_value(SETTING_SERVER_HOST, "127.0.0.1")
+    ProjectSettings.add_property_info({"name": SETTING_SERVER_HOST, "type": TYPE_STRING})
+    if not ProjectSettings.has_setting(SETTING_SERVER_PORT):
+        var port := 6099
+        if editor_settings.has_setting("gdcc/server/port"):
+            var legacy_port := int(editor_settings.get_setting("gdcc/server/port"))
+            if legacy_port != 6099 and legacy_port >= 1 and legacy_port <= 65535:
+                port = legacy_port
+                migrated = true
+        ProjectSettings.set_setting(SETTING_SERVER_PORT, port)
+    ProjectSettings.set_initial_value(SETTING_SERVER_PORT, 6099)
+    ProjectSettings.add_property_info({
+        "name": SETTING_SERVER_PORT, "type": TYPE_INT, "hint": PROPERTY_HINT_RANGE,
+        "hint_string": "1,65535",
+    })
+    var legacy_launch_key := "gdcc/server/launch_command"
+    if not ProjectSettings.has_setting(SETTING_LAUNCH_COMMAND):
+        var command := ""
+        if editor_settings.has_setting(legacy_launch_key):
+            var legacy_command := str(editor_settings.get_setting(legacy_launch_key)).strip_edges()
+            if legacy_command != "":
+                command = legacy_command
+                migrated = true
+        ProjectSettings.set_setting(SETTING_LAUNCH_COMMAND, command)
+    ProjectSettings.set_initial_value(SETTING_LAUNCH_COMMAND, "")
+    ProjectSettings.add_property_info({
+        "name": SETTING_LAUNCH_COMMAND,
+        "type": TYPE_STRING,
+        "hint": PROPERTY_HINT_PLACEHOLDER_TEXT,
+        "hint_string": "gdcc serve --host {host} --port {port}",
+    })
+    if migrated:
+        push_warning(tr("GDCC: server settings migrated into this project's gdcc/compilation_server settings; save the project to persist them."))
+    # Project-level sync exclusion globs: `String.match` patterns against res://-relative
+    # paths. Name and default are single-sourced from the resident service (it owns the
+    # matching predicate).
+    if not ProjectSettings.has_setting(_service.EXCLUDED_GLOBS_SETTING):
+        ProjectSettings.set_setting(_service.EXCLUDED_GLOBS_SETTING, _service.default_excluded_globs())
+    ProjectSettings.set_initial_value(_service.EXCLUDED_GLOBS_SETTING, _service.default_excluded_globs())
+    ProjectSettings.add_property_info({
+        "name": _service.EXCLUDED_GLOBS_SETTING, "type": TYPE_PACKED_STRING_ARRAY,
+    })
+    if not ProjectSettings.has_setting(ProjectManagerScript.SETTING_OPTIMIZATION_LEVEL):
+        ProjectSettings.set_setting(ProjectManagerScript.SETTING_OPTIMIZATION_LEVEL, "DEBUG")
+    ProjectSettings.set_initial_value(ProjectManagerScript.SETTING_OPTIMIZATION_LEVEL, "DEBUG")
+    ProjectSettings.add_property_info({"name": ProjectManagerScript.SETTING_OPTIMIZATION_LEVEL,
+            "type": TYPE_STRING, "hint": PROPERTY_HINT_ENUM, "hint_string": "DEBUG,RELEASE"})
+    if not ProjectSettings.has_setting(ProjectManagerScript.SETTING_STRICT_MODE):
+        ProjectSettings.set_setting(ProjectManagerScript.SETTING_STRICT_MODE, false)
+    ProjectSettings.set_initial_value(ProjectManagerScript.SETTING_STRICT_MODE, false)
+    ProjectSettings.add_property_info({"name": ProjectManagerScript.SETTING_STRICT_MODE, "type": TYPE_BOOL})
+    if not ProjectSettings.has_setting(ProjectManagerScript.SETTING_C_COMPILER_KIND):
+        ProjectSettings.set_setting(ProjectManagerScript.SETTING_C_COMPILER_KIND, "AUTO")
+    ProjectSettings.set_initial_value(ProjectManagerScript.SETTING_C_COMPILER_KIND, "AUTO")
+    ProjectSettings.add_property_info({"name": ProjectManagerScript.SETTING_C_COMPILER_KIND,
+            "type": TYPE_STRING, "hint": PROPERTY_HINT_ENUM, "hint_string": "AUTO,ZIG_CC,TINY_CC"})
+
+    # 4) Server launcher (single-flight coordinator shared by project manager and service;
+    #    its busy reports point at this plugin's coordinator — see `_report_busy`).
+    _launcher = LauncherScript.new()
+    _launcher.name = "GdccServerLauncher"
+    _launcher.setup(_report_busy)
+    add_child(_launcher)
+
     _client = GdccRpcClient.new()
     add_child(_client)
+    _project_manager = ProjectManagerScript.new()
+    _project_manager.name = "GdccProjectManager"
+    _project_manager.setup(_client, _report_busy, _launcher, _service)
+    add_child(_project_manager)
     _dock = DockScript.new()
-    _dock.setup(_client, get_editor_interface())
-    add_control_to_dock(EditorPlugin.DOCK_SLOT_RIGHT_UL, _dock)
+    _dock.setup(_project_manager)
+    add_control_to_bottom_panel(_dock, "GDCC")
+
+    # 5) Install the language integration BEFORE any asynchronous flow (auto-setup may spawn
+    #    a server; it must not run when the language side failed to install). The hook
+    #    injection precedes install so any service-side connection failure can reach the
+    #    launcher immediately. On failure everything created above is rolled back and the
+    #    plugin stays inert (fail-closed, no half-installed state).
+    _service.ensure_server_hook = Callable(_launcher, "ensure_running")
+    # The service's diagnostics scheduler is frame-driven (debounce pump + RPC flights) and
+    # therefore reports busy through the single-writer coordinator like the dock and the
+    # launcher — otherwise the low-power idle window right after the user stops typing would
+    # starve exactly the frames the debounce needs. Connected once per
+    # plugin instance; the engine drops the connection when this plugin is freed.
+    if not _service.busy_delta.is_connected(_report_busy):
+        _service.busy_delta.connect(_report_busy)
+    # Revalidation relay: the service reports revalidation-worthy analysis merges through its
+    # own signal; the ACTUAL `validate_script` emission happens HERE in interpreted code.
+    # This indirection is load-bearing: a gdcc-compiled foreign-signal `Object.emit_signal`
+    # from the service's frame pump empirically delivers to no connection (2026-09-27
+    # engine-test bisect), while this interpreted emission reaches them all.
+    if not _service.revalidation_requested.is_connected(_on_gdcc_revalidation_requested):
+        _service.revalidation_requested.connect(_on_gdcc_revalidation_requested)
+    if not _service.outline_revalidation_requested.is_connected(_on_outline_revalidation_requested):
+        _service.outline_revalidation_requested.connect(_on_outline_revalidation_requested)
+    var server_endpoint := _read_server_endpoint()
+    # Fail-closed on an unusable configured pair: install on the defaults rather than
+    # halfway onto a dead endpoint (the settings-changed path instead keeps the current
+    # channel — see `_on_project_settings_changed`).
+    var server_host := "127.0.0.1"
+    var server_port := 6099
+    if not server_endpoint.is_empty():
+        server_host = server_endpoint[0]
+        server_port = server_endpoint[1]
+    _relayed_endpoint = [server_host, server_port]
+    var install_err: int = _service.install(get_editor_interface(), lsp_host, lsp_port, server_host, server_port)
+    if install_err != OK:
+        push_error(tr("GDCC: script language install failed (error %d); editor settings restored.") % install_err)
+        _rollback_failed_enter_tree()
+        return
+    get_editor_interface().get_base_control().theme_changed.connect(_apply_script_icon)
+    _apply_script_icon()
+    # Fire-and-forget: the coroutine awaits RPC responses off this synchronous stack.
+    _project_manager.auto_setup_module()
+    _install_build_toolbar()
+    _dock.settings_requested.connect(func() -> void:
+        _build_toolbar._open_project_settings("gdcc/compilation_server"))
+    _install_editor_setup_menu()
+    # 5.5) Syntax highlighter: registration covers only NEW tabs (ScriptEditor never re-runs
+    #    selection for existing ones), so the method also applies to the tab that is current
+    #    right now and relays future tab focuses. Best-effort: highlighting must never gate
+    #    the language install, so nothing here feeds the failure path.
+    _register_syntax_highlighter()
+    # 6) Feed file-set changes to the service (connected exactly once across re-enables).
+    var filesystem := get_editor_interface().get_resource_filesystem()
+    if not filesystem.filesystem_changed.is_connected(_on_filesystem_changed):
+        filesystem.filesystem_changed.connect(_on_filesystem_changed)
+        _filesystem_connected = true
+    # Project-settings edits (exclusion globs, server endpoint) are not filesystem events:
+    # forward the (deferred, per-frame coalesced) settings_changed emission so a newly
+    # excluded path is reconciled out of the module and a host/port edit retargets the
+    # diagnostics channel without waiting for an unrelated file operation.
+    if not _settings_signal_connected:
+        ProjectSettings.settings_changed.connect(_on_project_settings_changed)
+        _settings_signal_connected = true
+    # 7) A synchronous scan during the editor's first scan would re-enter it; only a plugin
+    #    enabled at runtime (filesystem idle) triggers one deferred scan.
+    if not filesystem.is_scanning():
+        filesystem.call_deferred("scan")
+    get_tree().root.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
+
+
+func _notification(what: int) -> void:
+    if what == NOTIFICATION_TRANSLATION_CHANGED and _settings_translation_domain != null:
+        # Godot reloads its property catalog on editor language changes; re-add idempotently.
+        _settings_translation_domain.add_translation(CHINESE_SETTINGS_TRANSLATION)
+        if is_instance_valid(_editor_setup_menu):
+            _ensure_editor_setup_menu.call_deferred()
+
+
+func _install_editor_setup_menu() -> void:
+    # Godot keeps this source node name in both full and compact menu layouts.
+    for candidate in get_editor_interface().get_base_control().find_children("*", "PopupMenu", true, false):
+        if candidate.name == &"Editor":
+            _editor_setup_menu = candidate
+            _editor_setup_menu.about_to_popup.connect(_ensure_editor_setup_menu)
+            _editor_setup_menu.id_pressed.connect(_on_editor_setup_menu_pressed)
+            _ensure_editor_setup_menu()
+            return
+    push_warning(tr("GDCC: Editor menu not found; use the GDCC dock to install the server."))
+
+
+func _ensure_editor_setup_menu() -> void:
+    if not is_instance_valid(_editor_setup_menu):
+        return
+    # Editor menu rebuilds clear items but preserve the popup and its connections.
+    var index := _editor_setup_menu.get_item_index(SETUP_MENU_ID)
+    if index < 0:
+        # A dedicated ID must not overlap Godot's native editor commands.
+        _editor_setup_menu.add_item(tr("Install GDCC compilation server"), SETUP_MENU_ID)
+    else:
+        _editor_setup_menu.set_item_text(index, tr("Install GDCC compilation server"))
+
+
+func _on_editor_setup_menu_pressed(id: int) -> void:
+    if id == SETUP_MENU_ID:
+        _dock._open_setup()
+
+
+func _remove_editor_setup_menu() -> void:
+    if not is_instance_valid(_editor_setup_menu):
+        return
+    _editor_setup_menu.about_to_popup.disconnect(_ensure_editor_setup_menu)
+    _editor_setup_menu.id_pressed.disconnect(_on_editor_setup_menu_pressed)
+    var index := _editor_setup_menu.get_item_index(SETUP_MENU_ID)
+    if index >= 0:
+        _editor_setup_menu.remove_item(index)
+    _editor_setup_menu = null
+
+
+## Rolls back everything `_enter_tree` created after the resident service node (which is
+## deliberately left in place — it is inert while UNINSTALLED and reused on the next enable).
+func _rollback_failed_enter_tree() -> void:
+    if _dock != null:
+        remove_control_from_bottom_panel(_dock)
+        _dock.free()
+        _dock = null
+    if _project_manager != null:
+        _project_manager.free()
+        _project_manager = null
+    if _client != null:
+        remove_child(_client)
+        _client.free()
+        _client = null
+    if _launcher != null:
+        remove_child(_launcher)
+        _launcher.free()
+        _launcher = null
+    _restore_use_thread()
+    if _primed_this_enter:
+        _service.lsp_thread_primed = false
+        _primed_this_enter = false
+    _unregister_translation()
+
+
+func _unregister_translation() -> void:
+    if _translation_domain == null:
+        return
+    _translation_domain.remove_translation(CHINESE_TRANSLATION)
+    _settings_translation_domain.remove_translation(CHINESE_SETTINGS_TRANSLATION)
+    _settings_translation_domain = null
+    TranslationServer.remove_domain(TRANSLATION_DOMAIN)
+    _translation_domain = null
+    if _service != null:
+        _service.set_translation_domain_inherited()
+    get_tree().root.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
+
+
+## Reads the LSP endpoint from EditorSettings with the engine defaults; shared by
+## `_enter_tree` (flip gate) and `_exit_tree` (stale-prime check).
+func _read_lsp_endpoint() -> Array:
+    var editor_settings := get_editor_interface().get_editor_settings()
+    var host := "127.0.0.1"
+    var port := 6005
+    if editor_settings.has_setting(SETTING_LSP_HOST):
+        host = str(editor_settings.get_setting(SETTING_LSP_HOST))
+    if editor_settings.has_setting(SETTING_LSP_PORT):
+        port = int(editor_settings.get_setting(SETTING_LSP_PORT))
+    return [host, port]
+
+
+## Reads the gdcc server endpoint from the per-project settings (`gdcc/compilation_server/host|port`).
+## single-sourced with the Project Settings dialog so the background diagnostics channel can
+## never diverge from the configured endpoint. The defaults are
+## registered earlier in `_enter_tree`, so this always resolves. Returns [] when the
+## configured pair is unusable (a hand-edited project.godot can bypass the dialog's range
+## hint), letting each caller fail closed its own way; the rejection is logged once per
+## distinct invalid pair (deduped via `_last_invalid_endpoint`).
+func _read_server_endpoint() -> Array:
+    var host := str(ProjectSettings.get_setting(SETTING_SERVER_HOST, "127.0.0.1")).strip_edges()
+    var port := int(ProjectSettings.get_setting(SETTING_SERVER_PORT, 6099))
+    if host.is_empty() or port < 1 or port > 65535:
+        if [host, port] != _last_invalid_endpoint:
+            _last_invalid_endpoint = [host, port]
+            push_error(tr("GDCC: invalid gdcc/compilation_server project settings (host='%s', port=%d); expected a non-empty host and a port in 1..65535.") % [host, port])
+        return []
+    _last_invalid_endpoint = []
+    return [host, port]
+
+
+## One-shot bounded probe (non-blocking `poll()` + ticks deadline, the only blocking form
+## this addon permits): is something accepting TCP on the LSP endpoint right now? Used to
+## decide whether a `use_thread` flip can still reach the server before it starts. The
+## probe sends nothing, so it never steals `latest_client_id` diagnostics targeting.
+func _lsp_endpoint_listening(host: String, port: int) -> bool:
+    var peer := StreamPeerTCP.new()
+    if peer.connect_to_host(host, port) != OK:
+        return false
+    var listening := false
+    var deadline := Time.get_ticks_msec() + 150
+    while Time.get_ticks_msec() < deadline:
+        peer.poll()
+        var status := peer.get_status()
+        if status == StreamPeerTCP.STATUS_CONNECTED:
+            listening = true
+            break
+        if status != StreamPeerTCP.STATUS_CONNECTING:
+            break
+    peer.disconnect_from_host()
+    return listening
 
 
 func _exit_tree() -> void:
-    remove_control_from_docks(_dock)
-    _dock.free()
-    _dock = null
+    _remove_editor_setup_menu()
+    # Teardown order is contractual: disconnect feeds, release the views and project manager,
+    # uninstall the language integration → restore the LSP thread setting → and only then
+    # shut down the spawned server (uninstall may still need the server reachable). Note the
+    # scripted restore does NOT restart the engine's LSP server (settings-changed
+    # notification is C++-only); ordering still matters so our own client is
+    # disconnected and the language unregistered before the setting flips back.
+    var base_control := get_editor_interface().get_base_control()
+    if base_control.theme_changed.is_connected(_apply_script_icon):
+        base_control.theme_changed.disconnect(_apply_script_icon)
+    var filesystem := get_editor_interface().get_resource_filesystem()
+    if _filesystem_connected and filesystem != null:
+        if filesystem.filesystem_changed.is_connected(_on_filesystem_changed):
+            filesystem.filesystem_changed.disconnect(_on_filesystem_changed)
+    _filesystem_connected = false
+    if _settings_signal_connected:
+        if ProjectSettings.settings_changed.is_connected(_on_project_settings_changed):
+            ProjectSettings.settings_changed.disconnect(_on_project_settings_changed)
+    _settings_signal_connected = false
+    # Highlighter teardown BEFORE the language uninstall: unregistration only removes the
+    # template from future tab selection; already-assigned per-tab instances keep working
+    # (the interpreted script resource stays alive while a tab references it, and the
+    # GDExtension unload does not affect it) and simply stop being re-applied.
+    var script_editor := get_editor_interface().get_script_editor()
+    if script_editor != null:
+        if script_editor.editor_script_changed.is_connected(_on_editor_script_changed):
+            script_editor.editor_script_changed.disconnect(_on_editor_script_changed)
+        if _syntax_highlighter != null:
+            script_editor.unregister_syntax_highlighter(_syntax_highlighter)
+    _syntax_highlighter = null
+    _handled_highlighter_editors.clear()
+    if _build_toolbar != null:
+        remove_control_from_container(CONTAINER_TOOLBAR, _build_toolbar)
+        _build_toolbar.free()
+        _build_toolbar = null
+    if _dock != null:
+        remove_control_from_bottom_panel(_dock)
+        _dock.free()
+        _dock = null
+    if _project_manager != null:
+        # Release project reservations and drain busy before uninstalling its diagnostics source.
+        _project_manager.free()
+        _project_manager = null
     _client = null
+    if _service != null:
+        _service.uninstall()
+    _sync_script_language_menus(false)
+    # Clearing the icon refreshes script-language menus. Unregister our language first
+    # so Godot does not index its extra language into a menu created before registration.
+    var theme := get_editor_interface().get_editor_theme()
+    if theme.has_icon("GdccScript", "EditorIcons") and theme.get_icon("GdccScript", "EditorIcons") == _script_icon:
+        theme.clear_icon("GdccScript", "EditorIcons")
+    _script_icon = null
+    # A primed flag is only truthful while the flipped value still stands. Leaving BEFORE
+    # the server listened means the restored original value is what it will read at start —
+    # un-prime so the next enable re-probes instead of trusting a stale flag.
+    if _use_thread_applied and _service != null and _service.lsp_thread_primed:
+        var lsp_endpoint := _read_lsp_endpoint()
+        if not _lsp_endpoint_listening(lsp_endpoint[0], lsp_endpoint[1]):
+            _service.lsp_thread_primed = false
+    _restore_use_thread()
+    # Defensive: a reporter that died mid-flight must not leak full-speed mode.
+    if _busy_count > 0:
+        OS.low_processor_usage_mode = _saved_low_processor_mode
+        _busy_count = 0
+    if _launcher != null:
+        _launcher.shutdown_owned()
+        _launcher = null
+    _unregister_translation()
+
+
+func _install_build_toolbar() -> void:
+    _build_toolbar = BuildToolbarScript.new()
+    _build_toolbar.setup(_project_manager)
+    _build_toolbar.build_requested.connect(_show_build_log)
+    add_control_to_container(CONTAINER_TOOLBAR, _build_toolbar)
+    # CONTAINER_TOOLBAR appends to EditorTitleBar, after the renderer selector. Reorder the
+    # title-bar sibling, not the private HBox inside EditorRunBar's run-button panel.
+    var title_bar := _build_toolbar.get_parent()
+    for child in title_bar.get_children():
+        if child.is_class("EditorRunBar"):
+            title_bar.move_child(_build_toolbar, child.get_index())
+            return
+    push_warning(tr("GDCC: editor run toolbar not found; the Build control remains at the end of the title bar."))
+
+
+func _show_build_log() -> void:
+    if _dock != null:
+        make_bottom_panel_item_visible(_dock)
+
+
+## FileSystemDock and script tabs look up the resource type in EditorIcons, not the script's
+## class icon path. Reapply after editor theme regeneration; the identity guard avoids reentry.
+func _apply_script_icon() -> void:
+    _sync_script_language_menus(true)
+    if _script_icon == null:
+        # Plugins load before the first SVG import, so do not depend on ResourceLoader here.
+        var image := Image.new()
+        var error := image.load_svg_from_string(FileAccess.get_file_as_string(SCRIPT_ICON_PATH))
+        if error != OK:
+            push_error(tr("GDCC: script icon SVG could not be loaded (error %d).") % error)
+            return
+        _script_icon = ImageTexture.create_from_image(image)
+    var theme := get_editor_interface().get_editor_theme()
+    if theme.has_icon("GdccScript", "EditorIcons") and theme.get_icon("GdccScript", "EditorIcons") == _script_icon:
+        return
+    theme.set_icon("GdccScript", "EditorIcons", _script_icon)
+
+
+## Godot 4.5 caches dialog languages before addons register, but theme updates use the live
+## language count. Keep cached rows aligned; GD3 creation stays disabled through Godot 4.6.0.
+func _sync_script_language_menus(registered: bool) -> void:
+    if registered:
+        if _service == null:
+            return
+        _script_language_index = -1
+        for index in range(Engine.get_script_language_count()):
+            if Engine.get_script_language(index) == _service.get_language_instance():
+                _script_language_index = index
+                break
+    if _script_language_index < 0:
+        return
+    var disable_creation: bool = Engine.get_version_info().hex <= 0x040600
+    for dialog in get_tree().root.find_children("*", "ScriptCreateDialog", true, false):
+        for menu in dialog.find_children("*", "OptionButton", true, false):
+            # Language names are untranslated; accessibility names are localized by Godot.
+            if menu.item_count == 0 or menu.get_item_text(0) != "GDScript":
+                continue
+            var index := _script_language_index
+            if registered and menu.item_count == index:
+                menu.add_item("GD3")
+            if menu.item_count <= index or menu.get_item_text(index) != "GD3":
+                continue
+            if registered:
+                menu.set_item_disabled(index, disable_creation)
+                if disable_creation and menu.get_selected() == index:
+                    menu.select(0)
+                    menu.item_selected.emit(0)
+            else:
+                var selected: int = menu.get_selected()
+                var last: int = menu.item_count - 1
+                # ScriptServer unregisters by moving the last language into the removed slot.
+                if index != last:
+                    menu.set_item_text(index, menu.get_item_text(last))
+                    menu.set_item_icon(index, menu.get_item_icon(last))
+                    menu.set_item_disabled(index, menu.is_item_disabled(last))
+                    menu.set_item_metadata(index, menu.get_item_metadata(last))
+                menu.remove_item(last)
+                if selected == index or selected == last:
+                    var replacement := 0 if selected == index else index
+                    menu.select(replacement)
+                    menu.item_selected.emit(replacement)
+    if not registered:
+        _script_language_index = -1
+
+
+## Single-writer low-power coordinator: `OS.low_processor_usage_mode` is toggled ONLY here.
+## The editor idles without frames under that mode, starving every `process_frame`-driven pump
+## (RPC client, launcher). Project manager and launcher report busy deltas instead of writing the global
+## flag themselves, so their save/restore snapshots cannot trample each other. The original
+## value is captured on the first busy report and restored when the count drains — never
+## hard-coded to `true`, so a user's own setting survives.
+func _report_busy(delta: int) -> void:
+    var previous := _busy_count
+    _busy_count = maxi(0, _busy_count + delta)
+    if previous == 0 and _busy_count > 0:
+        _saved_low_processor_mode = OS.low_processor_usage_mode
+        OS.low_processor_usage_mode = false
+    elif _busy_count == 0 and previous > 0:
+        OS.low_processor_usage_mode = _saved_low_processor_mode
+
+
+func _restore_use_thread() -> void:
+    if not _use_thread_applied:
+        return
+    get_editor_interface().get_editor_settings().set_setting(SETTING_LSP_USE_THREAD, _use_thread_saved)
+    _use_thread_applied = false
+
+
+func _on_filesystem_changed() -> void:
+    if _service != null:
+        _service.notify_filesystem_changed()
+
+
+## ProjectSettings emits `settings_changed` deferred (per-frame coalesced) for ANY project
+## setting write, and 4.5 has no `get_changed_settings()` to filter by key. Two relays share
+## the emission: (a) the exclusion-glob filesystem notification (the reconciler coalesces
+## bursts and a no-diff pass sends no RPCs), and (b) the server-endpoint retarget. The
+## retarget compares the configured pair against the last pair THIS plugin relayed (not the
+## service's live endpoint): it fires exactly on host/port edits in the Project Settings
+## dialog, an invalid pair is rejected (logged by `_read_server_endpoint`) leaving the
+## current channel untouched, and an endpoint the service reached out-of-band (explicit
+## install) is never dragged back by an unrelated settings write.
+func _on_project_settings_changed() -> void:
+    if _service == null:
+        return
+    _service.notify_filesystem_changed()
+    var endpoint := _read_server_endpoint()
+    if endpoint.is_empty() or endpoint == _relayed_endpoint:
+        return
+    _service.retarget_rpc_endpoint(endpoint[0], endpoint[1])
+    _relayed_endpoint = endpoint
+
+
+## Registers the `.gd3` syntax highlighter template (auto-selected for every NEW `.gd3` tab by
+## language-name match) and covers already-open tabs: `register_syntax_highlighter` only
+## appends to the editor's template list and never re-runs selection for existing tabs (4.5
+## script_editor_plugin.cpp), so the current tab is handled immediately and later tab focuses
+## come through `editor_script_changed`.
+func _register_syntax_highlighter() -> void:
+    var script_editor := get_editor_interface().get_script_editor()
+    if script_editor == null:
+        return
+    _syntax_highlighter = HighlighterScript.new()
+    script_editor.register_syntax_highlighter(_syntax_highlighter)
+    if not script_editor.editor_script_changed.is_connected(_on_editor_script_changed):
+        script_editor.editor_script_changed.connect(_on_editor_script_changed)
+    _handled_highlighter_editors.clear()
+    _apply_highlighter_to_current_editor()
+
+
+func _on_editor_script_changed(_script: Script) -> void:
+    _apply_highlighter_to_current_editor()
+
+
+## Assigns the `.gd3` highlighter to the CURRENT script-editor tab when it shows one of our
+## scripts and still carries a fallback highlighter. Two gates: the resource path (Script has
+## no bound `get_language()` in 4.5), and the CURRENT highlighter's native class name —
+## `get_class()` reports the most-derived native name even for unregistered classes
+## (`_get_class_namev`), so only the two built-in fallbacks (Standard / Plain Text) are
+## replaced while a deliberate dropdown pick (e.g. GDScriptSyntaxHighlighter) is never
+## touched. This relay is also what corrects the tab-state restore: `script_editor_cache`
+## pins the pre-feature "Standard" choice and re-applies it AFTER the native auto-selection
+## on every open; the tab's saved state records "GD3" at the next layout save / tab close
+## (`get_edit_state()`), so later opens restore ours. Each CodeEdit is settled at
+## most once (`_handled_highlighter_editors`), so a user pick is never stomped on a later
+## focus.
+func _apply_highlighter_to_current_editor() -> void:
+    if _syntax_highlighter == null or _service == null or not _service.is_active():
+        return
+    var script_editor := get_editor_interface().get_script_editor()
+    if script_editor == null:
+        return
+    var script := script_editor.get_current_script()
+    # Extension gate, not `script.get_language()`: Script.get_language() is unbound in 4.5,
+    # so a GDScript tab would error the whole handler out of the signal relay.
+    if script == null or script.resource_path.get_extension() != "gd3":
+        return
+    var current_editor := script_editor.get_current_editor()
+    if current_editor == null:
+        return
+    var base: Control = current_editor.get_base_editor()
+    if not (base is CodeEdit):
+        return
+    var code_edit := base as CodeEdit
+    var edit_id := code_edit.get_instance_id()
+    if _handled_highlighter_editors.has(edit_id):
+        return
+    var current := code_edit.syntax_highlighter
+    if current is EditorSyntaxHighlighter and current.get_script() == HighlighterScript:
+        _handled_highlighter_editors[edit_id] = true
+        return
+    if current != null:
+        # Replacement gate: only the two built-in fallbacks are replaced. `get_class()`
+        # reports the most-derived NATIVE name even for unregistered GDCLASS classes
+        # (`_get_class_namev`), so Standard/Plain Text identify by their own names; a
+        # deliberate language-highlighter pick keeps its registered name and is never
+        # replaced. (`_get_supported_languages()` is a GDVIRTUAL and cannot be called on
+        # native instances, which is why this keys on the class name.)
+        if not (current is EditorSyntaxHighlighter):
+            return
+        var is_fallback := current.get_class() == "EditorStandardSyntaxHighlighter" \
+                or current.get_class() == "EditorPlainTextSyntaxHighlighter"
+        if not is_fallback:
+            return
+    var inst: EditorSyntaxHighlighter = HighlighterScript.new()
+    current_editor.add_syntax_highlighter(inst)
+    code_edit.syntax_highlighter = inst
+    _handled_highlighter_editors[edit_id] = true
+
+
+## Relays the service's `revalidation_requested` into the editor's own revalidation
+## channel, deferred OUT of the caller's stack first. The
+## deferral is load-bearing (2026-09-27 engine-test bisect): emissions initiated anywhere
+## inside the service's `SceneTree.process_frame` pump stack — even from this interpreted
+## handler nested under it — reach no `validate_script` connection, while the same
+## emission from a message-queue-deferred frame reaches them all. The deferred half
+## re-runs the service's gate (`should_still_revalidate`: one frame passed; the user may
+## have typed or opened the completion popup in between).
+func _on_gdcc_revalidation_requested(path: String, version: int) -> void:
+    call_deferred("_emit_revalidation_deferred", path, version)
+
+
+func _on_outline_revalidation_requested(path: String, version: int) -> void:
+    call_deferred("_emit_revalidation_deferred", path, version, true)
+
+
+func _emit_revalidation_deferred(path: String, version: int, outline: bool = false) -> void:
+    if _service == null:
+        return
+    var current := _service.outline().should_still_revalidate(path, version) if outline \
+            else _service.should_still_revalidate(path, version)
+    if not current:
+        return
+    var script_editor := get_editor_interface().get_script_editor()
+    if script_editor == null:
+        return
+    var current_script := script_editor.get_current_script()
+    if current_script == null or current_script.resource_path != path:
+        return
+    var current_editor := script_editor.get_current_editor()
+    if current_editor == null:
+        return
+    # 4.5: get_base_editor() returns the bare CodeEdit; the signal lives on its
+    # CodeTextEditor parent, so resolve by walking ancestors until the signal appears.
+    var wrapper: Node = current_editor.get_base_editor()
+    if wrapper != null:
+        wrapper = wrapper.get_parent()
+    while wrapper != null and not wrapper.has_signal(&"validate_script"):
+        wrapper = wrapper.get_parent()
+    if wrapper != null:
+        wrapper.emit_signal(&"validate_script")

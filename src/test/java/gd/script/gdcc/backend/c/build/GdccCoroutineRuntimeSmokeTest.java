@@ -1,5 +1,6 @@
 package gd.script.gdcc.backend.c.build;
 
+import gd.script.gdcc.util.ZigTestUtil;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -1454,6 +1455,7 @@ class GdccCoroutineRuntimeSmokeTest {
         command.add("-o");
         command.add(output.toString());
 
+        ZigTestUtil.addMacosNativeTarget(command);
         var process = new ProcessBuilder(command).redirectErrorStream(true).start();
         var processOutput = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         var exitCode = process.waitFor();
@@ -1471,6 +1473,7 @@ class GdccCoroutineRuntimeSmokeTest {
         command.add("-o");
         command.add(output.toString());
 
+        ZigTestUtil.addMacosNativeTarget(command);
         var process = new ProcessBuilder(command).redirectErrorStream(true).start();
         var processOutput = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         var exitCode = process.waitFor();

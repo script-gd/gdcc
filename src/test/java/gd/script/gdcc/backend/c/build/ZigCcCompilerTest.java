@@ -4,27 +4,25 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/// Pins the non-Windows-host ABI substitution: `TargetPlatform` keeps declaring
-/// `-windows-msvc`, and `ZigCcCompiler` swaps it to `-windows-gnu` only off Windows hosts,
-/// because zig cannot provide libc for MSVC targets there.
+/// Windows declares the GNU ABI on every host without ABI substitution.
 class ZigCcCompilerTest {
     @Test
-    void msvcTargetsAreSubstitutedWithGnuOnNonWindowsHosts() {
+    void windowsTargetsUseGnuOnNonWindowsHostsWithoutSubstitution() {
         var x86 = ZigCcCompiler.resolveZigTarget(TargetPlatform.WINDOWS_X86_64, false);
         assertEquals("x86_64-windows-gnu", x86.zigTarget());
-        assertEquals(true, x86.abiSubstituted());
+        assertEquals(false, x86.abiSubstituted());
         var arm64 = ZigCcCompiler.resolveZigTarget(TargetPlatform.WINDOWS_AARCH64, false);
         assertEquals("aarch64-windows-gnu", arm64.zigTarget());
-        assertEquals(true, arm64.abiSubstituted());
+        assertEquals(false, arm64.abiSubstituted());
     }
 
     @Test
-    void msvcTargetsAreKeptUntouchedOnWindowsHosts() {
+    void windowsTargetsUseGnuOnWindowsHostsWithoutSubstitution() {
         var x86 = ZigCcCompiler.resolveZigTarget(TargetPlatform.WINDOWS_X86_64, true);
-        assertEquals("x86_64-windows-msvc", x86.zigTarget());
+        assertEquals("x86_64-windows-gnu", x86.zigTarget());
         assertEquals(false, x86.abiSubstituted());
         var arm64 = ZigCcCompiler.resolveZigTarget(TargetPlatform.WINDOWS_AARCH64, true);
-        assertEquals("aarch64-windows-msvc", arm64.zigTarget());
+        assertEquals("aarch64-windows-gnu", arm64.zigTarget());
         assertEquals(false, arm64.abiSubstituted());
     }
 

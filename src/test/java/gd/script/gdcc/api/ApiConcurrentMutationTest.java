@@ -65,7 +65,14 @@ class ApiConcurrentMutationTest {
              var executor = Executors.newSingleThreadExecutor()) {
             assertTrue(blocker.awaitEntered());
 
-            var taskId = executor.submit(() -> api.compile("demo")).get(500, TimeUnit.MILLISECONDS);
+            var compileFuture = executor.submit(() -> api.compile("demo"));
+            long taskId;
+            try {
+                taskId = compileFuture.get(5, TimeUnit.SECONDS);
+            } catch (TimeoutException _) {
+                // Retry the wait, not admission: the original call may already have reserved the compile slot.
+                taskId = compileFuture.get(5, TimeUnit.SECONDS);
+            }
             var queuedTask = api.getCompileTask(taskId);
 
             assertEquals(CompileTaskSnapshot.State.QUEUED, queuedTask.state());

@@ -247,6 +247,11 @@ static godot_Variant gdcc_classdb_class_call_static(
         *r_error = error;
     }
     if (error.error != GDEXTENSION_CALL_OK) {
+        // gdextension_object_method_bind_call placement-constructs `result` even on call
+        // errors, so it must be destroyed before swapping in the nil fallback (otherwise the
+        // constructed Variant leaks — nil payloads make it cheap, but the contract holds
+        // regardless of the payload type the failed call happened to produce).
+        godot_Variant_destroy(&result);
         return godot_new_Variant_nil();
     }
     return result;

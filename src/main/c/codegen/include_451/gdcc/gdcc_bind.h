@@ -25,7 +25,8 @@
         compatibility_hash_count_value,                                                       \
         ...)                                                                                  \
 static inline GDExtensionBool accessor_name(GDExtensionMethodBindPtr* r_bind) {              \
-    static GDExtensionMethodBindPtr bind = NULL;                                              \
+    static _Atomic(GDExtensionMethodBindPtr) cached_bind = NULL;                              \
+    GDExtensionMethodBindPtr bind = atomic_load_explicit(&cached_bind, memory_order_acquire); \
     static const GDExtensionInt compatibility_hashes[] = { __VA_ARGS__ };                     \
     if (bind != NULL) {                                                                       \
         *r_bind = bind;                                                                       \
@@ -42,6 +43,7 @@ static inline GDExtensionBool accessor_name(GDExtensionMethodBindPtr* r_bind) { 
                 compatibility_hashes[i]);                                                     \
     }                                                                                         \
     if (bind != NULL) {                                                                       \
+        atomic_store_explicit(&cached_bind, bind, memory_order_release);                      \
         *r_bind = bind;                                                                       \
         return true;                                                                          \
     }                                                                                         \

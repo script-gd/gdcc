@@ -10,8 +10,10 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.io.File;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -106,6 +108,78 @@ class TinyCcCompilerTest {
         var succeeded = compiler.compile(tempDir, List.of(), List.of(good), "probe", COptimizationLevel.DEBUG, host);
         assertTrue(succeeded.success(), () -> "the round after a failure must start from a fresh state:\n" + succeeded.buildLog());
         assertTrue(Files.isRegularFile(succeeded.artifacts().getFirst()));
+    }
+
+    @Test
+    void compilesWhenPathsContainSpacesAndShellMetacharacters(@TempDir Path tempDir) throws IOException {
+        var host = TargetPlatform.getNativePlatform();
+        var name = "spaces $() & 'single'" + (host == TargetPlatform.MACOS_AARCH64 ? " \"double\"" : "");
+        var project = Files.createDirectories(tempDir.resolve(name));
+        var source = project.resolve("probe.c");
+        Files.writeString(source, NativeArtifactInspector.EXPORT_MACRO_DEFINITION
+                + "GDCC_TEST_EXPORT int gdextension_entry(void) { return 42; }\n");
+        var result = newCompiler().compile(project, List.of(), List.of(source), name, COptimizationLevel.DEBUG, host);
+        assertTrue(result.success(), result::buildLog);
+        assertEquals(List.of(project.resolve(host.sharedLibraryFileName(name)).toAbsolutePath()), result.artifacts());
+        NativeArtifactInspector.assertExportsSymbol(result.artifacts().getFirst(), "gdextension_entry");
+    }
+
+    @Test
+    void codesignFailureReturnsWithoutTerminatingTheJvmAndTheNextRoundSucceeds(@TempDir Path tempDir) throws Exception {
+        Assumptions.assumeTrue(TargetPlatform.getNativePlatform() == TargetPlatform.MACOS_AARCH64);
+        var project = Files.createDirectories(tempDir.resolve("spaces $() & 'single' \"double\""));
+        var source = project.resolve("probe.c");
+        Files.writeString(source, NativeArtifactInspector.EXPORT_MACRO_DEFINITION
+                + "GDCC_TEST_EXPORT int gdextension_entry(void) { return 42; }\n");
+        var bin = Files.createDirectories(tempDir.resolve("bin"));
+        var signer = bin.resolve("codesign");
+        Files.writeString(signer, """
+                #!/bin/sh
+                if [ ! -e "$GDCC_TEST_CODESIGN_MARKER" ]; then
+                    : > "$GDCC_TEST_CODESIGN_MARKER"
+                    exit 7
+                fi
+                exec /usr/bin/codesign "$@"
+                """);
+        assertTrue(signer.toFile().setExecutable(true));
+        var log = tempDir.resolve("child.log");
+        var builder = new ProcessBuilder(
+                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "--enable-native-access=ALL-UNNAMED", "-cp", System.getProperty("java.class.path"),
+                CodesignProbe.class.getName(), bundleRoot.toString(), project.toString(), source.toString());
+        builder.environment().put("PATH", bin + File.pathSeparator + builder.environment().getOrDefault("PATH", ""));
+        builder.environment().put("GDCC_TEST_CODESIGN_MARKER", tempDir.resolve("signer-called").toString());
+        var process = builder.redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        try {
+            assertTrue(process.waitFor(120, TimeUnit.SECONDS), "signing recovery probe hung");
+            var output = Files.readString(log);
+            assertEquals(0, process.exitValue(), output);
+            assertTrue(output.contains("SIGNING_FAILURE_RECOVERED"), output);
+            assertTrue(Files.isRegularFile(tempDir.resolve("signer-called")), "the injected signer was not called");
+        } finally {
+            process.destroyForcibly();
+            process.waitFor(30, TimeUnit.SECONDS);
+        }
+    }
+
+    /// A separate JVM contains regressions that would otherwise exit the entire test worker.
+    public static final class CodesignProbe {
+        public static void main(String[] args) throws IOException {
+            var root = Path.of(args[0]);
+            var project = Path.of(args[1]);
+            var source = Path.of(args[2]);
+            var compiler = new TinyCcCompiler(() -> root, TinyCcFfmNative::create);
+            var host = TargetPlatform.getNativePlatform();
+            var failed = compiler.compile(project, List.of(), List.of(source), "probe", COptimizationLevel.DEBUG, host);
+            assertFalse(failed.success(), failed::buildLog);
+            assertTrue(failed.artifacts().isEmpty());
+            assertTrue(failed.buildLog().contains("codesign"), failed::buildLog);
+            assertTrue(failed.buildLog().contains("tcc_output_file failed"), failed::buildLog);
+            var succeeded = compiler.compile(project, List.of(), List.of(source), "probe", COptimizationLevel.DEBUG, host);
+            assertTrue(succeeded.success(), succeeded::buildLog);
+            NativeArtifactInspector.assertExportsSymbol(succeeded.artifacts().getFirst(), "gdextension_entry");
+            System.out.println("SIGNING_FAILURE_RECOVERED");
+        }
     }
 
     @Test

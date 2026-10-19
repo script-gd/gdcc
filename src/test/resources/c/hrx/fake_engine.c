@@ -16,6 +16,7 @@ void gdcc_hrx_test_reset_image_state(void);
 #define FAKE_MAX_BINDINGS 16
 
 static int g_mem_balance = 0;
+static int g_null_free_count = 0;
 static int g_print_error_count = 0;
 static char g_last_error[256] = {0};
 static int g_engine_marker = 0;
@@ -42,6 +43,10 @@ static void *fake_mem_realloc(void *ptr, size_t bytes) {
     return realloc(ptr, bytes == 0 ? 1 : bytes);
 }
 static void fake_mem_free(void *ptr) {
+    if (ptr == NULL) {
+        g_null_free_count++;
+        return;
+    }
     if (ptr != NULL) {
         g_mem_balance--;
         free(ptr);

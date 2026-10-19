@@ -1,0 +1,745 @@
+@tool
+class_name GdccScriptLanguage
+extends ScriptLanguageExtension
+
+## Virtual `ScriptLanguage` for `.gd3` files. Registered by
+## GdccEditorService and held by every loaded GdccScript, so the instance is process-resident
+## and never freed for the whole editor session.
+##
+## Every `required` virtual that editor code paths can reach is implemented explicitly —
+## falling through to the base GDVIRTUAL defaults would print ERR_PRINT_ONCE noise. The
+## `_debug_*` / `_profiling_*` group is skipped on purpose: debugging and profiling are
+## non-goals and those paths are never triggered; the `void*` / `ProfilingInfo*` signatures
+## are not expressible anyway.
+
+var _service: GdccEditorService = null
+
+
+## Dependency injection by the service; both are process-resident, so the reference stays valid
+## across plugin disable/enable cycles.
+func setup(service: GdccEditorService) -> void:
+    _service = service
+
+
+func _init() -> void:
+    # Doubles as the engine `_init` virtual and the gdcc constructor hook (probe-verified);
+    # the engine never calls `init()` on a late-registered language.
+    pass
+
+
+func _get_name() -> String:
+    return "GD3"
+
+
+func _get_type() -> String:
+    return "GdccScript"
+
+
+func _get_extension() -> String:
+    return "gd3"
+
+
+func _get_recognized_extensions() -> PackedStringArray:
+    return PackedStringArray(["gd3"])
+
+
+func _get_reserved_words() -> PackedStringArray:
+    # GDScript keyword set: `.gd3` shares GDScript surface syntax, so highlighting and word
+    # movement behave identically to `.gd`.
+    return PackedStringArray([
+        "if", "elif", "else", "for", "while", "match", "break", "continue", "pass", "return",
+        "class", "class_name", "extends", "is", "in", "as", "self", "super", "signal", "func",
+        "static", "const", "enum", "var", "breakpoint", "preload", "await", "assert", "void",
+        "and", "or", "not", "true", "false", "null",
+    ])
+
+
+func _is_control_flow_keyword(keyword: String) -> bool:
+    return keyword == "if" or keyword == "elif" or keyword == "else" or keyword == "for" \
+            or keyword == "while" or keyword == "match" or keyword == "break" \
+            or keyword == "continue" or keyword == "pass" or keyword == "return"
+
+
+func _get_comment_delimiters() -> PackedStringArray:
+    return PackedStringArray(["#"])
+
+
+func _get_doc_comment_delimiters() -> PackedStringArray:
+    return PackedStringArray(["##"])
+
+
+func _get_string_delimiters() -> PackedStringArray:
+    return PackedStringArray(["\" \"", "' '", "\"\"\" \"\"\""])
+
+
+# Reentry guard: `_validate` runs on the editor UI thread and must stay single-flight —
+# its inline LSP wait pumps socket IO, which could otherwise interleave with a nested
+# editor validation triggered by signal handlers.
+var _in_validate: bool = false
+
+# Bound for inline diagnostic waiting (<=150ms); outline queries never wait here. A var, not a const:
+# class-level const is outside gdcc's bootstrap MVP.
+var VALIDATE_LSP_TIMEOUT_MSEC: int = 150
+
+# Total guard-passing `_validate` invocations (observability probe; the
+# revalidation acceptance anchors "the editor revalidated with no driver-side call" on
+# this counter advancing — engine test `diag_revalidate`).
+var _validate_call_count: int = 0
+
+
+## Total `_validate` invocations that passed the entry guard (see `_validate_call_count`).
+func validate_call_count() -> int:
+    return _validate_call_count
+
+
+## Diagnostic merge entry. Two channels feed the result:
+## 1. GDScript LSP: full-sync the buffer, wait ≤ `VALIDATE_LSP_TIMEOUT_MSEC` for that
+##    generation's diagnostics, then map severity 1 → errors / 2 → warnings (LSP positions
+##    are 0-based, so both line and column get +1).
+## 2. gdcc: `notify_source_changed` runs FIRST on every call (LSP errors never suppress dirty
+##    marking, only the display); cached analyze.run diagnostics merge whenever the cache
+##    holds an entry for the path — possibly STALE relative to this exact text (an edit bumps
+##    the version instantly, but the previous round's diagnostics stay visible until the
+##    fresh round merges over them; the editor would otherwise blank the markers for the
+##    whole debounce window) — and only while LSP reported no errors (cascade noise
+##    suppression). gdcc positions are already 1-based — no shift; a stale
+##    entry's line numbers refer to the pre-edit text until the fresh round lands.
+## `path` is mandatory on errors, otherwise the editor files them under "dependency
+## script errors" instead of the current tab. While the service is uninstalled the answer is
+## the safe `{"valid": true}`; a timed-out LSP wait falls back to the URI's cached
+## diagnostics, whose errors still count (stale beats none).
+func _validate(script: String, path: String, validate_functions: bool, validate_errors: bool, validate_warnings: bool, validate_safe_lines: bool) -> Dictionary:
+    if _in_validate or _service == null or not _service.is_active():
+        return {"valid": true, "functions": PackedStringArray()}
+    _in_validate = true
+    _validate_call_count += 1
+    var errors: Array = []
+    var warnings: Array = []
+    var functions: PackedStringArray = PackedStringArray()
+    if _service.is_lsp_ready():
+        # A timeout simply means the freshest generation did not arrive; the cache read
+        # below then yields the previous diagnostics (stale beats none).
+        # The LSP view may have the `class_name` line erased (pseudo-error
+        # suppression); returned diagnostics on the erased line map their column back to
+        # the raw text here. The gdcc analysis channel below always sees the raw text.
+        var view: Dictionary = _service.lsp_safe_text(path, script)
+        _service.lsp_sync_and_wait(path, str(view["text"]), VALIDATE_LSP_TIMEOUT_MSEC)
+        var diagnostics: Array = _service.lsp_diagnostics_for(path)
+        for raw in diagnostics:
+            if not (raw is Dictionary):
+                continue
+            var severity: int = int(raw.get("severity", 0))
+            var range_value: Variant = raw.get("range", {})
+            if not (range_value is Dictionary):
+                continue
+            var start_value: Variant = range_value.get("start", {})
+            var end_value: Variant = range_value.get("end", {})
+            if not (start_value is Dictionary) or not (end_value is Dictionary):
+                continue
+            var line: int = int(start_value.get("line", 0)) + 1
+            var character: int = _service.lsp_safe_reverse_column(
+                    view, int(start_value.get("line", 0)), int(start_value.get("character", 0))) + 1
+            var end_line: int = int(end_value.get("line", 0)) + 1
+            var message: String = str(raw.get("message", ""))
+            if severity == 1:
+                if _is_lsp_erased_class_type_error(message, path, view):
+                    continue
+                errors.append({"line": line, "column": character, "message": message, "path": path})
+            elif severity == 2:
+                # All five keys are mandatory — the engine silently drops partial entries.
+                warnings.append({
+                    "start_line": line,
+                    "end_line": end_line,
+                    "code": 0,
+                    "string_code": "GDSCRIPT_LSP",
+                    "message": message,
+                })
+    var content_version: int = _service.notify_source_changed(path, script)
+    if validate_functions:
+        functions = _service.outline_functions(path, script)
+    if errors.is_empty() and content_version >= 0:
+        for item in _service.gdcc_diagnostics_for(path, content_version):
+            if not (item is Dictionary):
+                continue
+            var category: String = str(item.get("category", ""))
+            var gdcc_message: String = "[gdcc " + category + "] " + str(item.get("message", ""))
+            # File-level fallback for diagnostics without a range.
+            var gdcc_line: int = 1
+            var gdcc_column: int = 1
+            var gdcc_end_line: int = 1
+            var gdcc_range: Variant = item.get("range")
+            if gdcc_range is Dictionary:
+                var gdcc_start: Variant = gdcc_range.get("start")
+                var gdcc_end: Variant = gdcc_range.get("end")
+                if gdcc_start is Dictionary:
+                    gdcc_line = int(gdcc_start.get("line", 1))
+                    gdcc_column = int(gdcc_start.get("column", 1))
+                if gdcc_end is Dictionary:
+                    gdcc_end_line = int(gdcc_end.get("line", gdcc_line))
+            var severity_text: String = str(item.get("severity", ""))
+            if severity_text == "ERROR":
+                errors.append({"line": gdcc_line, "column": gdcc_column, "message": gdcc_message, "path": path})
+            elif severity_text == "WARNING":
+                warnings.append({
+                    "start_line": gdcc_line,
+                    "end_line": gdcc_end_line,
+                    "code": 0,
+                    "string_code": category,
+                    "message": gdcc_message,
+                })
+    _in_validate = false
+    return {"valid": errors.is_empty(), "errors": errors, "warnings": warnings, "functions": functions}
+
+
+## The erased script path and its proven native class are one type, but Godot's proxy sees two.
+## Suppress only incompatibilities between those aliases, never unrelated types or gdcc errors.
+func _is_lsp_erased_class_type_error(message: String, path: String, view: Dictionary) -> bool:
+    if not view.get("erased", false) or not path.ends_with(".gd3"):
+        return false
+    var class_name_text: String = str(view.get("class_name", ""))
+    if class_name_text.is_empty():
+        return false
+    for pair in [[path, class_name_text], [class_name_text, path]]:
+        var source_type: String = str(pair[0])
+        var target_type: String = str(pair[1])
+        if message.begins_with("Cannot assign a value of type " + source_type + " to ") \
+                and message.ends_with(" with specified type " + target_type + "."):
+            return true
+        if message == "Value of type \"" + source_type \
+                + "\" cannot be assigned to a variable of type \"" + target_type + "\".":
+            return true
+        if message == "Cannot return value of type \"" + source_type \
+                + "\" because the function return type is \"" + target_type + "\".":
+            return true
+        if message.begins_with("Invalid argument for \"") and message.contains("()\" function: argument ") \
+                and message.ends_with(" should be \"" + target_type + "\" but is \"" + source_type + "\"."):
+            return true
+    return false
+
+
+## Match GDScript's method overview: omit the script root, qualify inner classes, and
+## never descend into methods/properties (their locals, lambdas and accessors are not members).
+## Declaration ranges are zero-based; class_name erasure preserves their line numbers.
+func _outline_functions(symbols: Variant, prefix: String = "", root: bool = true) -> PackedStringArray:
+    var functions: PackedStringArray = PackedStringArray()
+    if not (symbols is Array):
+        return functions
+    for raw in symbols:
+        if not (raw is Dictionary):
+            continue
+        var kind: int = int(raw.get("kind", 0))
+        var name: String = str(raw.get("name", ""))
+        if name.is_empty() or name.contains(":"):
+            continue
+        if kind == 5:
+            var child_prefix: String = prefix if root else prefix + name + "."
+            functions.append_array(_outline_functions(raw.get("children"), child_prefix, false))
+        elif kind == 6 or kind == 12:
+            var range_value: Variant = raw.get("range")
+            if not (range_value is Dictionary):
+                continue
+            var start: Variant = range_value.get("start")
+            if not (start is Dictionary):
+                continue
+            var line: int = int(start.get("line", -1))
+            if line >= 0:
+                functions.append(prefix + name + ":" + str(line + 1))
+    return functions
+
+
+func _validate_path(path: String) -> String:
+    return ""
+
+
+func _create_script() -> Object:
+    var script: GdccScript = GdccScript.new()
+    script.setup(self)
+    return script
+
+
+func _supports_builtin_mode() -> bool:
+    # A `.gd3` must never become a scene built-in script (no instantiation path exists).
+    return false
+
+
+func _supports_documentation() -> bool:
+    return false
+
+
+func _can_inherit_from_file() -> bool:
+    return false
+
+
+func _handles_global_class_type(type: String) -> bool:
+    return type == "GdccScript"
+
+
+func _has_named_classes() -> bool:
+    return false
+
+
+func _find_function(function: String, code: String) -> int:
+    return code.find("func " + function)
+
+
+func _make_function(class_name: String, function_name: String, function_args: PackedStringArray) -> String:
+    return "func " + function_name + "(" + ", ".join(function_args) + "):\n\tpass\n"
+
+
+func _can_make_function() -> bool:
+    return false
+
+
+func _open_in_external_editor(script: Script, line: int, column: int) -> int:
+    return ERR_UNAVAILABLE
+
+
+func _overrides_external_editor() -> bool:
+    return false
+
+
+## Completion entry. The editor hands over the buffer text with a 0xFFFF
+## sentinel inserted at the caret (`CodeEdit.get_text_for_code_completion`); the GDScript
+## LSP server completes from the SYNCED document plus the request position, so the sentinel
+## is located, translated into a 0-based code-point (line, character) pair, and stripped
+## before the sync. Positions count code points end to end — Godot Strings index code
+## points and the server's completion path does the same — so multibyte text on
+## the caret line cannot shift the request. Any failure answers the degraded dictionary.
+## No reentry guard is needed (unlike `_validate`): the bounded pump inside
+## `request_blocking` drives only socket IO, which can never call back into this virtual.
+func _complete_code(code: String, path: String, owner: Object) -> Dictionary:
+    if _service == null or not _service.is_active():
+        return _completion_degraded()
+    var caret: int = code.find(String.chr(0xFFFF))
+    if caret < 0:
+        return _completion_degraded()
+    var before: String = code.substr(0, caret)
+    var line: int = before.count("\n")
+    var last_break: int = before.rfind("\n")
+    # `last_break == -1` (caret on the first line) folds to `before.length()` naturally.
+    var character: int = before.length() - last_break - 1
+    var clean: String = before + code.substr(caret + 1)
+    # Sync the erased view (same text `_validate` would send) and forward-map the
+    # request position — a caret past the erased prefix on that line shifts left with it.
+    var view: Dictionary = _service.lsp_safe_text(path, clean)
+    var mapped: Dictionary = _service.lsp_safe_forward_position(view, line, character)
+    var response: Dictionary = _service.request_completion(
+            path, str(view["text"]), int(mapped["line"]), int(mapped["character"]))
+    if response.get("ok") != true:
+        return _completion_degraded()
+    return {
+        "result": OK,
+        "force": false,
+        "call_hint": _completion_call_hint(response.get("signature")),
+        "options": _completion_options(response.get("result")),
+    }
+
+
+## The safe failure answer. All four keys are mandatory: a missing `result` is treated as
+## ERR_UNAVAILABLE by the engine anyway, but the explicit shape keeps every failure path
+## indistinguishable and complete.
+func _completion_degraded() -> Dictionary:
+    return {"result": ERR_UNAVAILABLE, "force": false, "call_hint": "", "options": []}
+
+
+## LSP completion result → engine option list. The 4.5 GDScript server answers with a bare
+## CompletionItem array; the spec's CompletionList wrapper (`{"items": [...]}`) is accepted
+## defensively. Items without a usable label are dropped — the engine would show an empty
+## row. Every option carries the seven mandatory keys verbatim (a missing key makes
+## `ScriptLanguageExtension.complete_code` skip the option silently); the optional `matches`
+## key is omitted — the engine guards its read with `op.has("matches")` (4.5
+## `script_language_extension.h`) and CodeEdit computes highlighting itself.
+func _completion_options(result: Variant) -> Array:
+    var items: Array = []
+    if result is Array:
+        items = result
+    elif result is Dictionary:
+        var listed: Variant = result.get("items", [])
+        if listed is Array:
+            items = listed
+    var options: Array = []
+    for item in items:
+        if not (item is Dictionary):
+            continue
+        var label: String = str(item.get("label", ""))
+        if label.is_empty():
+            continue
+        options.append({
+            "kind": _completion_kind(int(item.get("kind", 0))),
+            "display": label,
+            "insert_text": _completion_insert_text(item, label),
+            "font_color": Color(1, 1, 1),
+            "icon": null,
+            "default_value": null,
+            # LOCATION_OTHER: no local/parent-scope ranking evidence exists for LSP items.
+            "location": 1024,
+        })
+    return options
+
+
+## LSP SignatureHelp → CodeEdit's call hint. The editor highlights the active argument
+## between a pair of 0xFFFF markers and removes those markers before drawing. Godot's
+## SignatureInformation label carries the full parameter text while parameters[] only carry
+## names, so the marker span is recovered from the label's top-level parameter list.
+func _completion_call_hint(signature_help: Variant) -> String:
+    if not (signature_help is Dictionary):
+        return ""
+    var signatures_value: Variant = signature_help.get("signatures", [])
+    if not (signatures_value is Array):
+        return ""
+    var signatures: Array = signatures_value
+    if signatures.is_empty():
+        return ""
+    var active_signature: int = int(signature_help.get("activeSignature", 0))
+    if active_signature < 0 or active_signature >= signatures.size():
+        return ""
+    var signature_value: Variant = signatures[active_signature]
+    if not (signature_value is Dictionary):
+        return ""
+    var signature: Dictionary = signature_value
+    var label: String = str(signature.get("label", "")).replace(String.chr(0xFFFF), "")
+    if label.is_empty():
+        return ""
+    var active_parameter: int = int(signature_help.get("activeParameter", 0))
+    var spans: Array[Dictionary] = _signature_parameter_spans(label)
+    if active_parameter < 0 or spans.is_empty():
+        return label
+    if active_parameter >= spans.size():
+        var last_span: Dictionary = spans[spans.size() - 1]
+        var last_text: String = label.substr(int(last_span["start"]), int(last_span["end"]) - int(last_span["start"]))
+        if not last_text.begins_with("..."):
+            return label
+        active_parameter = spans.size() - 1
+    var span: Dictionary = spans[active_parameter]
+    var start: int = int(span["start"])
+    var end: int = int(span["end"])
+    return label.substr(0, start) + String.chr(0xFFFF) + label.substr(start, end - start) \
+            + String.chr(0xFFFF) + label.substr(end)
+
+
+## Returns the code-point spans of the label's top-level parameters. Quotes and nested
+## containers are skipped so defaults like `Callable()` or `{"x": 1}` do not split early.
+func _signature_parameter_spans(label: String) -> Array[Dictionary]:
+    var spans: Array[Dictionary] = []
+    var open_index: int = label.find("(")
+    if open_index < 0:
+        return spans
+    var paren_depth: int = 0
+    var bracket_depth: int = 0
+    var brace_depth: int = 0
+    var quote: int = 0
+    var escaped: bool = false
+    var span_start: int = open_index + 1
+    var close_index: int = -1
+    var index: int = span_start
+    while index < label.length():
+        var ch: int = label.unicode_at(index)
+        if quote != 0:
+            if escaped:
+                escaped = false
+            elif ch == 92:
+                escaped = true
+            elif ch == quote:
+                quote = 0
+            index += 1
+            continue
+        if ch == 34 or ch == 39:
+            quote = ch
+        elif ch == 40:
+            paren_depth += 1
+        elif ch == 41:
+            if paren_depth == 0:
+                close_index = index
+                var tail: Dictionary = _signature_parameter_span(label, span_start, index)
+                if not tail.is_empty():
+                    spans.append(tail)
+                break
+            paren_depth -= 1
+        elif ch == 91:
+            bracket_depth += 1
+        elif ch == 93 and bracket_depth > 0:
+            bracket_depth -= 1
+        elif ch == 123:
+            brace_depth += 1
+        elif ch == 125 and brace_depth > 0:
+            brace_depth -= 1
+        elif ch == 44 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0:
+            var span: Dictionary = _signature_parameter_span(label, span_start, index)
+            if not span.is_empty():
+                spans.append(span)
+            span_start = index + 1
+        index += 1
+    if close_index < 0:
+        return []
+    return spans
+
+
+func _signature_parameter_span(label: String, start: int, end: int) -> Dictionary:
+    var first: int = start
+    while first < end and (label.unicode_at(first) == 32 or label.unicode_at(first) == 9):
+        first += 1
+    var last: int = end
+    while last > first and (label.unicode_at(last - 1) == 32 or label.unicode_at(last - 1) == 9):
+        last -= 1
+    if first >= last:
+        return {}
+    return {"start": first, "end": last}
+
+
+## Insert-text precedence: `textEdit.newText`, then `insertText`, then the
+## label. The 4.5 GDScript server only ever sends `insertText`; the textEdit branch keeps
+## the mapping spec-tolerant. An empty string counts as absent (LSP treats omitted
+## insertText as "insert the label").
+func _completion_insert_text(item: Dictionary, label: String) -> String:
+    var text_edit: Variant = item.get("textEdit")
+    if text_edit is Dictionary:
+        var new_text: String = str(text_edit.get("newText", ""))
+        if not new_text.is_empty():
+            return new_text
+    var insert_text: String = str(item.get("insertText", ""))
+    if not insert_text.is_empty():
+        return insert_text
+    return label
+
+
+## LSP CompletionItemKind → CodeEdit CodeCompletionKind. Kind values verified
+## against the 4.5 server's own mapping (`gdscript_text_document.cpp`): it actually emits
+## Text=1, Method=2, Variable=6, Class=7, Property=10, Enum=13, Snippet=15 (node paths),
+## File=17, Constant=21, Event=23; the other arms are spec-tolerant fallbacks. Snippet maps
+## to KIND_NODE_PATH (7) rather than a generic fall-through because the server
+## emits it exclusively for node-path options.
+func _completion_kind(lsp_kind: int) -> int:
+    if lsp_kind == 7:  # Class
+        return 0  # KIND_CLASS
+    if lsp_kind == 2 or lsp_kind == 3 or lsp_kind == 4:  # Method/Function/Constructor
+        return 1  # KIND_FUNCTION
+    if lsp_kind == 23:  # Event
+        return 2  # KIND_SIGNAL
+    if lsp_kind == 6 or lsp_kind == 5:  # Variable/Field
+        return 3  # KIND_VARIABLE
+    if lsp_kind == 10:  # Property
+        return 4  # KIND_MEMBER
+    if lsp_kind == 13:  # Enum
+        return 5  # KIND_ENUM
+    if lsp_kind == 21 or lsp_kind == 20 or lsp_kind == 12:  # Constant/EnumMember/Value
+        return 6  # KIND_CONSTANT
+    if lsp_kind == 15:  # Snippet (node paths on the GDScript server)
+        return 7  # KIND_NODE_PATH
+    if lsp_kind == 17 or lsp_kind == 19:  # File/Folder
+        return 8  # KIND_FILE_PATH
+    return 9  # KIND_PLAIN_TEXT (4.5 has no KEYWORD kind)
+
+
+## Godot 4.6 stops shallow GDScript lookups from taking over existing resource paths.
+func _lookup_code(code: String, symbol: String, path: String, owner: Object) -> Dictionary:
+    if _service == null or not _service.is_active() or _service.lookup() == null:
+        return {"result": ERR_UNAVAILABLE, "type": 0}
+    return _service.lookup().lookup_code(code, symbol, path)
+
+
+## Auto-indent entry. Mirrors the 4.5 GDScript reference
+## (`GDScriptLanguage::auto_indent_code`, gdscript_editor.cpp) VERBATIM — quirks
+## included — so the manual editor comparison against `.gd` is a
+## strict equality check:
+##   * nesting is derived from the leading-whitespace widths of preceding non-blank,
+##     non-comment lines (an indent-width stack), never from colons or brackets;
+##   * lines at/after `from_line` are rewritten as indent-unit × stack depth + stripped
+##     content; blank and `#`-comment lines pass through byte-identical and never touch
+##     the stack; `to_line` only acts as an early break in the pathological
+##     `from_line > to_line` case (in normal ranges every line from `from_line` to EOF
+##     is rewritten — engine behavior, not a typo);
+##   * the engine's "not right but gets the job done" push is kept: a dedent landing
+##     between two stack widths becomes its own new level.
+## Total function by contract: the C++ adapter assigns the virtual's return back to the
+## buffer unconditionally, so a missing/failed implementation would WIPE the user's code.
+func _auto_indent_code(code: String, from_line: int, to_line: int) -> String:
+    var indent: String = _indentation_unit()
+    var lines: PackedStringArray = code.split("\n")
+    var rewritten := PackedStringArray()
+    var indent_stack: Array = []
+    for i in lines.size():
+        var line_text: String = lines[i]
+        var tc: int = 0
+        while tc < line_text.length() \
+                and (line_text.unicode_at(tc) == 32 or line_text.unicode_at(tc) == 9):
+            tc += 1
+        var stripped: String = line_text.substr(tc).strip_edges()
+        if stripped.is_empty() or stripped.begins_with("#"):
+            rewritten.append(line_text)
+            continue
+        var ilevel: int = 0
+        if not indent_stack.is_empty():
+            ilevel = int(indent_stack[indent_stack.size() - 1])
+        if tc > ilevel:
+            indent_stack.append(tc)
+        elif tc < ilevel:
+            while not indent_stack.is_empty() and int(indent_stack[indent_stack.size() - 1]) > tc:
+                indent_stack.pop_back()
+            if not indent_stack.is_empty() and int(indent_stack[indent_stack.size() - 1]) != tc:
+                indent_stack.append(tc)
+        if i >= from_line:
+            line_text = indent.repeat(indent_stack.size()) + stripped
+        elif i > to_line:
+            # Only reachable when from_line > to_line: the engine merely stops mutating
+            # its pre-filled line array, so the whole remaining tail passes through.
+            for j in range(i, lines.size()):
+                rewritten.append(lines[j])
+            break
+        rewritten.append(line_text)
+    return "\n".join(rewritten)
+
+
+## The configured indent unit, mirroring `GDScriptLanguage::_get_indentation` (spaces
+## when the editor is configured for space indentation, a single tab otherwise). The
+## setting lives on the service (it owns the EditorInterface); before install the
+## engine's non-editor branch answers a tab.
+func _indentation_unit() -> String:
+    if _service == null:
+        return "\t"
+    return _service.editor_indent_unit()
+
+
+func _get_global_class_name(path: String) -> Dictionary:
+    return {}
+
+
+func _make_template(template: String, class_name: String, base_class_name: String) -> Script:
+    var script: GdccScript = _create_script() as GdccScript
+    # The native create dialog calls this even when template selection is disabled.
+    var source: String = template
+    if source.is_empty():
+        source = "class_name _CLASS_\nextends _BASE_\n"
+    source = source.replace("_BASE_", base_class_name)
+    source = source.replace("_CLASS_SNAKE_CASE_", _template_identifier(class_name.to_snake_case()))
+    source = source.replace("_CLASS_", _template_identifier(class_name.to_pascal_case()))
+    source = source.replace("_TS_", _indentation_unit())
+    script._set_source_code(source)
+    return script
+
+
+## Mirrors Godot's native identifier sanitizer using the script-accessible predicates.
+func _template_identifier(name: String) -> String:
+    if name.is_empty():
+        return "_"
+    var result: String = name
+    if not result.substr(0, 1).is_valid_unicode_identifier():
+        result = "_" + result
+    var identifier: String = ""
+    for index in range(result.length()):
+        var character: String = result.substr(index, 1)
+        identifier += character if ("_" + character).is_valid_unicode_identifier() else "_"
+    return identifier
+
+
+func _get_built_in_templates(object: StringName) -> Array[Dictionary]:
+    var result: Array[Dictionary] = []
+    return result
+
+
+func _is_using_templates() -> bool:
+    return false
+
+
+func _finish() -> void:
+    pass
+
+
+func _frame() -> void:
+    pass
+
+
+func _thread_enter() -> void:
+    pass
+
+
+func _thread_exit() -> void:
+    pass
+
+
+func _add_global_constant(name: StringName, value: Variant) -> void:
+    pass
+
+
+func _add_named_global_constant(name: StringName, value: Variant) -> void:
+    pass
+
+
+func _remove_named_global_constant(name: StringName) -> void:
+    pass
+
+
+func _reload_all_scripts() -> void:
+    pass
+
+
+func _reload_scripts(scripts: Array, soft_reload: bool) -> void:
+    pass
+
+
+func _reload_tool_script(script: Script, soft_reload: bool) -> void:
+    pass
+
+
+## Explicit empty implementations for the non-required `_get_public_*` group (typed-array
+## returns are supported, probe-verified): silences the editor's documentation queries without
+## the base default's log noise.
+func _get_public_functions() -> Array[Dictionary]:
+    var result: Array[Dictionary] = []
+    return result
+
+
+func _get_public_annotations() -> Array[Dictionary]:
+    var result: Array[Dictionary] = []
+    return result
+
+
+func _get_public_constants() -> Dictionary:
+    return {}
+
+
+## The editor's script debugger queries EVERY registered language on its error-print path
+## (`_debug_get_current_stack_info` is called unconditionally when an unrelated script error
+## is printed), so the expressible `_debug_*` virtuals are implemented as inert empty answers
+## instead of accepting the base class's ERR_PRINT_ONCE. `.gd3` never executes, so there are
+## never stack levels to report. Only `_debug_get_stack_level_instance` (`void*` return, not
+## expressible) and the `_profiling_*` group (profiling is a non-goal and never triggered for
+## a language that runs no code) stay at their base defaults.
+func _debug_get_current_stack_info() -> Array[Dictionary]:
+    var result: Array[Dictionary] = []
+    return result
+
+
+func _debug_get_error() -> String:
+    return ""
+
+
+func _debug_get_stack_level_count() -> int:
+    return 0
+
+
+func _debug_get_stack_level_line(level: int) -> int:
+    return -1
+
+
+func _debug_get_stack_level_function(level: int) -> String:
+    return ""
+
+
+func _debug_get_stack_level_source(level: int) -> String:
+    return ""
+
+
+func _debug_get_stack_level_locals(level: int, max_subitems: int, max_depth: int) -> Dictionary:
+    return {}
+
+
+func _debug_get_stack_level_members(level: int, max_subitems: int, max_depth: int) -> Dictionary:
+    return {}
+
+
+func _debug_get_globals(max_subitems: int, max_depth: int) -> Dictionary:
+    return {}
+
+
+func _debug_parse_stack_level_expression(level: int, expression: String, max_subitems: int, max_depth: int) -> String:
+    return ""

@@ -1,4 +1,5 @@
 <#-- @ftlvariable name="module" type="gd.script.gdcc.lir.LirModule" -->
+<#-- @ftlvariable name="StringUtil" type="gd.script.gdcc.util.StringUtil" -->
 <#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
 <#-- @ftlvariable name="bodyRender" type="gd.script.gdcc.backend.c.gen.binding.GenerateRenderFacade" -->
 <#-- @ftlvariable name="staticInitClassDefs" type="java.util.List<gd.script.gdcc.lir.LirClassDef>" -->
@@ -95,7 +96,7 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
                         <#if hrxRebindEntries?size gt 0>gdcc_hrx_rebind_table, ${hrxRebindEntries?size}<#else>NULL, 0</#if>);
     <#--  Print start loading  -->
     {
-        godot_Variant msg_variant = godot_new_Variant_with_String(GD_STATIC_S(u8"Loading ${module.moduleName}..."));
+        godot_Variant msg_variant = godot_new_Variant_with_String(GD_STATIC_S(u8"Loading ${StringUtil.escapeStringLiteral(module.moduleName)}..."));
         godot_print(&msg_variant, NULL, 0);
         godot_Variant_destroy(&msg_variant);
     }
@@ -177,7 +178,7 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
     }
     <#--  Print start unloading  -->
     {
-        godot_Variant msg_variant = godot_new_Variant_with_String(GD_STATIC_S(u8"Unloading ${module.moduleName}..."));
+        godot_Variant msg_variant = godot_new_Variant_with_String(GD_STATIC_S(u8"Unloading ${StringUtil.escapeStringLiteral(module.moduleName)}..."));
         godot_print(&msg_variant, NULL, 0);
         godot_Variant_destroy(&msg_variant);
     }
@@ -479,11 +480,8 @@ void ${classDef.name}_class_free_instance(void* p_class_userdata, GDExtensionCla
         return;
     }
     ${classDef.name}* self = p_instance;
-    <#-- Exactly-once field destruction across BOTH paths: the normal path destructs at -->
-    <#-- PREDELETE, but the engine reload path reaches this function via -->
-    <#-- clear_internal_extension WITHOUT ever sending PREDELETE — skipping the destructor -->
-    <#-- here would leak every destroyable field on reload. The guarded entry is -->
-    <#-- idempotent, so the PREDELETE-then-free sequence still destructs exactly once. -->
+    <#-- Keep fields alive through Node's PREDELETE/_exit_tree callbacks. Normal deletion -->
+    <#-- and reload both release fields here, exactly once, before freeing the wrapper. -->
     if (!${helper.renderDestructedFlagAccessExpr(classDef.name)}) {
         ${classDef.name}_class_destructor(self);
     }
@@ -539,8 +537,7 @@ void ${classDef.name}_class_destruct_fields(${classDef.name}* self) {
 }
 
 <#-- Guarded destruction entry: the ONLY place the root `_gdcc_destructed` flag is SET; -->
-<#-- PREDELETE reads it here and free_instance pre-reads it before funneling through this -->
-<#-- entry, which makes field destruction exactly-once across the normal and reload paths. -->
+<#-- free_instance funnels through this entry on both normal deletion and reload. -->
 void ${classDef.name}_class_destructor(${classDef.name}* self) {
     if (self == NULL) {
         return;
@@ -557,8 +554,6 @@ void ${classDef.name}_class_notification(GDExtensionClassInstancePtr p_instance,
     ${classDef.name}* self = p_instance;
     if (p_what == godot_Object_NOTIFICATION_POSTINITIALIZE()) {
         ${classDef.name}_class_constructor(self);
-    } else if (p_what == godot_Object_NOTIFICATION_PREDELETE()) {
-        ${classDef.name}_class_destructor(self);
     }
 }
 

@@ -41,6 +41,10 @@ import java.util.Objects;
 /// @param cCompilerKind     Selects the C toolchain backend for native builds. `null` (also the wire
 ///                      form of an absent or explicit-null field) leaves the choice to the
 ///                      level-based default resolved by [effectiveCCompilerKind].
+/// @param stripNativeSymbols Opt-in native size reduction: the backend suppresses DWARF emission and
+///                      strips the linked artifact's symbol table (`-s`). Boxed so an absent or
+///                      explicit-null wire field reads as the `false` default via
+///                      [isStripNativeSymbols]; only the editor addon distribution packaging sets it.
 public record CompileOptions(
         @NotNull GodotVersion godotVersion,
         @Nullable Path projectPath,
@@ -48,7 +52,8 @@ public record CompileOptions(
         @NotNull TargetPlatform targetPlatform,
         boolean strictMode,
         @NotNull String outputMountRoot,
-        @Nullable CCompilerKind cCompilerKind
+        @Nullable CCompilerKind cCompilerKind,
+        @Nullable Boolean stripNativeSymbols
 ) {
     /// Default VFS mount root reserved for compiler-generated files and final artifacts.
     public static final String DEFAULT_OUTPUT_MOUNT_ROOT = "/__build__";
@@ -74,6 +79,20 @@ public record CompileOptions(
         this(godotVersion, projectPath, optimizationLevel, targetPlatform, strictMode, outputMountRoot, null);
     }
 
+    /// Constructor for the shape predating symbol stripping: no stripping, matching the historical
+    /// default where every native artifact keeps zig's default DWARF output and symbol table.
+    public CompileOptions(
+            @NotNull GodotVersion godotVersion,
+            @Nullable Path projectPath,
+            @NotNull COptimizationLevel optimizationLevel,
+            @NotNull TargetPlatform targetPlatform,
+            boolean strictMode,
+            @NotNull String outputMountRoot,
+            @Nullable CCompilerKind cCompilerKind
+    ) {
+        this(godotVersion, projectPath, optimizationLevel, targetPlatform, strictMode, outputMountRoot, cCompilerKind, null);
+    }
+
     /// Returns the bootstrap profile used for new modules before callers provide an explicit build
     /// directory or compilation policy.
     public static @NotNull CompileOptions defaults() {
@@ -91,6 +110,12 @@ public record CompileOptions(
     /// otherwise the level-based default ([CCompilerKind.defaultFor]).
     public @NotNull CCompilerKind effectiveCCompilerKind() {
         return cCompilerKind != null ? cCompilerKind : CCompilerKind.defaultFor(optimizationLevel);
+    }
+
+    /// Whether native artifacts should be stripped of DWARF and the linker's symbol table. Absent
+    /// and explicit-null both mean `false`, keeping every pre-existing build byte-identical.
+    public boolean isStripNativeSymbols() {
+        return Boolean.TRUE.equals(stripNativeSymbols);
     }
 
     private static @Nullable Path validateProjectPath(@Nullable Path projectPath) {

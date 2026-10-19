@@ -1,0 +1,138 @@
+@tool
+class_name GdccMarkdownToBbcode
+extends RefCounted
+
+## Converts the Markdown subset emitted by Godot's LSP to its documentation BBCode.
+## Code is kept opaque and literal brackets are escaped before inserting generated tags.
+static func convert(markdown: String) -> String:
+    var lines: PackedStringArray = markdown.replace("\r\n", "\n").split("\n")
+    var parts := PackedStringArray()
+    var code := PackedStringArray()
+    var fence: String = ""
+    var line_index: int = 0
+    while line_index < lines.size():
+        var line: String = lines[line_index]
+        line_index += 1
+        var trimmed: String = line.strip_edges()
+        if trimmed.begins_with("```") or trimmed.begins_with("~~~"):
+            var marker: String = trimmed.substr(0, 3)
+            if fence == "":
+                fence = marker
+                code.clear()
+                continue
+            if marker == fence:
+                parts.append(GdccMarkdownToBbcode.code("\n".join(code), true))
+                fence = ""
+                continue
+        if fence != "":
+            code.append(line)
+        elif line.begins_with("\t") or line.begins_with("    "):
+            var declaration: bool = line_index == 1
+            var indented := PackedStringArray()
+            var indent: int = 1 if line.begins_with("\t") else 4
+            indented.append(line.substr(indent))
+            # Godot's marked_documentation emits tab-indented code blocks. Preserve
+            # their relative indentation instead of treating each line as inline code.
+            while not declaration and line_index < lines.size():
+                var next: String = lines[line_index]
+                if not next.begins_with("\t") and not next.begins_with("    "):
+                    break
+                var next_indent: int = 1 if next.begins_with("\t") else 4
+                indented.append(next.substr(next_indent))
+                line_index += 1
+            parts.append(GdccMarkdownToBbcode.code("\n".join(indented), not declaration))
+        else:
+            parts.append(_inline(line))
+    if fence != "":
+        parts.append(GdccMarkdownToBbcode.code("\n".join(code), true))
+    return "\n".join(parts).strip_edges()
+
+
+static func escape(text: String) -> String:
+    var parts: PackedStringArray = text.split("[")
+    var index: int = 0
+    while index < parts.size():
+        parts[index] = parts[index].replace("]", "[rb]")
+        index += 1
+    return "[lb]".join(parts)
+
+
+## The documentation parser treats code contents literally except for its closing tag.
+static func code(text: String, block: bool = false) -> String:
+    var tag: String = "codeblock" if block else "code"
+    var open: String = "[" + tag + "]"
+    var close: String = "[/" + tag + "]"
+    return open + text.replace(close, close + escape(close) + open) + close
+
+
+static func _inline(text: String) -> String:
+    var result: String = ""
+    var index: int = 0
+    while index < text.length():
+        var ch: String = text.substr(index, 1)
+        if ch == "\\" and index + 1 < text.length():
+            result += escape(text.substr(index + 1, 1))
+            index += 2
+            continue
+        if ch == "`":
+            var run: int = 1
+            while index + run < text.length() and text.substr(index + run, 1) == "`":
+                run += 1
+            var delimiter: String = text.substr(index, run)
+            var close: int = text.find(delimiter, index + run)
+            if close >= 0:
+                result += code(text.substr(index + run, close - index - run))
+                index = close + run
+                continue
+        if ch == "[":
+            var label_end: int = text.find("](", index + 1)
+            if label_end >= 0:
+                var url_start: int = label_end + 2
+                var url_end: int = url_start
+                var depth: int = 1
+                while url_end < text.length() and depth > 0:
+                    var url_ch: String = text.substr(url_end, 1)
+                    if url_ch == "(":
+                        depth += 1
+                    elif url_ch == ")":
+                        depth -= 1
+                    if depth > 0:
+                        url_end += 1
+                if depth == 0:
+                    var label: String = _inline(text.substr(index + 1, label_end - index - 1))
+                    var url: String = text.substr(url_start, url_end - url_start)
+                    # Godot's help links accept http(s), not LSP file URIs. Keep file
+                    # labels as text; Ctrl+click navigation comes from the definition.
+                    if (url.begins_with("https://") or url.begins_with("http://")) and url.find("[") < 0 and url.find("]") < 0:
+                        result += "[url=" + url + "]" + label + "[/url]"
+                    else:
+                        result += label
+                    index = url_end + 1
+                    continue
+        var delimiter: String = ""
+        var tag: String = ""
+        var pair: String = text.substr(index, 2)
+        if pair == "**" or pair == "__":
+            delimiter = pair
+            # Godot's BBCode-to-Markdown adapter emits __ for underline, not bold.
+            tag = "b" if pair == "**" else "u"
+        elif pair == "~~":
+            delimiter = pair
+            tag = "s"
+        elif ch == "*" or ch == "_":
+            if index == 0 or not _word(text.unicode_at(index - 1)):
+                delimiter = ch
+                tag = "i"
+        if delimiter != "":
+            var close: int = text.find(delimiter, index + delimiter.length())
+            if close > index + delimiter.length():
+                result += "[" + tag + "]" + _inline(text.substr(index + delimiter.length(), close - index - delimiter.length())) + "[/" + tag + "]"
+                index = close + delimiter.length()
+                continue
+        result += escape(ch)
+        index += 1
+    return result
+
+
+static func _word(ch: int) -> bool:
+    return ch == 95 or (ch >= 48 and ch <= 57) or (ch >= 65 and ch <= 90) or (ch >= 97 and ch <= 122)

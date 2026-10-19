@@ -21,6 +21,9 @@ import gd.script.gdcc.scope.ParameterDef;
 import gd.script.gdcc.scope.RefCountedStatus;
 import gd.script.gdcc.type.*;
 import gd.script.gdcc.util.CCodeFormatter;
+import gd.script.gdcc.util.StringUtil;
+import freemarker.template.Configuration;
+import freemarker.template.DefaultObjectWrapperBuilder;
 import freemarker.template.TemplateException;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -29,6 +32,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
@@ -79,6 +83,10 @@ public class CCodegen implements Codegen {
     public CodegenContext ctx;
     public LirModule module;
     private CGenHelper helper;
+    /// Canonical class name → raw metadata JSON, populated by `CClassMetadataSupport` synthesis
+    /// during prepare(); drives the intrinsic-body replacement in `generateFuncBody`. Empty for
+    /// fixtures that never ran prepare-time synthesis.
+    private @NotNull Map<String, String> metadataJsonByClass = Map.of();
     /// Validator for block layout and successor integrity.
     private final ControlFlowIntegrityValidator controlFlowValidator = new ControlFlowIntegrityValidator();
     /// Validator for compiler-only type leaks on ABI-like LIR surfaces.
@@ -574,6 +582,12 @@ public class CCodegen implements Codegen {
         if (ctx == null || module == null) {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generateBlock().");
         }
+        if (CClassMetadataSupport.isMetadataAccessor(metadataJsonByClass, clazz, func)) {
+            // Class metadata: the LIR stub only exists so registration/validation treat
+            // `_gdcc_get_metadata` as an ordinary static function; the C body is intrinsic
+            // (function-local `static` cache + JSON lazy parse cannot be expressed in LIR).
+            return CClassMetadataSupport.renderAccessorBody(metadataJsonByClass.get(clazz.getName()));
+        }
         controlFlowValidator.validateFunction(func);
         lifecycleValidator.validateFunction(ctx, func);
         // Check if the entry block is valid
@@ -949,6 +963,8 @@ public class CCodegen implements Codegen {
             var hrxCatalog = CHrxIdentityCatalog.collect(module, ctx, helper);
             var cTplCtx = Map.of(
                     "module", module,
+                    "StringUtil", new DefaultObjectWrapperBuilder(Configuration.VERSION_2_3_34)
+                            .build().getStaticModels().get(StringUtil.class.getName()),
                     "helper", helper,
                     "bodyRender", bodyRender,
                     "staticInitClassDefs", staticInitClassDefs,
@@ -1032,6 +1048,9 @@ public class CCodegen implements Codegen {
         for (var classDef : module.getClassDefs()) {
             registry.addGdccClass(classDef);
         }
+        // Class-metadata synthesis runs before CGenHelper construction so the static
+        // `() -> Dictionary` binding shape is collected together with user functions.
+        this.metadataJsonByClass = CClassMetadataSupport.synthesize(module, ctx, Instant.now()).metadataJsonByClass();
         this.helper = new CGenHelper(ctx, module.getClassDefs());
     }
 }

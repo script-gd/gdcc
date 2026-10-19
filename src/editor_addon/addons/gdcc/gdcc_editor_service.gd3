@@ -1,0 +1,1104 @@
+@tool
+class_name GdccEditorService
+extends Node
+
+## Registration hub and feature coordinator for the `.gd3` editor integration.
+## PROCESS-RESIDENT SINGLETON: the plugin parks exactly one
+## instance under the scene tree root (fixed node name `GdccEditorService`) and never frees it
+## on disable — loaded GdccScript resources and open editor tabs keep calling
+## `script.get_language()`, so the language instance must stay valid for the whole session and
+## re-enablement re-registers the SAME instance instead of creating a second `GD3` language.
+##
+## Two states only: UNINSTALLED (`_active == false`, every public entry point is a safe no-op)
+## and ACTIVE.
+##
+## Architecture (hub-and-spoke): this root owns only lifecycle, scheduling and coordination —
+##   * infrastructure: the resident RPC/LSP client child nodes and the endpoint config;
+##   * the frame pump: `_on_diag_frame` ticks the features in a FIXED order (lifecycle →
+##     reconciler → scheduler) and re-evaluates busy last;
+##   * coordination broadcasts: `broadcast_module_ready` / `broadcast_module_outage` /
+##     `notify_content_changed` let features react to each other without direct coupling;
+##   * the single-writer `busy_delta` edge-triggered emission (`refresh_busy` polls each
+##     feature's `busy_wanted()`);
+##   * the LSP channel facade and the public API consumed by the plugin/script language.
+## Functional slices live in child Nodes (created once in install, never freed):
+##   * `GdccModuleLifecycle` — private module create/heartbeat/outage recovery;
+##   * `GdccFileReconciler` — disk ↔ VFS file-set reconciliation;
+##   * `GdccDiagScheduler` — single-flight upload+analyze chain and merge;
+##   * `GdccSourceRegistry` — content truth table and dirty tracking;
+##   * `GdccDiagCache` — version-gated diagnostics cache;
+##   * `GdccCompletionService` — stateless synchronous LSP completion + signature-help
+##     slice; no tick/busy/hook wiring because its whole flow is inline bounded
+##     pumps.
+##   * `GdccLookupService` — symbol-lookup slice (`_lookup_code`): the same
+##     stateless inline shape as completion (sync + bounded hover/definition requests).
+##   * `GdccClassNameEraser` — conditional `class_name` erasure for the LSP sync view:
+##     view transform + position mapping + admission memo + GDExtensionManager flip listeners;
+##     the service keeps the flip's editor-side mechanics (`resync_current_document_lsp`) and
+##     the language-facing facades (`lsp_safe_text` & co. delegate to the child).
+##   * `GdccWorkspaceMirror` — LSP workspace mirror: keeps the whole project `.gd3`
+##     set didOpen'd on the GDScript language server (the server's own disk scan indexes only
+##     `.gd`), so cross-file hover/definition has a data plane; frame-budgeted replay after
+##     every LSP (re)connect, version/text-driven re-sync, didClose on deletion.
+##   * `GdccOutlineService` — members-outline slice: caches `documentSymbol`-derived
+##     function lists for `_validate`'s `functions` answer; frame-pumped async queries.
+## Adding a feature (e.g. code completion): create a child script implementing the feature
+## protocol (`bind_service`, optional `service_tick(now)`, `busy_wanted()`, and any of the
+## broadcast hooks `on_module_ready` / `on_module_outage` / `on_content_changed` /
+## `service_shutdown` / `service_reset_channel`), then wire it in the root: one construction
+## block in install(), one accessor, and — as needed — one tick line in `_on_diag_frame`, one
+## term in `refresh_busy`, and the relevant broadcast/shutdown/reset lines. Scripts extend
+## engine classes only (custom-base `extends` is outside the gdcc bootstrap MVP), so the
+## protocol is by convention, not inheritance.
+
+var _active: bool = false
+var _editor_interface: EditorInterface = null
+var _language: GdccScriptLanguage = null
+var _loader: GdccScriptFormatLoader = null
+var _saver: GdccScriptFormatSaver = null
+# Dedicated RPC client (child node `GdccEditorRpcClient`): its HTTP queue is separate from the
+# dock's client, so background analysis traffic can never starve dock actions and vice versa.
+var _rpc_client: GdccRpcClient = null
+# LSP client (child node `GdccEditorLspClient`): same resident-child pattern as the RPC
+# client. Its connection lifecycle follows `_active` — started in install(), stopped in
+# uninstall() — while the node itself is never freed.
+var _lsp_client: GdccLspClient = null
+# Feature children (never freed; created once on the first install).
+var _lifecycle: GdccModuleLifecycle = null
+var _reconciler: GdccFileReconciler = null
+var _scheduler: GdccDiagScheduler = null
+var _registry: GdccSourceRegistry = null
+var _cache: GdccDiagCache = null
+var _completion: GdccCompletionService = null
+var _lookup: GdccLookupService = null
+var _eraser: GdccClassNameEraser = null
+var _mirror: GdccWorkspaceMirror = null
+var _outline: GdccOutlineService = null
+var _lsp_host: String = "127.0.0.1"
+var _lsp_port: int = 6005
+var _rpc_host: String = "127.0.0.1"
+var _rpc_port: int = 6099
+# Set by the plugin when it flipped `use_thread` on while the server was already
+# listening: that server keeps main-thread polling until the editor restarts (the
+# settings-changed notification that would restart it is emitted only by C++ UI flows),
+# so inline bounded waits would starve it. Diagnostics still flow asynchronously
+# (sync sent, wait skipped). Sticky for the process: a scripted disable/restore does not
+# restart the server either, so a later enable must not clear it.
+var lsp_blocking_unsafe: bool = false
+# Set by the plugin when it flipped `use_thread` on BEFORE the server started listening:
+# that server reads the flipped value at start and is therefore threaded. Sticky so later
+# disable/enable cycles don't mislatch `lsp_blocking_unsafe` once the port is up; cleared
+# only when the priming install is rolled back (setting restored before the server saw it).
+var lsp_thread_primed: bool = false
+# Ready-epoch at the last thread-mode re-probe; the probe runs at most once per reconnect.
+var _last_thread_probe_epoch: int = -1
+# Whole-module analysis including the compile-only gate (`sema.compile_check`) — the editor
+# diagnostics goal is to surface real compile failures early, not just parse errors.
+var analyze_include_lowering: bool = true
+# Injected by the plugin entry point; signature contract:
+# `func(host: String, port: int, on_ready: Callable) -> void`. The hook has no return value —
+# its only success signal is the `on_ready` callback's error code.
+var ensure_server_hook: Callable
+
+# --- coordination ---
+# Reported to the plugin's single-writer low-power coordinator: the debounce pump and all
+# RPC flights are frame-driven, and the editor's low-power idle window starts exactly when
+# diagnostics work begins (the user just stopped typing), so pending work must hold the
+# coordinator busy or the scheduler starves. Emitted ONLY here, edge-triggered, from the
+# aggregate of the features' `busy_wanted()`.
+signal busy_delta(delta: int)
+
+## Carries revalidation requests to the plugin, which relays them as the editor's
+## `validate_script` emission from INTERPRETED code. The indirection is load-bearing, not
+## stylistic: empirically (2026-09-27 bisect, engine test evidence), a gdcc-compiled
+## `Object.emit_signal` method-bind call on the editor's CodeTextEditor wrapper delivers to
+## nobody when initiated from this service's `SceneTree.process_frame` pump stack — the
+## same call works from a direct caller, and own-signal `.emit()` works from the pump —
+## while an interpreted emission reaches every connection. The service therefore reports
+## WHAT to revalidate and the plugin performs the emission itself.
+signal revalidation_requested(path: String, version: int)
+signal outline_revalidation_requested(path: String, version: int)
+
+var _busy_held: bool = false
+# (path -> version) revalidation requests not yet emitted:
+# filled from the scheduler's newly-readable merge report, dropped when the current tab
+# or the live buffer version no longer matches, deferred while the current editor's
+# completion popup is open.
+var _revalidate_pending: Dictionary = {}
+
+
+func is_active() -> bool:
+    return _active
+
+
+## The resident language instance (never null after the first install, never freed). Scripts
+## created directly via ClassDB (bypassing the loader's `setup()`) self-heal their language
+## reference through this accessor when the language is not currently registered.
+func get_language_instance() -> GdccScriptLanguage:
+    return _language
+
+
+## Test/introspection accessor for the resident LSP client (null before the first install).
+func get_lsp_client() -> GdccLspClient:
+    return _lsp_client
+
+
+## READY means the handshake succeeded against the editor's own GDScript language server
+## (capability + workspace both verified by the client).
+func is_lsp_ready() -> bool:
+    return _active and _lsp_client != null and _lsp_client.is_ready()
+
+
+## Inline bounded waiting starves a non-threaded server (it only polls inside main-thread
+## frames), so the synchronous LSP path is legal exclusively in thread mode.
+## Read live from EditorSettings: runtime toggles restart the server and must take effect
+## immediately rather than after a plugin reload. A runtime-enable flip is honored via the
+## `lsp_blocking_unsafe` session flag — the setting reads true there while the server still
+## polls on the main thread until the next editor start.
+func _lsp_thread_mode() -> bool:
+    if lsp_blocking_unsafe:
+        return false
+    if _editor_interface == null:
+        return false
+    var settings: EditorSettings = _editor_interface.get_editor_settings()
+    if settings == null or not settings.has_setting("network/language_server/use_thread"):
+        return false
+    return settings.get_setting("network/language_server/use_thread") == true
+
+
+## res:// path → `file:///` absolute URI in the server's own dialect (see
+## `GdccLspClient.path_to_uri`). Non-project paths (unsaved buffers, user://) get "" and
+## skip the LSP channel entirely.
+func _path_to_uri(path: String) -> String:
+    if not path.begins_with("res://"):
+        return ""
+    var absolute: String = ProjectSettings.globalize_path(path)
+    if absolute == "":
+        return ""
+    return _lsp_client.path_to_uri(absolute)
+
+
+## Full-syncs the document to the GDScript language server and waits (bounded by
+## `timeout_msec`) for the diagnostics of exactly that sync generation. When the server is
+## reachable but not in thread mode (runtime-enable flag), the sync is still
+## sent — its diagnostics land in the cache asynchronously and surface on the next
+## validation beat — but the inline wait is skipped and false is returned. Callers then
+## fall back to the cached diagnostics from `lsp_diagnostics_for`.
+func lsp_sync_and_wait(path: String, text: String, timeout_msec: int) -> bool:
+    if not is_lsp_ready():
+        return false
+    var uri: String = _path_to_uri(path)
+    if uri == "":
+        return false
+    var generation: int = _lsp_client.sync_document(uri, text)
+    if generation < 0:
+        return false
+    if not _lsp_thread_mode():
+        _reprobe_thread_mode_once()
+        if not _lsp_thread_mode():
+            return false
+    return _lsp_client.wait_diagnostics(uri, generation, timeout_msec)
+
+
+## The blocking-unsafe flag outlives its cause in one recoverable case: the user changed
+## the language-server settings through the editor settings DIALOG (a C++ flow that emits
+## the settings-changed notification), the engine restarted the server, and the new server
+## read the flipped `use_thread = true`. A network reconnect alone says nothing about the
+## server's polling mode, so re-evaluate behaviorally once per handshake: a
+## main-thread-polled server gets no frames while we spin and therefore CANNOT answer an
+## inline wait — a successful bounded probe proves thread mode and clears the flag; a
+## timeout keeps it (safe direction). The budget is deliberately generous (400ms): the
+## server's worker polls at 20Hz and CI headless editors can be loaded; a false negative
+## just keeps the session degraded.
+func _reprobe_thread_mode_once() -> void:
+    if not lsp_blocking_unsafe:
+        return
+    if _lsp_client.get_ready_epoch() == _last_thread_probe_epoch:
+        return
+    _last_thread_probe_epoch = _lsp_client.get_ready_epoch()
+    # The probe document lives under `.godot/`: dot-directories are excluded from both
+    # the reconciler's and the workspace mirror's project scans, so the probe can never
+    # collide with (or be didClose'd over) a real project file sharing its path.
+    var probe_uri: String = _path_to_uri("res://.godot/gdcc_thread_probe.gd3")
+    if probe_uri == "":
+        return
+    var generation: int = _lsp_client.sync_document(probe_uri, "extends Node\n")
+    if generation < 0:
+        return
+    if _lsp_client.wait_diagnostics(probe_uri, generation, 400):
+        lsp_blocking_unsafe = false
+    _lsp_client.close_document(probe_uri)
+
+
+## Latest raw LSP diagnostics for a res:// path (possibly stale); empty when none.
+func lsp_diagnostics_for(path: String) -> Array:
+    if not _active or _lsp_client == null:
+        return []
+    var uri: String = _path_to_uri(path)
+    if uri == "":
+        return []
+    return _lsp_client.get_diagnostics(uri)
+
+
+## Immediate cache read/demand registration; the outline child sends requests on frames.
+func outline_functions(path: String, source: String) -> PackedStringArray:
+    if not _active or _outline == null:
+        return PackedStringArray()
+    return _outline.functions_for(path, source)
+
+
+func outline() -> GdccOutlineService:
+    return _outline
+
+
+## Code-completion entry. The synchronous LSP path is legal exclusively while
+## ACTIVE with a handshake-verified READY client AND a thread-mode server — inline bounded
+## waiting starves a main-thread-polled server, so the session degrades instead.
+## Failure answers share the client's `{"ok": false, "error": ...}` shape, so the language
+## only ever branches on `ok`. The raw LSP completion result and the optional raw
+## signature-help result are returned unmapped; option/hint mapping is the language's
+## engine-contract job (same split as `_validate` mapping raw diagnostics).
+func request_completion(path: String, text: String, line: int, col: int) -> Dictionary:
+    if not _active or _completion == null:
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "completion unavailable"}}
+    if not is_lsp_ready() or not _lsp_thread_mode():
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "LSP not ready or not threaded"}}
+    return _completion.request_completion(path, text, line, col)
+
+
+## Symbol-lookup transport: same legality rule as
+## completion — the synchronous LSP path is legal exclusively while ACTIVE with a
+## handshake-verified READY client AND a thread-mode server; the session degrades
+## otherwise. The raw hover/definition payloads are returned unmapped; the lookup child
+## owns the engine LookupResult mapping. Engines before 4.6 cannot safely query .gd3 paths.
+func request_lookup(path: String, text: String, line: int, col: int) -> Dictionary:
+    if not _active or _lookup == null:
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "lookup unavailable"}}
+    if not is_lsp_ready() or not _lsp_thread_mode():
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "LSP not ready or not threaded"}}
+    return _lookup.request_lookup(path, text, line, col)
+
+
+## Server-dialect URI → res:// path ("" for foreign/non-project URIs): the inverse of
+## `lsp_uri_for`, used to report LSP definition targets back to the engine.
+func lsp_path_from_uri(uri: String) -> String:
+    if _lsp_client == null:
+        return ""
+    var absolute: String = _lsp_client.path_from_uri(uri)
+    if absolute == "":
+        return ""
+    var localized: String = ProjectSettings.localize_path(absolute)
+    if not localized.begins_with("res://"):
+        return ""
+    return localized
+
+
+## Member tooltips resolve CLASS_* references through the editor's documentation cache.
+func publish_lookup_documentation(script: GdccScript, docs: Array[Dictionary], source: String) -> void:
+    if not _active or _editor_interface == null:
+        return
+    if script._get_documentation() == docs:
+        script.set_lookup_documentation(docs, source)
+        # Named scripts share a help key with their compiled extension class. Restore
+        # the source-backed entry even if extension doc regeneration replaced it.
+        if not docs.is_empty() and not str(docs[0].get("name", "")).begins_with("\""):
+            _editor_interface.get_script_editor().update_docs_from_script(script)
+        return
+    var editor: ScriptEditor = _editor_interface.get_script_editor()
+    clear_lookup_documentation(script)
+    script.set_lookup_documentation(docs, source)
+    editor.update_docs_from_script(script)
+
+
+## Source/resource virtuals may run on worker threads. Clear retired help entries here
+## on the editor thread, using the last published names rather than the invalidated array.
+func clear_lookup_documentation(script: GdccScript) -> void:
+    if _editor_interface == null:
+        return
+    var old_docs: Array[Dictionary] = script.published_lookup_documentation()
+    if not old_docs.is_empty():
+        var carrier: GdccScript = GdccScript.new()
+        carrier.set_lookup_documentation(old_docs)
+        _editor_interface.get_script_editor().clear_docs_from_script(carrier)
+    script.clear_lookup_documentation()
+
+
+## The configured editor indent unit for `_auto_indent_code` (mirrors
+## `GDScriptLanguage::_get_indentation`): a `text_editor/behavior/indent/size` space run
+## when `text_editor/behavior/indent/type` selects Spaces, a single tab otherwise,
+## and always a tab before the first install (the engine's non-editor branch).
+func editor_indent_unit() -> String:
+    if _editor_interface == null:
+        return "\t"
+    var settings: EditorSettings = _editor_interface.get_editor_settings()
+    if settings == null:
+        return "\t"
+    var use_spaces: bool = settings.has_setting("text_editor/behavior/indent/type") \
+            and int(settings.get_setting("text_editor/behavior/indent/type")) != 0
+    if not use_spaces:
+        return "\t"
+    var size: int = 4
+    if settings.has_setting("text_editor/behavior/indent/size"):
+        size = int(settings.get_setting("text_editor/behavior/indent/size"))
+    return " ".repeat(size)
+
+
+## True while any open script-editor tab holds `path` (4.5 `ScriptEditor.get_open_scripts`).
+## The workspace mirror uses it to avoid didClose-ing a document the user is still
+## editing: the tab's own `_validate` beats keep the LSP copy alive and fresh.
+func is_path_open_in_editor(path: String) -> bool:
+    if _editor_interface == null:
+        return false
+    var script_editor: ScriptEditor = _editor_interface.get_script_editor()
+    if script_editor == null:
+        return false
+    for open_script in script_editor.get_open_scripts():
+        var script: Script = open_script as Script
+        if script != null and script.resource_path == path:
+            return true
+    return false
+
+
+## Shared res:// → server-dialect URI helper for feature children (wraps `_path_to_uri`;
+## "" for non-project paths). Public sibling of `vfs_path`.
+func lsp_uri_for(path: String) -> String:
+    return _path_to_uri(path)
+
+
+# ---------------------------------------------------------------------------
+# Class-name-erasure facades: the `class_name` conditional-erasure feature lives in the
+# `GdccClassNameEraser` child (hub-and-spoke); these delegates keep the language-facing entry
+# points on the service. Before the first install the child is null and every facade answers
+# identity/empty. After uninstall the child still exists: `lsp_safe_text` then answers identity
+# via its `is_active()` guard (same as before the split), the mappers stay pure functions, and
+# `erasure_memo_size` keeps reflecting the memo (the observability contract is unchanged).
+# ---------------------------------------------------------------------------
+
+## The LSP sync view for `text` (possibly with the `class_name` line erased); see
+## `GdccClassNameEraser.lsp_safe_text` for the contract.
+func lsp_safe_text(path: String, text: String) -> Dictionary:
+    if _eraser == null:
+        return {"text": text, "erased": false, "erase_line": -1, "removed_prefix": 0}
+    return _eraser.lsp_safe_text(path, text)
+
+
+## Forward map for LSP-bound positions (completion request position).
+func lsp_safe_forward_position(view: Dictionary, line: int, character: int) -> Dictionary:
+    if _eraser == null:
+        return {"line": line, "character": character}
+    return _eraser.lsp_safe_forward_position(view, line, character)
+
+
+## Reverse map for LSP-returned columns (diagnostics).
+func lsp_safe_reverse_column(view: Dictionary, line: int, character: int) -> int:
+    if _eraser == null:
+        return character
+    return _eraser.lsp_safe_reverse_column(view, line, character)
+
+
+## Test observability for the eraser's admission memo (engine driver asserts flips clear it).
+func erasure_memo_size() -> int:
+    if _eraser == null:
+        return 0
+    return _eraser.erasure_memo_size()
+
+
+## gdcc diagnostics channel entry: forwards to the source registry, which
+## tracks the content version of `path` and marks real changes dirty. Runs on every
+## `_validate` — including while LSP reports errors, because LSP errors suppress gdcc
+## diagnostics from the DISPLAY only, never the dirty tracking. Returns -1 for non-project
+## paths / excluded paths / while UNINSTALLED.
+func notify_source_changed(path: String, text: String) -> int:
+    if not _active:
+        return -1
+    var resource: Resource = ResourceLoader.get_cached_ref(path)
+    if resource is GdccScript:
+        var script: GdccScript = resource as GdccScript
+        if script.lookup_documentation_source() != text:
+            clear_lookup_documentation(script)
+    return _registry.notify_source_changed(path, text)
+
+
+# ---------------------------------------------------------------------------
+# Sync exclusion globs: the project setting below holds a
+# PackedStringArray of `String.match` patterns evaluated against the PROJECT-RELATIVE path
+# (no `res://` prefix). `*` crosses `/` in Godot's matcher, so `addons/gdcc/*` covers every
+# nested file; a wildcard-free glob naming a directory additionally excludes everything
+# below it (the predicate also tries `<glob>/*`). The predicate is evaluated live at every
+# scan/entry point (no caching), so a settings edit applies on the next reconciliation —
+# the plugin relays `ProjectSettings.settings_changed` into `notify_filesystem_changed` to
+# make that immediate. Scope: the diagnostics module VFS (reconciler scan) AND the LSP
+# workspace mirror (shared scan + close decision) both honor it, keeping the two features'
+# agreed project `.gd3` set identical. TEMPORARY INCLUSION overrides exclusion while an
+# editor tab holds the file: a `_validate` on an excluded path tracks it (its buffer is the
+# content truth), the reconciler keeps excluded tracked paths while open and evicts them
+# after the tab closes (throttled poll) — the mirror is unaffected (the open tab's own
+# `_validate` sync feeds the LSP document directly).
+# ---------------------------------------------------------------------------
+
+# Setting name as a var, not a const: class-level const is outside gdcc's bootstrap MVP.
+# The interpreted plugin registers the property under this exact name.
+var EXCLUDED_GLOBS_SETTING: String = "gdcc/sync/excluded_globs"
+
+
+## Default exclusion set, applied while the project setting is absent: the addon's own
+## scripts are never part of the user's project module (their analysis would burn rounds
+## and pollute the problem list).
+func default_excluded_globs() -> PackedStringArray:
+    return PackedStringArray(["addons/gdcc/*"])
+
+
+## The configured exclusion globs (live read; absent/mistyped values fall back to the
+## default). A plain Array is coerced defensively — a hand-edited project.godot line or a
+## scripted set_setting can produce one.
+func excluded_globs() -> PackedStringArray:
+    if ProjectSettings.has_setting(EXCLUDED_GLOBS_SETTING):
+        var value: Variant = ProjectSettings.get_setting(EXCLUDED_GLOBS_SETTING)
+        if value is PackedStringArray:
+            return value
+        if value is Array:
+            var coerced := PackedStringArray()
+            for item in value:
+                coerced.append(str(item))
+            return coerced
+    return default_excluded_globs()
+
+
+## True when `path` (a res:// project path) matches any exclusion glob. Empty globs and
+## trailing slashes are normalized away; a wildcard-free directory name excludes its whole
+## subtree via the `<glob>/*` probe.
+func is_path_excluded(path: String) -> bool:
+    if not path.begins_with("res://"):
+        return false
+    var rel: String = path.substr("res://".length())
+    for raw in excluded_globs():
+        var glob: String = str(raw)
+        while glob.ends_with("/"):
+            glob = glob.substr(0, glob.length() - 1)
+        if glob.is_empty():
+            continue
+        if rel.match(glob) or rel.match(glob + "/*"):
+            return true
+    return false
+
+
+## gdcc diagnostics for `_validate`: serves the cache's latest
+## entry for `path` — possibly built from an older text than `version` (the user typed
+## since). Stale diagnostics stay visible until the fresh analysis round merges over them
+## (the editor replaces displayed markers wholesale on every `_validate`, so a version-gated
+## empty read would blank the gutter for the whole debounce+analysis window). While the
+## diagnostics module is unavailable the channel reports NOTHING — the offline degrade
+## leaves `_validate` with the LSP channel alone instead of stale entries.
+func gdcc_diagnostics_for(path: String, version: int) -> Array:
+    if not _active:
+        return []
+    return _cache.diagnostics_for(path, version)
+
+
+## True once the private diagnostics module exists on the gdcc server (ping + create done).
+func is_diag_ready() -> bool:
+    return _active and _lifecycle.is_ready()
+
+
+## Freshness probe for the diagnostics cache (see `GdccDiagCache.is_version_current`).
+func is_diag_version_current(path: String, version: int) -> bool:
+    if not _active:
+        return false
+    return _cache.is_version_current(path, version)
+
+
+## The private diagnostics module id (`gdcc_editor_diagnostics_<rootHash>_<pid>`). Exposed
+## for tests and dock introspection; the pid component scopes crash remnants to this process.
+func get_diag_module_id() -> String:
+    if _lifecycle == null:
+        return ""
+    return _lifecycle.module_id()
+
+
+## The saver records successful disk writes, not unsaved validation or filesystem scans.
+func last_script_save_time() -> float:
+    if _saver == null:
+        return 0.0
+    return _saver.last_save_time
+
+
+## Forwarding target for the editor's `filesystem_changed` signal (connected by the plugin).
+func notify_filesystem_changed() -> void:
+    if not _active:
+        return
+    _reconciler.notify_filesystem_changed()
+    _mirror.notify_filesystem_changed()
+
+
+func _ready() -> void:
+    var tree: SceneTree = get_tree()
+    # Persistent pump: drives the feature ticks. Ticks are no-ops outside ACTIVE state, so
+    # the resident node can keep this connection forever.
+    tree.process_frame.connect(_on_diag_frame)
+    # The class_name-erasure decision-flip hooks (GDExtensionManager extension
+    # (un)load/reload) are
+    # connected by the `GdccClassNameEraser` child itself at `_ready`.
+
+
+## Registers the language, loader, and saver. Instances are created once (first call) and
+## reused on every later call; endpoint parameters are written back on EVERY call so a
+## re-enable can retarget the clients. Registration order is language → loader → saver with a
+## probe after each engine call that cannot report failure directly (the loader/saver
+## registration functions return void); any failure rolls back in reverse order and leaves the
+## service UNINSTALLED.
+func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int, rpc_host: String, rpc_port: int) -> int:
+    if _language == null:
+        _language = GdccScriptLanguage.new()
+        _language.setup(self)
+        _loader = GdccScriptFormatLoader.new()
+        _loader.setup(_language)
+        _saver = GdccScriptFormatSaver.new()
+        _rpc_client = GdccRpcClient.new()
+        _rpc_client.name = &"GdccEditorRpcClient"
+        add_child(_rpc_client)
+        _lsp_client = GdccLspClient.new()
+        _lsp_client.name = &"GdccEditorLspClient"
+        add_child(_lsp_client)
+        # Busy wake edge: a READY transition completing after this frame's refresh must
+        # re-evaluate busy immediately (the workspace mirror's replay rides on it).
+        _lsp_client.ready_advanced.connect(_on_lsp_ready_advanced)
+        # Feature children. Construction order pins the tick order in `_on_diag_frame`
+        # (lifecycle → reconciler → scheduler); the registry and cache are tickless.
+        _lifecycle = GdccModuleLifecycle.new()
+        _lifecycle.name = &"GdccModuleLifecycle"
+        _lifecycle.bind_service(self)
+        add_child(_lifecycle)
+        _reconciler = GdccFileReconciler.new()
+        _reconciler.name = &"GdccFileReconciler"
+        _reconciler.bind_service(self)
+        add_child(_reconciler)
+        _scheduler = GdccDiagScheduler.new()
+        _scheduler.name = &"GdccDiagScheduler"
+        _scheduler.bind_service(self)
+        add_child(_scheduler)
+        _registry = GdccSourceRegistry.new()
+        _registry.name = &"GdccSourceRegistry"
+        _registry.bind_service(self)
+        add_child(_registry)
+        _cache = GdccDiagCache.new()
+        _cache.name = &"GdccDiagCache"
+        _cache.bind_service(self)
+        add_child(_cache)
+        # Stateless completion slice: no tick line, busy term, or teardown hook is wired
+        # because there is nothing frame-driven or stateful to coordinate.
+        _completion = GdccCompletionService.new()
+        _completion.name = &"GdccCompletionService"
+        _completion.bind_service(self)
+        add_child(_completion)
+        # Lookup slice (`_lookup_code`): same stateless inline shape as
+        # completion — no tick line, busy term, or teardown hook.
+        _lookup = GdccLookupService.new()
+        _lookup.name = &"GdccLookupService"
+        _lookup.bind_service(self)
+        add_child(_lookup)
+        # Class_name-erasure slice (`lsp_safe_text` + decision flips): the only frame
+        # wiring is its deferred post-unload resync in `_on_diag_frame`; no busy term (a flip
+        # is one LSP notification + one revalidation enqueue, never frame-driven work).
+        _eraser = GdccClassNameEraser.new()
+        _eraser.name = &"GdccClassNameEraser"
+        _eraser.bind_service(self)
+        add_child(_eraser)
+        # LSP workspace mirror: keeps the project `.gd3` set didOpen'd on the
+        # GDScript server (cross-file hover/definition data plane). Tick line after the
+        # scheduler; one busy term while replay/batch work is pending; filesystem-change
+        # forwarding shares the reconciler's hook; no module broadcast hooks (the LSP
+        # channel is independent of the gdcc diagnostics module).
+        _mirror = GdccWorkspaceMirror.new()
+        _mirror.name = &"GdccWorkspaceMirror"
+        _mirror.bind_service(self)
+        add_child(_mirror)
+        _outline = GdccOutlineService.new()
+        _outline.name = &"GdccOutlineService"
+        _outline.bind_service(self)
+        add_child(_outline)
+    _editor_interface = editor_interface
+    _lsp_host = lsp_host
+    _lsp_port = lsp_port
+    retarget_rpc_endpoint(rpc_host, rpc_port)
+    if _active:
+        # Repeat install (e.g. test drivers injecting a free port): only endpoints move.
+        _lsp_client.start(_lsp_host, _lsp_port)
+        return OK
+    var err: int = Engine.register_script_language(_language)
+    if err != OK:
+        # Directly observable failure (16-language cap / name clash) — nothing to roll back.
+        return err
+    ResourceLoader.add_resource_format_loader(_loader, false)
+    if not _probe_loader():
+        ResourceLoader.remove_resource_format_loader(_loader)
+        Engine.unregister_script_language(_language)
+        return FAILED
+    ResourceSaver.add_resource_format_saver(_saver, false)
+    if not _probe_saver():
+        ResourceSaver.remove_resource_format_saver(_saver)
+        ResourceLoader.remove_resource_format_loader(_loader)
+        Engine.unregister_script_language(_language)
+        return FAILED
+    _active = true
+    # LSP connects only in ACTIVE state; the server listens after editor-ready, so the
+    # client's backoff retry absorbs the startup window.
+    _lsp_client.start(_lsp_host, _lsp_port)
+    # Re-evaluate busy immediately: the unconcluded first setup holds the coordinator awake,
+    # and in low-power mode there may be no spare frame to notice it otherwise.
+    refresh_busy()
+    return OK
+
+
+## Reverse order of install(); unregisters only, never frees — the resident instances stay
+## valid for resources and tabs still referencing them, and a later install() re-registers
+## the same instances. Ordering: stop the diagnostics scheduler and drop dirty
+## work first (in-flight callbacks are invalidated via the lifecycle's session bump), then
+## LSP, loader/saver, language, and finally the private module (deleting it still needs the
+## server; the request is fire-and-forget on the resident client's queue).
+func uninstall() -> void:
+    if not _active:
+        return
+    _scheduler.service_shutdown()
+    _reconciler.service_shutdown()
+    _registry.service_shutdown()
+    _cache.service_shutdown()
+    _mirror.service_shutdown()
+    _outline.service_shutdown()
+    _revalidate_pending.clear()
+    _lsp_client.stop()
+    ResourceSaver.remove_resource_format_saver(_saver)
+    ResourceLoader.remove_resource_format_loader(_loader)
+    Engine.unregister_script_language(_language)
+    # Last: bumps the channel session (invalidating in-flight callbacks) and deletes the
+    # private module if this session created it.
+    _lifecycle.service_shutdown()
+    _active = false
+    refresh_busy()
+
+
+## Loader registration postcondition probe: `add_resource_format_loader` returns void, so a
+## silent failure can only be detected by loading a real `.gd3` through the engine and
+## checking the result type and content round-trip. CACHE_MODE_IGNORE (0) keeps the probe
+## independent of anything the cache may hold from an earlier session.
+func _probe_loader() -> bool:
+    var probe_path: String = "user://gdcc_loader_install_probe.gd3"
+    var probe_source: String = "@tool\nextends RefCounted\n"
+    var file: FileAccess = FileAccess.open(probe_path, FileAccess.WRITE)
+    if file == null:
+        return false
+    file.store_string(probe_source)
+    file.close()
+    var loaded: Resource = ResourceLoader.load(probe_path, "", 0)
+    DirAccess.remove_absolute(probe_path)
+    if loaded == null or not (loaded is GdccScript):
+        return false
+    var script: GdccScript = loaded as GdccScript
+    return script.get_source_code() == probe_source and script._get_language() == _language
+
+
+## Saver postcondition probe, same style as the loader probe: save a real GdccScript through
+## the engine and read the file back byte-for-byte.
+func _probe_saver() -> bool:
+    var probe_path: String = "user://gdcc_saver_install_probe.gd3"
+    var probe_source: String = "@tool\nextends RefCounted\n"
+    var script: GdccScript = _language._create_script() as GdccScript
+    if script == null:
+        return false
+    script.load_from_text(probe_path, probe_source)
+    var err: int = ResourceSaver.save(script, probe_path, 0)
+    if err != OK:
+        return false
+    var read_back: String = FileAccess.get_file_as_string(probe_path)
+    DirAccess.remove_absolute(probe_path)
+    return read_back == probe_source
+
+
+# ---------------------------------------------------------------------------
+# Feature coordination. Fully asynchronous: every stage advances from
+# `PendingRequest.completed` signals or the frame pump; no blocking RPC exists anywhere on
+# this path.
+# ---------------------------------------------------------------------------
+
+## Frame pump. Tick order matters: the lifecycle gates the channel (reconcile/flight wait for
+## a ready module and an idle setup stage), reconciliation updates the file set before the
+## flight snapshots it, and busy is re-evaluated last so it reflects the whole frame. The
+## revalidation pump drains AFTER the scheduler tick so a merge completed this frame reaches
+## the editor immediately.
+func _on_diag_frame() -> void:
+    if not _active:
+        return
+    var now: int = Time.get_ticks_msec()
+    _lifecycle.service_tick(now)
+    _reconciler.service_tick(now)
+    _scheduler.service_tick(now)
+    _mirror.service_tick(now)
+    # The eraser's deferred post-unload view restoration runs BEFORE the revalidation drain so
+    # its revalidation request can fire in the same frame.
+    if _eraser != null:
+        _eraser.process_deferred_resync()
+    _outline.service_tick(now)
+    _pump_revalidation()
+    refresh_busy()
+
+
+## LSP client's READY-transition edge: re-evaluate busy immediately so a handshake
+## completing after this frame's refresh cannot leave the workspace mirror's replay
+## unaccounted for a (possibly low-power-capped) frame. The mirror's own epoch comparison
+## remains the state-level fallback; this is only the wake edge.
+func _on_lsp_ready_advanced() -> void:
+    refresh_busy()
+
+
+## A real content change (editor buffer, disk adoption, deletion, buffer-only recovery):
+## re-arms the scheduler's failure suspension. Broadcast hub so producers (registry,
+## reconciler) stay decoupled from the consumer (scheduler).
+func notify_content_changed() -> void:
+    _scheduler.on_content_changed()
+
+
+## The private module exists: kick the initial sync (reconciliation against the empty
+## mirror). Readiness-driven reactions of future features hook in HERE.
+func broadcast_module_ready() -> void:
+    _reconciler.on_module_ready()
+
+
+## The channel died: every sibling drops its server-side epoch state (flight, mirror,
+## reconcile work, cached diagnostics) so recovery restarts from a clean slate.
+func broadcast_module_outage() -> void:
+    _reconciler.on_module_outage()
+    _scheduler.on_module_outage()
+    _cache.on_module_outage()
+    # Revalidation requests keyed to the dead epoch's cache versions can no longer serve
+    # anything useful; the post-recovery re-analysis records fresh ones.
+    _revalidate_pending.clear()
+
+
+## Re-points the diagnostics channel at another gdcc server WITHOUT touching the language
+## registration or the LSP connection: the module may not exist on
+## the new endpoint, so the channel state is rebuilt through the features'
+## `service_reset_channel` (outage-like, except the old server did not vanish). No-op when
+## the endpoint is unchanged; install() routes its endpoint writeback through here.
+func retarget_rpc_endpoint(host: String, port: int) -> void:
+    if _rpc_host == host and _rpc_port == port:
+        return
+    _abandon_owned_module()
+    # Returning to an endpoint whose owed cleanup is still QUEUED (not yet flying): drop the
+    # entry — the fresh setup there hits -32001 on the lingering module and the existing
+    # delete+recreate path rebuilds it, whereas a queued delete landing after the recreate
+    # would kill the fresh module. (An IN-FLIGHT delete to the revisited endpoint can still
+    # land late; the result is a transient outage that self-heals via the outage path —
+    # a recorded, accepted residual.)
+    var kept: Array = []
+    for item in _orphan_cleanup_queue:
+        var entry: Dictionary = item
+        if str(entry["host"]) != host or int(entry["port"]) != port:
+            kept.append(entry)
+    _orphan_cleanup_queue = kept
+    _rpc_host = host
+    _rpc_port = port
+    if _rpc_client != null:
+        _rpc_client.host = host
+        _rpc_client.port = port
+    _revalidate_pending.clear()
+    if not _active:
+        return
+    _lifecycle.service_reset_channel()
+    _reconciler.service_reset_channel()
+    _scheduler.service_reset_channel()
+    _cache.service_reset_channel()
+    refresh_busy()
+
+
+# Throwaway client state for old-endpoint module deletes: one serial worker plus a queue.
+# A rapid A→B→C retarget sequence must clean up BOTH A and B; the worker processes the
+# queue one endpoint at a time and frees itself when drained.
+var _orphan_client: GdccRpcClient = null
+var _orphan_cleanup_queue: Array = []
+
+
+## Deletes this session's private diagnostics module on the OLD endpoint before a retarget
+## abandons it: `service_reset_channel` drops the ownership bookkeeping, so
+## without this the module and its mirrored sources would linger on a server we no longer
+## talk to (uninstall could no longer reach it either). Each owed delete rides a dedicated
+## throwaway client bound to its own old endpoint — never the shared client, whose host/port
+## are being switched underneath it. Queued serially so a rapid double-retarget cannot drop
+## the intermediate endpoint's cleanup. Fire-and-forget: a failed delete
+## just leaves the remnant.
+func _abandon_owned_module() -> void:
+    if _lifecycle == null or not _lifecycle.has_created_module():
+        return
+    enqueue_orphan_cleanup(_rpc_host, _rpc_port, _lifecycle.module_id())
+
+
+## Enqueues an old-endpoint module delete owed by a retarget or by a stale create
+## completion (the create landed on the endpoint it was SENT to while the reset dropped its
+## ownership) and starts the serial worker. Each owed delete rides a dedicated throwaway
+## client bound to its own old endpoint — never the shared client, whose host/port are being
+## switched underneath it. Fire-and-forget: a failed delete just leaves the remnant.
+func enqueue_orphan_cleanup(host: String, port: int, module_id: String) -> void:
+    _orphan_cleanup_queue.append({"host": host, "port": port, "module_id": module_id})
+    _pump_orphan_cleanup()
+
+
+func _pump_orphan_cleanup() -> void:
+    if _orphan_client != null or _orphan_cleanup_queue.is_empty():
+        return
+    var item: Dictionary = _orphan_cleanup_queue[0]
+    _orphan_cleanup_queue.remove_at(0)
+    _orphan_client = GdccRpcClient.new()
+    _orphan_client.name = &"GdccOrphanCleanupClient"
+    add_child(_orphan_client)
+    _orphan_client.host = str(item["host"])
+    _orphan_client.port = int(item["port"])
+    _orphan_client.delete_module(str(item["module_id"])).completed \
+            .connect(_on_orphan_cleanup_done)
+
+
+func _on_orphan_cleanup_done(_response: Dictionary) -> void:
+    if _orphan_client != null:
+        # queue_free (deferred to frame end): the completion handler runs from this very
+        # client's pump, so immediate free() would delete the emitter mid-signal.
+        _orphan_client.queue_free()
+        _orphan_client = null
+    _pump_orphan_cleanup()
+
+
+## Read-only diagnostics status snapshot: the
+## EFFECTIVE endpoint, diagnostics readiness, the last merged analysis round (ticks msec,
+## 0 = none yet) and the most recent failure text ("" = none). The configured endpoint is
+## deliberately NOT echoed; configuration belongs to ProjectSettings. The compact dock
+## displays only readiness and analysis age, while endpoint/failure details remain queryable.
+func diag_channel_status() -> Dictionary:
+    var failure: String = ""
+    var last_round: int = 0
+    if _lifecycle != null:
+        failure = _lifecycle.last_failure()
+    if failure == "" and _scheduler != null:
+        failure = _scheduler.last_failure()
+    if _scheduler != null:
+        last_round = _scheduler.last_round_msec()
+    return {
+        "effective_host": _rpc_host,
+        "effective_port": _rpc_port,
+        "ready": is_diag_ready(),
+        "last_round_msec": last_round,
+        "last_failure": failure,
+    }
+
+
+## Re-sync the CURRENT editor document's LSP view with the re-evaluated erasure decision and
+## queue a revalidation. Called by the `GdccClassNameEraser` child on decision flips
+## (extension load/reload immediately, unload deferred one frame); the text transform itself is
+## the eraser's `lsp_safe_text`, while the editor/registry/LSP/revalidation plumbing stays here.
+func resync_current_document_lsp() -> void:
+    if _outline != null:
+        _outline.invalidate_views()
+    if not _active or _lsp_client == null or not _lsp_client.is_ready():
+        return
+    var context: Dictionary = _current_editor_context()
+    var path: String = str(context.get("path", ""))
+    if not path.begins_with("res://"):
+        return
+    var live: Variant = _registry.entry(path)
+    if not (live is Dictionary):
+        return
+    var uri: String = _path_to_uri(path)
+    if uri == "":
+        return
+    var view: Dictionary = lsp_safe_text(path, str(live.get("text", "")))
+    if _lsp_client.sync_document(uri, str(view["text"])) < 0:
+        return
+    var version: int = int(live.get("version", -1))
+    if version >= 0:
+        _revalidate_pending[path] = version
+
+
+## Revalidation pump: a background analysis round becomes visible
+## by re-running the editor's own validation on the CURRENT script tab. The editor has no
+## public revalidate API, but `CodeTextEditor` owns a `validate_script` signal that
+## `ScriptTextEditor` wires to `_validate_script()` (4.5: code_editor.cpp registers it,
+## script_text_editor.cpp connects it). Emission happens synchronously from this
+## pump: the tab/version check and the emission are atomic within one frame, so a
+## call_deferred window (tab switch between queue and fire) cannot occur — the check IS
+## the fire-time re-verification. No feedback loop: revalidating identical text neither
+## bumps the registry version nor re-marks dirty (registry equality rule), so an emission
+## can never re-arm itself.
+func _pump_revalidation() -> void:
+    if _scheduler.has_newly_readable():
+        var newly: Dictionary = _scheduler.take_newly_readable()
+        for path in newly.keys():
+            _revalidate_pending[str(path)] = int(newly[path])
+    if _revalidate_pending.is_empty():
+        return
+    # keys() snapshots the key set: entries may be erased (stale/tab-moved) mid-loop.
+    for path in _revalidate_pending.keys():
+        _drain_revalidation(str(path), int(_revalidate_pending[path]))
+
+
+func _drain_revalidation(path: String, version: int) -> void:
+    var context: Dictionary = _current_editor_context()
+    if str(context.get("path", "")) != path:
+        # Not the current tab (any more): the editor's own beats (tab switch, idle
+        # validation) cover that path — drop.
+        _revalidate_pending.erase(path)
+        return
+    var live: Variant = _registry.entry(path)
+    var code_edit: CodeEdit = context["code_edit"] as CodeEdit
+    # The registry version only advances when a validation runs, so a matching version can
+    # still hide a newer buffer (the user typed after the merge, or while a popup held this
+    # request). Compare the actual buffer text: an emission must validate exactly the text
+    # the round analyzed — otherwise it reads an empty cache and needlessly dirties a new
+    # version (the editor's idle beat will pick the new text up on its own).
+    if not (live is Dictionary) or int(live.get("version", -1)) != version \
+            or code_edit.get_text() != str(live.get("text", "")):
+        _revalidate_pending.erase(path)
+        return
+    if not code_edit.get_code_completion_options().is_empty():
+        # Completion popup open: defer to a later frame. `get_code_completion_options()`
+        # returns an empty array unless `code_completion_active` (4.5 code_edit.cpp), so
+        # it doubles as the popup visibility probe — no internal-state access needed.
+        return
+    _revalidate_pending.erase(path)
+    # The actual `validate_script` emission is relayed by the plugin (see the signal's doc
+    # comment for why a compiled foreign-signal emission must not be used here). The
+    # version rides along so the deferred half can re-run the gate (one frame has passed).
+    revalidation_requested.emit(path, version)
+
+
+## Read-only gate re-check for the plugin's deferred relay emission:
+## the pump's gate-pass and the plugin's message-queue emission are one frame apart,
+## and the user may type or open the completion popup in between. Re-runs the full gate;
+## a popup that just opened RE-QUEUES the request into `_revalidate_pending` so the
+## defer-until-close contract survives the relay hop (the pump retries it next frame).
+func should_still_revalidate(path: String, version: int) -> bool:
+    # An outage/retarget between the pump's gate-pass and this deferred recheck cleared the
+    # cache while leaving the registry untouched — the version/text alone would still match
+    # and the emission would read an empty cache, wiping the displayed diagnostics.
+    # Readiness + cache freshness close that window.
+    if not _active or not _lifecycle.is_ready() \
+            or not _cache.is_version_current(path, version):
+        return false
+    var context: Dictionary = _current_editor_context()
+    if str(context.get("path", "")) != path:
+        return false
+    var live: Variant = _registry.entry(path)
+    var code_edit: CodeEdit = context["code_edit"] as CodeEdit
+    if not (live is Dictionary) or int(live.get("version", -1)) != version \
+            or code_edit.get_text() != str(live.get("text", "")):
+        return false
+    if not code_edit.get_code_completion_options().is_empty():
+        _revalidate_pending[path] = version
+        return false
+    return true
+
+
+## Current script-tab context for the revalidation pump: the tab's CodeEdit (buffer-text
+## and popup probe) and the current script's resource path. Empty when no text script is
+## current. (4.5 script_text_editor.cpp: `get_base_editor()` returns the bare CodeEdit; the
+## `validate_script` signal lives on its CodeTextEditor parent — resolving that wrapper is
+## the relaying plugin's job, not this pump's.)
+func _current_editor_context() -> Dictionary:
+    if _editor_interface == null:
+        return {}
+    var script_editor: ScriptEditor = _editor_interface.get_script_editor()
+    if script_editor == null:
+        return {}
+    var current: ScriptEditorBase = script_editor.get_current_editor()
+    var script: Script = script_editor.get_current_script()
+    if current == null or script == null:
+        return {}
+    var base: Control = current.get_base_editor()
+    if not (base is CodeEdit):
+        return {}
+    return {"code_edit": base as CodeEdit, "path": script.resource_path}
+
+
+## Busy coordination (editor idle-liveness): holds the coordinator's count while any
+## frame-driven work is pending. The aggregate formula is decomposed
+## per feature: the lifecycle counts the unconcluded first setup / in-flight setup stage /
+## active ensure hook; the reconciler counts pending or active reconcile work on a ready
+## module; the scheduler counts an active flight or (ready, unsuspended) dirty/analyze-all
+## work. A concluded-but-absent server deliberately holds nothing (silent degrade).
+## Edge-triggered: safe to call at any mutation point and once per frame.
+func refresh_busy() -> void:
+    var want: bool = false
+    if _active:
+        want = _lifecycle.busy_wanted() or _reconciler.busy_wanted() \
+                or _scheduler.busy_wanted() or _mirror.busy_wanted() or _outline.busy_wanted()
+    if want == _busy_held:
+        return
+    _busy_held = want
+    if want:
+        busy_delta.emit(1)
+    else:
+        busy_delta.emit(-1)
+
+
+# ---------------------------------------------------------------------------
+# Shared infrastructure accessors and helpers used by the feature children.
+# ---------------------------------------------------------------------------
+
+func rpc_client() -> GdccRpcClient:
+    return _rpc_client
+
+
+func rpc_host() -> String:
+    return _rpc_host
+
+
+func rpc_port() -> int:
+    return _rpc_port
+
+
+func lifecycle() -> GdccModuleLifecycle:
+    return _lifecycle
+
+
+func reconciler() -> GdccFileReconciler:
+    return _reconciler
+
+
+func scheduler() -> GdccDiagScheduler:
+    return _scheduler
+
+
+func registry() -> GdccSourceRegistry:
+    return _registry
+
+
+func cache() -> GdccDiagCache:
+    return _cache
+
+
+func completion() -> GdccCompletionService:
+    return _completion
+
+
+func lookup() -> GdccLookupService:
+    return _lookup
+
+
+func workspace_mirror() -> GdccWorkspaceMirror:
+    return _mirror
+
+
+## res://a/b.gd3 → /src/a/b.gd3 (the VFS mapping contract; the displayPath travels
+## separately on every put_file).
+func vfs_path(path: String) -> String:
+    return "/src/" + path.substr("res://".length())
+
+
+func response_ok(response: Dictionary) -> bool:
+    return response.get("ok") == true and response.has("result")
+
+
+## JSON-RPC error code of a failed response, or 0 when there is none. Server application
+## codes (≤ -32000) can never collide with the client's local transport codes (-1..-4), so
+## callers branch on the raw value.
+func response_error_code(response: Dictionary) -> int:
+    if response.get("ok") == true:
+        return 0
+    var error_value: Variant = response.get("error")
+    if error_value is Dictionary:
+        return int(error_value.get("code", 0))
+    return 0

@@ -2,6 +2,7 @@ package gd.script.gdcc.backend.c.build;
 
 import gd.script.gdcc.util.GdccVersion;
 import gd.script.gdcc.util.StringUtil;
+import gd.script.gdcc.util.SystemPathUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -31,7 +32,6 @@ import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
@@ -46,7 +46,7 @@ import java.util.concurrent.locks.ReentrantLock;
 ///    `VERSION` and MANIFEST integrity contract, so a stale, corrupted or wrong-platform
 ///    directory fails fast with a message naming the variable.
 /// 2. Otherwise the bundle is installed from classpath resources (`gdcc/tinycc-bundle/<key>/`)
-///    into a versioned user cache directory and reused from there.
+///    into `<OS.get_cache_dir()>/gdcc/tinycc/<bundleKey>/` and reused from there.
 ///
 /// Bundle layout contract (validated on every resolution):
 /// - all platforms: `VERSION`, `MANIFEST`, `COPYING`, `RELICENSING`, and tinycc's own headers
@@ -192,7 +192,7 @@ final class TinyCcBundle {
     }
 
     /// Production availability probe for the tcc backend on this host. Side-effect-free: never
-    /// installs, hashes, locks or loads anything, so it is cheap enough for UI/backend pickers.
+    /// installs, hashes, locks or loads libtcc, so it is cheap enough for UI/backend pickers.
     /// A host without a bundle layout answers `false` instead of throwing.
     static boolean isHostBundlePresent() {
         try {
@@ -723,16 +723,8 @@ final class TinyCcBundle {
         }
     }
 
-    /// Per-user cache root: `%LOCALAPPDATA%/gdcc/tinycc` on Windows, `~/.cache/gdcc/tinycc`
-    /// elsewhere. Only reachable for platforms that pass the `bundlePlatformKey` gate.
-    private static @NotNull Path defaultCacheRoot() {
-        if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win")) {
-            var localAppData = StringUtil.trimToNull(System.getenv("LOCALAPPDATA"));
-            var base = localAppData != null
-                    ? Path.of(localAppData)
-                    : Path.of(System.getProperty("user.home"), "AppData", "Local");
-            return base.resolve("gdcc").resolve("tinycc");
-        }
-        return Path.of(System.getProperty("user.home"), ".cache", "gdcc", "tinycc");
+    /// Bundle extraction cache, separate from the project/shared object and PCH caches.
+    static @NotNull Path defaultCacheRoot() {
+        return SystemPathUtil.getCacheDir().resolve("gdcc").resolve("tinycc");
     }
 }

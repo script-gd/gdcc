@@ -284,6 +284,24 @@ class CGenHelperTest {
     }
 
     @Test
+    @DisplayName("renderBoundMetadata should publish the concrete object class in class_name")
+    void renderBoundMetadataShouldPublishObjectClassName() {
+        var engineMetadata = helper.renderBoundMetadata(new GdObjectType("HTTPRequest"), "godot_PROPERTY_USAGE_DEFAULT");
+        var gdccMetadata = helper.renderBoundMetadata(new GdObjectType("PendingRequest"), "godot_PROPERTY_USAGE_NO_EDITOR");
+        var innerMetadata = helper.renderBoundMetadata(new GdObjectType("Outer__sub__Inner"), "godot_PROPERTY_USAGE_DEFAULT");
+        var genericMetadata = helper.renderBoundMetadata(GdObjectType.OBJECT, "godot_PROPERTY_USAGE_DEFAULT");
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_OBJECT", engineMetadata.typeEnumLiteral());
+        assertEquals("godot_PROPERTY_HINT_NONE", engineMetadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"\")", engineMetadata.hintStringExpr());
+        assertEquals("GD_STATIC_SN(u8\"HTTPRequest\")", engineMetadata.classNameExpr());
+        assertEquals("GD_STATIC_SN(u8\"PendingRequest\")", gdccMetadata.classNameExpr());
+        assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", gdccMetadata.usageExpr());
+        assertEquals("GD_STATIC_SN(u8\"Outer__sub__Inner\")", innerMetadata.classNameExpr());
+        assertEquals("GD_STATIC_SN(u8\"Object\")", genericMetadata.classNameExpr());
+    }
+
+    @Test
     @DisplayName("renderBoundMetadata should emit typed dictionary hint for object leaf")
     void renderBoundMetadataShouldEmitTypedDictionaryHintForObjectLeaf() {
         var metadata = helper.renderBoundMetadata(
@@ -372,8 +390,8 @@ class CGenHelperTest {
     }
 
     @Test
-    @DisplayName("renderBoundMetadata should keep inner canonical object leaves verbatim while leaving dormant class slot empty")
-    void renderBoundMetadataShouldKeepInnerCanonicalObjectLeavesVerbatimWhileLeavingDormantClassSlotEmpty() {
+    @DisplayName("renderBoundMetadata should keep inner canonical object leaves verbatim while leaving top-level class slot empty")
+    void renderBoundMetadataShouldKeepInnerCanonicalObjectLeavesVerbatimWhileLeavingTopLevelClassSlotEmpty() {
         var typedArrayMetadata = helper.renderBoundMetadata(
                 new GdArrayType(new GdObjectType("RuntimeOuter__sub__Worker")),
                 "godot_PROPERTY_USAGE_DEFAULT",
@@ -876,8 +894,8 @@ class CGenHelperTest {
     }
 
     @Test
-    @DisplayName("renderPropertyMetadata should keep non-export Object property on default metadata")
-    void renderPropertyMetadataShouldKeepNonExportObjectOnDefaults() {
+    @DisplayName("renderPropertyMetadata should publish class name for non-export Object property")
+    void renderPropertyMetadataShouldPublishClassNameForNonExportObject() {
         var property = new LirPropertyDef(
                 "texture",
                 new GdObjectType("Texture2D"),
@@ -892,14 +910,15 @@ class CGenHelperTest {
 
         assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", metadata.usageExpr());
         assertEquals("godot_PROPERTY_HINT_NONE", metadata.hintEnumLiteral());
-        assertEquals("GD_STATIC_SN(u8\"\")", metadata.classNameExpr());
+        assertEquals("GD_STATIC_SN(u8\"Texture2D\")", metadata.classNameExpr());
     }
 
     @Test
     @DisplayName("renderPropertyMetadata should stay silent for non-exportable Object family rejected upstream")
     void renderPropertyMetadataShouldStaySilentForNonExportableObjectFamily() {
         // The frontend export validation rejects bare `RefCounted` exports; backend deliberately
-        // does not re-diagnose and falls back to the plain type-derived surface.
+        // does not re-diagnose and falls back to the plain type-derived surface (which now still
+        // publishes the object class name like any other Object slot).
         var property = new LirPropertyDef(
                 "obj",
                 new GdObjectType("RefCounted"),
@@ -914,7 +933,7 @@ class CGenHelperTest {
 
         assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
         assertEquals("godot_PROPERTY_HINT_NONE", metadata.hintEnumLiteral());
-        assertEquals("GD_STATIC_SN(u8\"\")", metadata.classNameExpr());
+        assertEquals("GD_STATIC_SN(u8\"RefCounted\")", metadata.classNameExpr());
     }
 
     @Test
@@ -943,12 +962,12 @@ class CGenHelperTest {
     }
 
     @Test
-    @DisplayName("renderSignalParameterMetadata should keep Object class_name on the empty default")
-    void renderSignalParameterMetadataShouldKeepEmptyObjectClassName() {
+    @DisplayName("renderSignalParameterMetadata should publish the Object class name")
+    void renderSignalParameterMetadataShouldPublishObjectClassName() {
         var metadata = helper.renderSignalParameterMetadata(new GdObjectType("Node"));
 
         assertEquals("GDEXTENSION_VARIANT_TYPE_OBJECT", metadata.typeEnumLiteral());
-        assertEquals("GD_STATIC_SN(u8\"\")", metadata.classNameExpr());
+        assertEquals("GD_STATIC_SN(u8\"Node\")", metadata.classNameExpr());
         assertEquals("godot_PROPERTY_HINT_NONE", metadata.hintEnumLiteral());
         assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
     }
@@ -1461,6 +1480,94 @@ class CGenHelperTest {
                     "defaultVariables must stay empty for source defaults: " + data);
             assertFalse(localHelper.renderFuncBindName(data).contains("_default_"));
         }
+    }
+
+    @Test
+    @DisplayName("typed container leaves feed the bind name so same-shape wrappers never collide")
+    void typedContainerLeavesFeedTheBindName() {
+        // Regression: BindingData equality distinguishes typed containers, so the bind-name
+        // encoding must too — `Array[Dictionary]` and `Array[StringName]` returns previously
+        // both rendered as `ret_Array` and emitted duplicate wrapper symbols (probe P0-B).
+        var worker = new LirClassDef("Worker", "RefCounted");
+
+        var dictList = new LirFunctionDef("dict_list");
+        dictList.setReturnType(new GdArrayType(new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT)));
+        dictList.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, dictList));
+        worker.addFunction(dictList);
+
+        var nameList = new LirFunctionDef("name_list");
+        nameList.setReturnType(new GdArrayType(GdStringNameType.STRING_NAME));
+        nameList.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, nameList));
+        worker.addFunction(nameList);
+
+        var plainList = new LirFunctionDef("plain_list");
+        plainList.setReturnType(new GdArrayType(GdVariantType.VARIANT));
+        plainList.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, plainList));
+        worker.addFunction(plainList);
+
+        var dictListBindName = helper.renderFuncBindName(worker, dictList);
+        var nameListBindName = helper.renderFuncBindName(worker, nameList);
+        var plainListBindName = helper.renderFuncBindName(worker, plainList);
+        assertNotEquals(dictListBindName, nameListBindName);
+        assertNotEquals(dictListBindName, plainListBindName);
+        assertNotEquals(nameListBindName, plainListBindName);
+        // Generic containers keep the engine-facing plain spelling; typed containers embed
+        // length-prefixed element segments.
+        assertTrue(plainListBindName.endsWith("ret_Array"), plainListBindName);
+        assertTrue(dictListBindName.endsWith("ret_Array_10_Dictionary"), dictListBindName);
+        assertTrue(nameListBindName.endsWith("ret_Array_10_StringName"), nameListBindName);
+
+        // Typed parameters participate the same way (Dictionary[String, int] vs plain).
+        var typedParam = new LirFunctionDef("typed_param");
+        typedParam.setReturnType(GdVoidType.VOID);
+        typedParam.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, typedParam));
+        typedParam.addParameter(new LirParameterDef("table",
+                new GdDictionaryType(GdStringType.STRING, GdIntType.INT), null, typedParam));
+        worker.addFunction(typedParam);
+
+        var plainParam = new LirFunctionDef("plain_param");
+        plainParam.setReturnType(GdVoidType.VOID);
+        plainParam.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, plainParam));
+        plainParam.addParameter(new LirParameterDef("table",
+                new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT), null, plainParam));
+        worker.addFunction(plainParam);
+
+        assertNotEquals(helper.renderFuncBindName(worker, typedParam),
+                helper.renderFuncBindName(worker, plainParam));
+    }
+
+    @Test
+    @DisplayName("bind name container segments are injective across underscore-carrying type names")
+    void bindNameContainerSegmentsAreInjective() {
+        // Type names may contain `_`, so a bare `_` join would still collide; length-prefixed
+        // container segments must keep these pairs distinct.
+        var worker = new LirClassDef("Worker", "RefCounted");
+
+        var fooBarBaz = new LirFunctionDef("foo_bar_baz");
+        fooBarBaz.setReturnType(new GdDictionaryType(new GdObjectType("Foo"), new GdObjectType("Bar_Baz")));
+        fooBarBaz.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, fooBarBaz));
+        worker.addFunction(fooBarBaz);
+
+        var fooBarBazSwapped = new LirFunctionDef("foo_bar_baz_swapped");
+        fooBarBazSwapped.setReturnType(new GdDictionaryType(new GdObjectType("Foo_Bar"), new GdObjectType("Baz")));
+        fooBarBazSwapped.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, fooBarBazSwapped));
+        worker.addFunction(fooBarBazSwapped);
+
+        assertNotEquals(helper.renderFuncBindName(worker, fooBarBaz),
+                helper.renderFuncBindName(worker, fooBarBazSwapped));
+
+        var nested = new LirFunctionDef("nested");
+        nested.setReturnType(new GdArrayType(new GdArrayType(GdStringType.STRING)));
+        nested.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, nested));
+        worker.addFunction(nested);
+
+        var flatUnderscore = new LirFunctionDef("flat_underscore");
+        flatUnderscore.setReturnType(new GdArrayType(new GdObjectType("Array_String")));
+        flatUnderscore.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, flatUnderscore));
+        worker.addFunction(flatUnderscore);
+
+        assertNotEquals(helper.renderFuncBindName(worker, nested),
+                helper.renderFuncBindName(worker, flatUnderscore));
     }
 
     @Test

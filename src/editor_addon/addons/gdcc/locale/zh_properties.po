@@ -1,0 +1,31 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: GDCC Project Settings\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Gdcc"
+msgstr "GDCC"
+
+msgid "Compilation Server"
+msgstr "编译服务器"
+
+msgid "Launch Command"
+msgstr "启动命令"
+
+msgid "Build"
+msgstr "构建"
+
+msgid "Optimization Level"
+msgstr "优化级别"
+
+msgid "Strict Mode"
+msgstr "严格模式"
+
+msgid "C Compiler Kind"
+msgstr "C 编译器类型"
+
+msgid "Excluded Globs"
+msgstr "排除匹配模式"

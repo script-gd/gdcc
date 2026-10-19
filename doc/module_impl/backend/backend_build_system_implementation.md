@@ -61,25 +61,29 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
        -o <outputPath> <objPath...>
 ```
 
-- `-I`/`-std`/`-fPIC`/`-c` 只出现在编译类命令；`-shared` 只出现在链接命令；两者共享同一 `-target`、同一 `ZIG_LOCAL_CACHE_DIR`/`ZIG_GLOBAL_CACHE_DIR`（同一 cache root）与同一工作目录（`CProcessLauncher` 对每个子进程设置 `directory(projectDir)`）。
+- `-I`/`-std`/`-fPIC`/`-c` 只出现在编译类命令；`-shared` 只出现在链接命令；两者共享同一 `-target`、同一 `ZIG_LOCAL_CACHE_DIR`/`ZIG_GLOBAL_CACHE_DIR`（分别为同一 cache root 下的 `local`/`global`）与同一工作目录（`CProcessLauncher` 对每个子进程设置 `directory(projectDir)`）。`ZIG_CACHE_DIR` 不是 Zig 支持的本地缓存覆盖变量。
 - `languageFlags(ltoMode, opt)` 是 TU 编译、PCH 构建、PCH probe、PCH key 的统一 flag 来源；PCH 构建命令使用同一 `languageFlags` 但不带 `-c`，形态为 `zig cc -target <zigTarget> <languageFlags> -I<includeDir>... -x c-header <prefix.h> -o <pchPath>`。
 - object 路径固定为 `<projectDir>/obj/<debug|release>/<zigTarget>/<index>_<fileName>.o`，`<index>` 为 `cFiles` 下标，用于同名 `.c` 消歧。
 - 链接输入只使用本轮按 `cFiles` 顺序生成的 object 绝对路径列表：禁止 glob `obj/`、禁止以"object 已存在"跳过编译；每个 TU 每轮都执行 `zig cc -c`，缓存复用完全交给 zig 内容缓存。stale object 永远不进入链接。该「每轮重编」纪律仅约束 zig 管线；tinycc 管线按 TU 内容寻址缓存跳过未变动 TU（见 §3.4 与 `tinycc_compiler_implementation.md`）。
 
 ### 3.2 LTO 决策（优先级从高到低）
 
-1. ABI 替换（非 Windows 宿主上 `*-windows-msvc` 被替换为 `*-windows-gnu`）：编译与链接均不追加任何 `-flto*`；
-2. DEBUG：无 LTO（`-O0`）；
-3. target 命中 `THIN_LTO_UNSUPPORTED_ZIG_TARGETS`：RELEASE 回退 `-flto`（full LTO）；当前该集合为空；
-4. 其余 RELEASE：`-flto=thin`（编译与链接同带，链接随 LTO 带 `-O2`）。
+1. ABI 替换构建：无 LTO，不进入 full LTO 回退；
+2. macOS target（`x86_64-macos-none` / `aarch64-macos-none`）：无 LTO，不进入 full LTO 回退；DEBUG 的 TU 使用 `-O0`，RELEASE 的 TU 保留 `-O2`，链接不带 LTO 或 `-O` 参数；
+3. DEBUG：无 LTO（`-O0`）；
+4. target 命中 `THIN_LTO_UNSUPPORTED_ZIG_TARGETS`：RELEASE 回退 `-flto`（full LTO）；当前该集合为空；
+5. 其余 RELEASE：`-flto=thin`（编译与链接同带，链接随 LTO 带 `-O2`）。
+
+macOS 禁用 LTO 的原因是 Zig 0.15.2 的驱动不为 Mach-O 启用 LLD，而 thin/full LTO 都要求 LLD；`-flto=thin` 和 `-flto` 均会在编译配置阶段报 `LTO requires using LLD`，不能通过回退 full LTO 解决。这是该版本 Zig 的集成限制，并非上游 LLD 不支持 Mach-O；策略按目标平台生效，与构建主机无关。
 
 决策由 package-private 静态方法 `resolveLtoMode(...)` 给出，ThinLTO 不兼容 target 必须由命令级测试（`ZigCcCompilerCommandTest`）锁定，不得通过链接失败反推。
 
 ### 3.3 target 已知限制
 
-- `windows-gnu` 的 LTO 链接失败（`frexpf`/`frexpl`/`modfl` undefined），但该 target 只能经 msvc→gnu 替换路径到达、该路径本就禁 LTO，故不进入回退判定集。
+- Windows 声明 target 统一为 `x86_64-windows-gnu` / `aarch64-windows-gnu`，不依赖 MSVC SDK。GDExtension C 边界与 Godot Windows 加载器依据见 `doc/gdcc_c_backend.md` 的 Windows ABI。
+- CI 与完整分发固定使用 Zig 0.15.2。Zig 0.16.0 存在 Windows GNU/LTO `zigc` weak-symbol 链接 bug（`frexpf`/`frexpl`/`modfl` 等 undefined；[Zig #31958](https://codeberg.org/ziglang/zig/issues/31958)），不应概括为 GNU ABI 不支持 LTO。该工具链限制不改变公共 LTO 策略。
 - android/web-wasm32 的失败是 sysroot/runtime 限制（android 需 NDK/Bionic；wasm 上 minicoro 锁定 `MCO_USE_ASM` 按设计 fail loudly），与 LTO 无关：二者的 LTO 决策保持默认（RELEASE 取 `-flto=thin`），真实构建显式跳过或仅做 `-c` 编译。web 的 Emscripten 后端是独立 post-MVP 项目，不属于 zig 后端职责。
-- `macos-x86-64` / `macos-aarch64` 在 macOS 本机产出 `lib<name>.dylib`；从非 Darwin 主机交叉链接需要 Darwin sysroot，不进入 `ZigCcCompilerCrossTargetSmokeTest` 的 zig-bundled-libc 矩阵。
+- `macos-x86-64` / `macos-aarch64` 产出 `lib<name>.dylib`，不启用 LTO（见 §3.2）。Zig 0.15.2 自带 Darwin libc 链接桩；当前编辑器插件的 C ABI/系统库依赖可从 Linux x64 和 Windows x64 交叉链接，不需要额外 Darwin sysroot。这不保证额外 Apple framework 的链接。两种架构的无 LTO 命令和 RELEASE `-O2` 由 `ZigCcCompilerCommandTest` 覆盖，macOS AArch64 的真实交叉构建由编辑器插件四平台分发入口覆盖；`ZigCcCompilerCrossTargetSmokeTest` 聚焦 Linux/Windows 的 LTO 链接。
 - zig cc 拒绝透传 `-Wl,--thinlto-cache-dir`/`-fthinlto-cache-dir`，因此 ThinLTO 链接后端无法跨构建缓存；不直接驱动 `zig ld.lld`（见 §9 后续方向）。
 
 ### 3.4 TinyCC 管线差异登记
@@ -98,7 +102,7 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
 PCH 的完整合同（key 组成、布局、自愈协议）以 `doc/gdcc_c_backend.md` 的 PCH Cache 章节为准；本节只列构建管线侧的实现要点：
 
 - 布局：`<cacheRoot>/pch/<key>/{gdcc_godot_prefix.h, gdcc_godot_prefix.pch, .ready}` 三者齐全才可消费；key 为 SHA-256 截断前 16 字节（32 个 hex 字符），输入含 zig 版本、resolved zig target、完整语言 flags（含 `-O` 与实际 LTO token）、保序 include 目录列表及每个目录的归一化绝对路径与目录树内容哈希（length-prefixed 拼接防歧义）。`GodotVersion`/`REAL_T_IS_DOUBLE` 不进 key，由头文件内容哈希覆盖。
-- 前缀头内容固定为 `#include <godot_binding.h>\n`；`-include-pch` 白名单仅 `entry.c`、`godot_binding.c`、`gdcc_coroutine.c`，`minicoro.c` 明确排除（它不包含 `godot_binding.h`）。
+- 前缀头内容固定为 `#include <godot_binding.h>\n`；`-include-pch` 白名单仅 `entry.c`、`godot_binding.c`、`gdcc_coroutine.c`、`gdcc_hrx.c`，`minicoro.c` 明确排除（它不包含 `godot_binding.h`）。
 - 前缀头安装到最终路径后 mtime 归一为 `Instant.EPOCH`，避免 zig 缓存回放旧 PCH 时触发 clang 的 mtime 校验。
 - 消费前 probe：在并行 TU 启动前以完整 TU flags、同一 registry/工作目录/`ZIG_*_CACHE_DIR` 执行；probe 源内容与文件名带轮次唯一后缀，防止 zig 内容缓存回放陈旧 probe 结果。
 - 自愈：已安装 PCH probe/校验失败时删除该 key 条目并最多重建一次；构建、安装、probe、版本探测或 include 树哈希失败一律只回退本轮无 PCH，不使构建失败。
@@ -148,7 +152,7 @@ PCH 的完整合同（key 组成、布局、自愈协议）以 `doc/gdcc_c_backe
 
 ## 8. 测试约定
 
-- 真 zig/Godot 依赖一律 `ZigUtil.findZig()` + `Assumptions` 门控；真 tinycc 依赖一律经 `TinyCcCliTestSupport`/bundle 在场 `Assumptions` 门控（无 bundle/CLI 时跳过而非失败）。迭代期只跑定向测试：`script/run-gradle-targeted-tests.sh --tests <类名>`。
+- 真 zig/Godot 依赖一律 `ZigUtil.findZig()` + `Assumptions` 门控；真 tinycc 依赖一律经 `TinyCcCliTestSupport`/bundle 在场 `Assumptions` 门控（无 bundle/CLI 时跳过而非失败）。迭代期只跑定向测试，Windows 使用 `pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <类名>`，Gradle 必须带 `--no-daemon --info --console=plain`。
 - negative path 直调公开 `ZigCcCompiler.compile(...)`（精心构造的 `.c` 与独立 include 树），不得通过破坏 shared include/共享 cache 构造失败。
 - 性能数字是手工参考值（注明机器与 zig 版本），写入 PR 描述，不进入 CI 断言。
 - 类级并行（`src/test/resources/junit-platform.properties`）：全局默认 `same_thread`，仅 `@Execution(ExecutionMode.CONCURRENT)` 标注类进入 fork-join 池，fixed parallelism=4（可经 `-Djunit.jupiter.execution.parallel.config.fixed.parallelism=N` 覆盖）。当前标注类：`ZigCcCompilerCrossTargetSmokeTest`（多 target 以 `@ParameterizedTest` 逐 target 拆分）、`ZigCcCompilerFailureTest`、`ZigCcCompilerIncrementalIntegrationTest`、`ZigCcCompilerPchIntegrationTest`、`GodotEditorHotReloadIntegrationTest`、`RpcCompileHttpIntegrationTest`。明确不并行：`ZigCcCompilerParallelTest`、`TinyCcCompilerParallelTest` 与 `ApiZigCcCompilerCancellationTest`（时序/取消语义敏感）及全部 fake/纯 Java 测试。

@@ -74,7 +74,7 @@ class CCodegenSignalRegistrationTest {
                 "GDExtensionPropertyInfo signal_args[] = {",
                 "gdcc_make_property_full(GDEXTENSION_VARIANT_TYPE_INT, GD_STATIC_SN(u8\"count\"), godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"\"), godot_PROPERTY_USAGE_DEFAULT)",
                 "gdcc_make_property_full(GDEXTENSION_VARIANT_TYPE_NIL, GD_STATIC_SN(u8\"data\"), godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"\"), godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT)",
-                "gdcc_make_property_full(GDEXTENSION_VARIANT_TYPE_OBJECT, GD_STATIC_SN(u8\"target\"), godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"\"), godot_PROPERTY_USAGE_DEFAULT)",
+                "gdcc_make_property_full(GDEXTENSION_VARIANT_TYPE_OBJECT, GD_STATIC_SN(u8\"target\"), godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"Node\"), godot_PROPERTY_USAGE_DEFAULT)",
                 "gdcc_make_property_full(GDEXTENSION_VARIANT_TYPE_ARRAY, GD_STATIC_SN(u8\"names\"), godot_PROPERTY_HINT_ARRAY_TYPE, GD_STATIC_S(u8\"StringName\"), GD_STATIC_SN(u8\"\"), godot_PROPERTY_USAGE_DEFAULT)",
                 "gdcc_make_property_full(GDEXTENSION_VARIANT_TYPE_DICTIONARY, GD_STATIC_SN(u8\"pairs\"), godot_PROPERTY_HINT_DICTIONARY_TYPE, GD_STATIC_S(u8\"StringName;Node\"), GD_STATIC_SN(u8\"\"), godot_PROPERTY_USAGE_DEFAULT)",
                 "godot_classdb_register_extension_class_signal(class_library, class_name, GD_STATIC_SN(u8\"payload\"), signal_args, 5);",

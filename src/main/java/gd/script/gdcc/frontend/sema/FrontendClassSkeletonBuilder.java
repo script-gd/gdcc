@@ -7,6 +7,7 @@ import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExportAnnotationSup
 import gd.script.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdparser.frontend.ast.*;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
@@ -151,10 +152,14 @@ public final class FrontendClassSkeletonBuilder {
                 topLevelHeader.superClassRef().canonicalName(),
                 context
         );
+        // The dotted source-level name feeds the backend's class metadata; inner
+        // classes extend it segment by segment along the accepted inner-header chain.
+        topLevelClassDef.setSourceClassName(topLevelHeader.sourceName());
         recordDeclarationOrigin(topLevelClassDef, sourceUnitGraph.unit().ast(), context);
         var innerClassRelations = collectAcceptedInnerClassRelations(
                 topLevelHeader.immediateInnerHeaders(),
-                context
+                context,
+                topLevelHeader.sourceName()
         );
         return new FrontendSourceClassRelation(
                 sourceUnitGraph.unit(),
@@ -270,7 +275,9 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull SkeletonBuildContext context
     ) {
         var classDef = new LirClassDef(className, superClassName);
-        classDef.setSourceFile(context.sourcePath().toString().replace('\\', '/'));
+        // Same normalization the diagnostic remapper keys on (`sourcePathText`: trimmed,
+        // `/` separators) — backend consumers (e.g. class metadata facts) join on this text.
+        classDef.setSourceFile(FrontendDiagnostic.sourcePathText(context.sourcePath()));
         return classDef;
     }
 
@@ -703,9 +710,14 @@ public final class FrontendClassSkeletonBuilder {
 
     /// Builds accepted inner class relations in pre-order so downstream consumers keep seeing the
     /// stable source traversal order established by discovery.
+    ///
+    /// `ownerSourcePath` is the lexical owner's dotted source-level name; each accepted inner class
+    /// appends its own segment so the backend metadata (`source_name`) never has to reverse the
+    /// canonical `__sub__` encoding.
     private @NotNull List<FrontendInnerClassRelation> collectAcceptedInnerClassRelations(
             @NotNull List<AcceptedClassHeader> acceptedInnerHeaders,
-            @NotNull SkeletonBuildContext context
+            @NotNull SkeletonBuildContext context,
+            @NotNull String ownerSourcePath
     ) {
         var innerClassRelations = new ArrayList<FrontendInnerClassRelation>();
         for (var acceptedInnerHeader : acceptedInnerHeaders) {
@@ -715,6 +727,8 @@ public final class FrontendClassSkeletonBuilder {
                     acceptedInnerHeader.superClassRef().canonicalName(),
                     context
             );
+            var dottedSourceName = ownerSourcePath + "." + acceptedInnerHeader.sourceName();
+            innerClassDef.setSourceClassName(dottedSourceName);
             recordDeclarationOrigin(innerClassDef, classDeclaration, context);
             innerClassRelations.add(new FrontendInnerClassRelation(
                     acceptedInnerHeader.lexicalOwner(),
@@ -726,7 +740,8 @@ public final class FrontendClassSkeletonBuilder {
             ));
             innerClassRelations.addAll(collectAcceptedInnerClassRelations(
                     acceptedInnerHeader.immediateInnerHeaders(),
-                    context
+                    context,
+                    dottedSourceName
             ));
         }
         return List.copyOf(innerClassRelations);

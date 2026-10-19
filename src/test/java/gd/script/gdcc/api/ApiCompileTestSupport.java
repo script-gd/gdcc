@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
-final class ApiCompileTestSupport {
+public final class ApiCompileTestSupport {
     static final Instant FIXED_TIME = Instant.parse("2026-04-23T10:15:30Z");
     static final Clock FIXED_CLOCK = Clock.fixed(FIXED_TIME, ZoneOffset.UTC);
     private static final long TASK_TIMEOUT_MILLIS = 30_000;
@@ -92,7 +92,7 @@ final class ApiCompileTestSupport {
         );
     }
 
-    static @NotNull API newApi(
+    public static @NotNull API newApi(
             @NotNull CProjectBuilder projectBuilder,
             @NotNull CompileTaskHooks compileTaskHooks,
             @NotNull Clock clock,

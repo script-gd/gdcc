@@ -5,9 +5,17 @@ registration rules are maintained in [gdcc_runtime_lib.md](gdcc_runtime_lib.md).
 
 ## Native Compiler Cache
 
+The packaged TinyCC bundle extraction cache is separate from the object/PCH caches below.
+It is installed at `<OS.get_cache_dir()>/gdcc/tinycc/<bundleKey>/`, following Godot's desktop
+system-cache rules (including macOS `~/Library/Caches` and Linux `XDG_CACHE_HOME`).
+`GDCC_TINYCC_HOME` still selects an existing bundle directly. Platform fallbacks and the install
+contract are maintained in [TinyCC bundle installation](module_impl/backend/tinycc_compiler_implementation.md#42-安装协议).
+
 `ZigCcCompiler` stores Zig local and global compiler caches under a shared cache root when one is
 available. If `GDCC_SHARED_C_COMPILER_CACHE` is set to a usable directory path, the compiler creates
-that directory when necessary and uses it as the root for `ZIG_LOCAL_CACHE_DIR` and `ZIG_GLOBAL_CACHE_DIR`.
+that directory when necessary and sets `ZIG_LOCAL_CACHE_DIR` to its `local` subdirectory and
+`ZIG_GLOBAL_CACHE_DIR` to its `global` subdirectory for every Zig subprocess. `ZIG_CACHE_DIR` is
+not a supported Zig local-cache override.
 Blank values, invalid paths, files, or paths that cannot be created fall back to the existing
 project-location behavior: use the project parent's `shared-compiler-cache` directory when it
 already exists, otherwise use the project's own `compiler-cache` directory.
@@ -43,7 +51,7 @@ The `<key>` is a truncated SHA-256 over:
 Usage and lifecycle rules:
 
 - `-include-pch` is force-included only into the whitelisted TUs that actually include
-  `godot_binding.h` (`entry.c`, `godot_binding.c`, `gdcc_coroutine.c`); `minicoro.c` never gets it,
+  `godot_binding.h` (`entry.c`, `godot_binding.c`, `gdcc_coroutine.c`, `gdcc_hrx.c`); `minicoro.c` never gets it,
   keeping the Godot ABI headers out of the isolated assembly-backend TU.
 - Before any TU of a round sees the PCH, a trivial probe TU is compiled with the exact TU flag
   surface. The probe source embeds a round-unique token so zig's content cache cannot replay a
@@ -60,7 +68,10 @@ Usage and lifecycle rules:
   is retried once without it — PCH and no-PCH objects are never mixed in one link.
 - Concurrency: processes sharing a cache root may duplicate a build, but cannot corrupt it
   (identical contents, unique temporary names, last-writer-wins rename, marker written last).
-  There is no cross-process PCH lock; capacity management is backlog work.
+  Prefix-header mtimes are normalized before publication, and replacements use
+  `FileUtil.moveReplacing` to retry transient Windows access conflicts. Interrupted retries
+  take the cancellation channel, not a no-PCH fallback; unpublished temporary files are best-effort cleaned
+  on failure or cancellation. There is no cross-process PCH lock; capacity management is backlog work.
 - Header mtime stability is required: runtime resource extraction compares content before
   replacing, so gdcc-driven rebuilds never churn include-tree mtimes. External mtime-only
   churn (touching a recorded header without a content change) makes clang reject the installed
@@ -68,6 +79,19 @@ Usage and lifecycle rules:
   no-PCH rounds (builds stay correct) until a content change produces a new key. Changing only
   the prefix header is safe: its mtime is pinned, as described above.
 - PCH files and probe litter never appear in `artifacts()`.
+
+### Symbol Stripping
+
+`CompileOptions.stripNativeSymbols` (wire: boxed `Boolean`, absent/null = `false`) opts a build
+into native size reduction on the zig backend. When set, `ZigCcCompiler` appends `-g0` to the
+shared language flags (TU compiles, PCH build, PCH probe — the flag is part of the PCH cache key,
+so stripped and unstripped PCH entries never mix) and `-s` to the link command. This matters
+because zig cc emits DWARF by default on ELF targets even without `-g`: unstripped RELEASE builds
+of the editor addon client library carried 73-76% `.debug_*` sections plus a full symbol table
+(e.g. 16.8 MB → 3.0 MB for `linux-x86_64`). A stripped link never emits a PDB, so a Windows round
+additionally deletes any stale `<outputBaseName>.pdb` left by an earlier unstripped round before
+linking — otherwise artifact collection would ship it. TinyCC ignores the flag (it never emits
+DWARF); every caller except the editor addon distribution packaging keeps the `false` default.
 
 ### TinyCC Object Cache
 
@@ -305,6 +329,12 @@ keep one source tree compilable by both toolchains and are part of the current c
   - `r_initialization->initialize = &initialize;`
   - `r_initialization->deinitialize = &deinitialize;`
 - `initialize(...)` must return without side effects for levels other than `GDEXTENSION_INITIALIZATION_SCENE`.
+- Loading/unloading messages treat the module display name as string data, not template code:
+  `CCodegen` exposes the `StringUtil` static methods to the entry template, which calls
+  `StringUtil.escapeStringLiteral` when interpolating the name into UTF-8 C literals.
+  Project names containing quotes, backslashes or non-ASCII
+  characters must not break generated C. `CCodegenTest.moduleDisplayNameIsEscapedInEntryMessages`
+  covers this boundary.
 - `initialize(...)` freezes the HRX Callable dispatch mode BEFORE any class registration or
   static initialization can construct a custom Callable (runtime contract:
   `gdcc_runtime_lib.md` §HRX Hot-Reload Thunk Runtime; source of truth:
@@ -385,7 +415,11 @@ keep one source tree compilable by both toolchains and are part of the current c
   `godot_object_method_bind_call(...)` paths keep raw destination storage semantics.
 - `godot_object_method_bind_call(...)` is the exact-engine vararg exception to remember: its return slot must be a raw
   `godot_Variant` storage location cast to `GDExtensionUninitializedVariantPtr`. Do not prebuild a nil `Variant` before
-  the call, and do not destroy that storage on error paths where Godot did not construct a return value.
+  the call. Godot ALWAYS placement-constructs the return `Variant` — including on call errors (4.5
+  `gdextension_interface.cpp` wraps `mb->call` in `memnew_placement` unconditionally) — so every exit path must destroy
+  it exactly once: the error path destroys it before substituting the nil fallback, and the success path destroys it
+  after the value has been unpacked/consumed. (The previous "do not destroy on error paths" wording was wrong; since
+  corrected.)
 
 ### Global Helper Raw Pointer Contract
 

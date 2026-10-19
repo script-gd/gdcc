@@ -6,8 +6,8 @@ import org.jetbrains.annotations.NotNull;
 import java.util.Locale;
 
 public enum TargetPlatform {
-    WINDOWS_X86_64(PlatformFamily.WINDOWS, HardwareArchitecture.X86_64, "x86_64-windows-msvc"),
-    WINDOWS_AARCH64(PlatformFamily.WINDOWS, HardwareArchitecture.AARCH64, "aarch64-windows-msvc"),
+    WINDOWS_X86_64(PlatformFamily.WINDOWS, HardwareArchitecture.X86_64, "x86_64-windows-gnu"),
+    WINDOWS_AARCH64(PlatformFamily.WINDOWS, HardwareArchitecture.AARCH64, "aarch64-windows-gnu"),
     LINUX_X86_64(PlatformFamily.LINUX, HardwareArchitecture.X86_64, "x86_64-linux-gnu"),
     LINUX_AARCH64(PlatformFamily.LINUX, HardwareArchitecture.AARCH64, "aarch64-linux-gnu"),
     LINUX_RISCV64(PlatformFamily.LINUX, HardwareArchitecture.RISCV64, "riscv64-linux-gnu"),

@@ -179,6 +179,11 @@ After `Test stop.` is observed, the Java runner returns without waiting for full
 process exit. A background virtual thread still gives the process the configured
 force-kill delay, one second by default, before forcing termination.
 
+The runner implements `AutoCloseable`. Callers that delete a temporary project immediately
+after a run must use try-with-resources: `close()` terminates any remaining owned Godot
+process and waits for process and output-reader termination before directory cleanup.
+This explicit teardown does not change the ordinary stop-signal fast-return behavior.
+
 `GdScriptUnitTestCompileRunner` uses the default runner options unless a test passes explicit `GodotGdextensionTestRunner.RunOptions`: headless mode, `--quit-after 10`, and no resource-level quit-frame directive. Tests that need a larger runtime budget should call `GodotGdextensionTestRunner.defaultRunOptions(...).withQuitAfterFrames(...)` from Java instead of adding fixture-side directives.
 
 ## Runtime and Build Prerequisites

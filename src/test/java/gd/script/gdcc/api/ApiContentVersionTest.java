@@ -78,6 +78,12 @@ class ApiContentVersionTest {
             );
             assertThrows(ApiPathNotFoundException.class, () -> api.listDirectory("m", "/newdir3"));
 
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> api.putFile("m", "/newdir4/a.gd", "extends RefCounted\n", null, "  ")
+            );
+            assertThrows(ApiPathNotFoundException.class, () -> api.listDirectory("m", "/newdir4"));
+
             // A never-resolvable target fails cleanly even when the link would overwrite a file:
             // the replaced leaf must be restored. (The target must not traverse the new link
             // itself — that shape resolves to a legal CYCLE instead.)

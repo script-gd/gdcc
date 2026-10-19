@@ -45,10 +45,11 @@ static inline godot_${constructor.cIdentifier} *godot_new_${constructor.cIdentif
 <#if binding.familyName() == "SINGLETON">
 <#-- @ftlvariable name="binding" type="gd.script.gdcc.backend.c.gen.binding.ModuleLocalGodotBinding.Singleton" -->
 static inline ${binding.returnType()} ${binding.cFunctionName()}(void) {
-    static ${binding.returnType()} ${binding.cacheName()} = NULL;
-    if (${binding.cacheName()} == NULL) {
-        ${binding.cacheName()} = (${binding.returnType()})godot_global_get_singleton(GD_STATIC_SN(u8"${binding.escapedLookupName()}"));
-        if (${binding.cacheName()} == NULL) {
+    static _Atomic(${binding.returnType()}) ${binding.cacheName()} = NULL;
+    ${binding.returnType()} cached = atomic_load_explicit(&${binding.cacheName()}, memory_order_acquire);
+    if (cached == NULL) {
+        cached = (${binding.returnType()})godot_global_get_singleton(GD_STATIC_SN(u8"${binding.escapedLookupName()}"));
+        if (cached == NULL) {
             gdcc_binding_lookup_context context = { 0 };
             context.kind = "module_singleton";
             context.function_name = "${binding.escapedCFunctionName()}";
@@ -58,8 +59,9 @@ static inline ${binding.returnType()} ${binding.cFunctionName()}(void) {
             gdcc_binding_lookup_fail(&context);
             return NULL;
         }
+        atomic_store_explicit(&${binding.cacheName()}, cached, memory_order_release);
     }
-    return ${binding.cacheName()};
+    return cached;
 }
 
 <#elseif binding.familyName() == "CLASS_CONSTANT">
@@ -153,7 +155,9 @@ static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngi
     const GDExtensionConstVariantPtr *call_args = argc > 0 ? (const GDExtensionConstVariantPtr *)argv : NULL;
 </#if>
     GDExtensionCallError error = { 0 };
-    // object_method_bind_call constructs into raw Variant storage; error paths must not destroy it.
+    // object_method_bind_call ALWAYS placement-constructs the return Variant — even on call
+    // errors (4.5 gdextension_interface.cpp wraps `mb->call` in memnew_placement
+    // unconditionally) — so `ret` must be destroyed on every exit path (see cleanup).
     godot_bool ret_initialized = false;
     godot_Variant ret;
 <#if resolved.returnType.typeName != "void">
@@ -172,6 +176,7 @@ static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngi
         (GDExtensionUninitializedVariantPtr)&ret,
         &error
     );
+    ret_initialized = true;
     if (error.error != GDEXTENSION_CALL_OK) {
         char call_error_desc[512];
         switch (error.error) {
@@ -264,7 +269,6 @@ static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngi
         GDCC_PRINT_RUNTIME_ERROR(call_error_desc, __func__, __FILE__, __LINE__);
         goto cleanup;
     }
-    ret_initialized = true;
 <#if resolved.returnType.typeName != "void">
     result = ${helper.renderUnpackFunctionName(resolved.returnType)}((GDExtensionVariantPtr)&ret);
 <#assign varargOwnStmt = helper.renderEngineMethodHelperVarargObjectReturnOwnStmt(resolved.returnType, "result")>

@@ -1,0 +1,568 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: GDCC Editor Addon\n"
+"Language: zh\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Configure compilation server..."
+msgstr "手动配置编译服务器..."
+
+msgid "Installation cancelled."
+msgstr "安装已取消。"
+
+msgid "Another installation task is already running."
+msgstr "另一个安装任务正在运行。"
+
+msgid "Could not start the installation worker."
+msgstr "无法启动安装工作线程。"
+
+msgid "Install compilation server..."
+msgstr "安装编译服务器..."
+
+msgid "Install GDCC compilation server"
+msgstr "安装 GDCC 编译服务器"
+
+msgid "GDCC: Editor menu not found; use the GDCC dock to install the server."
+msgstr "GDCC：未找到编辑器菜单，请通过 GDCC 面板安装编译服务器。"
+
+msgid "Install GDCC"
+msgstr "安装GDCC"
+
+msgid "Java %s · %s"
+msgstr "Java %s · %s"
+
+msgid "Next"
+msgstr "下一步"
+
+msgid "Finish compiler configuration"
+msgstr "完成编译器配置"
+
+msgid "Exit"
+msgstr "退出"
+
+msgid "or"
+msgstr "或"
+
+msgid "Select Java 25 or newer, or install the GDCC runtime."
+msgstr "选择 Java 25 或更新版本，或安装 GDCC 运行环境。"
+
+msgid "Path to the Java executable"
+msgstr "Java 可执行文件路径"
+
+msgid "Choose Java..."
+msgstr "选择 Java..."
+
+msgid "Java executable"
+msgstr "Java 可执行文件"
+
+msgid "Check Java"
+msgstr "检查 Java"
+
+msgid "Install JRE"
+msgstr "安装JRE"
+
+msgid "Installed compilers"
+msgstr "已安装的编译器"
+
+msgid "Releases"
+msgstr "正式版"
+
+msgid "Previews"
+msgstr "预览版"
+
+msgid "Install selected version"
+msgstr "安装所选版本"
+
+msgid "Load more"
+msgstr "加载更多"
+
+msgid "Install from local..."
+msgstr "从本地安装..."
+
+msgid "Compiler installation error"
+msgstr "编译器安装错误"
+
+msgid "The selected JAR needs an adjacent lib directory containing gdparser-*.jar."
+msgstr "所选 JAR 的同目录中必须有 lib 文件夹，且其中包含 gdparser-*.jar。"
+
+msgid "Could not copy the JRE to %s (error %s)."
+msgstr "无法将 JRE 复制到 %s（错误 %s）。"
+
+msgid "Java 25+ could not run from the installed JRE: %s"
+msgstr "无法从已安装的 JRE 运行 Java 25+：%s"
+
+msgid "Reading JRE release information..."
+msgstr "正在读取 JRE 发布信息..."
+
+msgid "Reading JRE checksums..."
+msgstr "正在读取 JRE 校验和..."
+
+msgid "Downloading file..."
+msgstr "正在下载文件..."
+
+msgid "Verifying download..."
+msgstr "正在校验下载文件..."
+
+msgid "Extracting JRE..."
+msgstr "正在解压 JRE..."
+
+msgid "Checking extracted Java..."
+msgstr "正在检验解压后的 Java..."
+
+msgid "Installing JRE..."
+msgstr "正在安装 JRE..."
+
+msgid "Copying and verifying JRE files..."
+msgstr "正在复制并校验 JRE 文件..."
+
+msgid "Checking installed Java..."
+msgstr "正在检验安装后的 Java..."
+
+msgid "Cleaning temporary files..."
+msgstr "正在清理临时文件..."
+
+msgid "JRE installation complete."
+msgstr "JRE 安装完成。"
+
+msgid "%04d-%02d-%02d %02d:%02d"
+msgstr "%04d年%02d月%02d日 %02d:%02d"
+
+msgid "Looking for Java 25+ and installed compilers..."
+msgstr "正在查找 Java 25+ 和已安装的编译器..."
+
+msgid "Java 25+ is ready."
+msgstr "Java 25+ 已就绪。"
+
+msgid "Java 25+ was not found. Choose Java or install the JRE."
+msgstr "未找到 Java 25+，请选择 Java 或安装 JRE。"
+
+msgid "Downloaded %s of %s"
+msgstr "已下载 %s，共 %s"
+
+msgid "Unknown size"
+msgstr "未知大小"
+
+msgid "The selected executable is not Java 25+."
+msgstr "所选可执行文件不是 Java 25+。"
+
+msgid "Downloading and installing Java..."
+msgstr "正在下载并安装 Java..."
+
+msgid "Loading compiler versions..."
+msgstr "正在加载编译器版本..."
+
+msgid "Select a version to install."
+msgstr "请选择要安装的版本。"
+
+msgid "Downloading and installing GDCC..."
+msgstr "正在下载并安装 GDCC..."
+
+msgid "The compiler is installed. Apply it to this project when ready."
+msgstr "编译器已安装，准备就绪后可应用到当前项目。"
+
+msgid "The server is busy. Configuration was not changed."
+msgstr "服务器正忙，未修改配置。"
+
+msgid "Could not reserve a local port for the compilation server."
+msgstr "无法为编译服务器预留本地端口。"
+
+msgid "Starting the configured compilation server..."
+msgstr "正在启动新配置的编译服务器..."
+
+msgid "The configuration was saved, but the new compilation server could not be started (error %s)."
+msgstr "配置已保存，但无法启动新的编译服务器（错误 %s）。"
+
+msgid "The previous compilation service could not be stopped (error %s); it remains tracked for editor shutdown."
+msgstr "无法停止之前的编译服务（错误 %s），编辑器退出时仍会尝试关闭它。"
+
+msgid "The selected path contains unsupported command characters."
+msgstr "所选路径包含不支持的命令字符。"
+
+msgid "The selected compiler could not run with this Java installation."
+msgstr "所选编译器无法使用此 Java 环境运行。"
+
+msgid "The project configuration could not be saved."
+msgstr "无法保存项目配置。"
+
+msgid "Could not start the download."
+msgstr "无法开始下载。"
+
+msgid "Download failed (network %s, HTTP %s)."
+msgstr "下载失败（网络状态 %s，HTTP 状态 %s）。"
+
+msgid "The server returned invalid JSON."
+msgstr "服务器返回了无效的 JSON。"
+
+msgid "Could not create the installation directory."
+msgstr "无法创建安装目录。"
+
+msgid "The downloaded file failed its SHA-256 check."
+msgstr "下载文件的 SHA-256 校验失败。"
+
+msgid "No JRE download is available for this platform. Select an existing Java 25+ installation."
+msgstr "此平台没有可用的 JRE 下载，请选择已安装的 Java 25+。"
+
+msgid "The JRE checksum is missing or invalid."
+msgstr "JRE 校验和缺失或无效。"
+
+msgid "The JRE archive could not be installed or is not Java 25+."
+msgstr "无法安装 JRE 压缩包，或其中的 Java 版本低于 25。"
+
+msgid "The server returned an unexpected version list."
+msgstr "服务器返回了无法识别的版本列表。"
+
+msgid "The server returned an unexpected JRE release."
+msgstr "服务器返回了无法识别的 JRE 发布信息。"
+
+msgid "This compiler is already installed. Select it from the installed versions."
+msgstr "此编译器已安装，请从已安装版本中选择。"
+
+msgid "The compiler archive is invalid or its runtime libraries are missing."
+msgstr "编译器压缩包无效，或缺少运行库。"
+
+msgid "Select a GDCC JAR with gdcc-version.properties and its adjacent runtime libraries."
+msgstr "请选择包含 gdcc-version.properties 的 GDCC JAR，并确保其配套运行库位于相邻目录。"
+
+msgid "Build"
+msgstr "构建"
+
+msgid "Building %s"
+msgstr "正在构建 %s"
+
+msgid "Last build failed"
+msgstr "上次构建失败"
+
+msgid "Compile GDCC scripts"
+msgstr "编译gdcc脚本"
+
+msgid "Cannot connect to the GDCC compilation server"
+msgstr "无法连接gdcc编译服务器"
+
+msgid "No compilation backend available"
+msgstr "无可用编译后端"
+
+msgid "Compile GDCC scripts [last build failed]"
+msgstr "编译gdcc脚本[上次编译出错]"
+
+msgid "GDCC build options and project settings"
+msgstr "GDCC 构建选项与项目设置"
+
+msgid "Compilation Backend"
+msgstr "编译后端"
+
+msgid "Auto"
+msgstr "自动"
+
+msgid "Builtin"
+msgstr "内置"
+
+msgid "Auto uses Builtin for Debug and Zig for Release; explicit selections override this rule."
+msgstr "自动模式在调试构建中使用内置后端，在发布构建中使用 Zig；显式选择将覆盖此规则。"
+
+msgid "Configuration"
+msgstr "配置"
+
+msgid "Debug"
+msgstr "调试"
+
+msgid "Release"
+msgstr "发布"
+
+msgid "Strict Mode"
+msgstr "严格模式"
+
+msgid "Compiler policy flag; persisted with the project's build options."
+msgstr "编译器策略选项，随项目构建选项保存。"
+
+msgid "GDCC Project Settings"
+msgstr "GDCC 项目设置"
+
+msgid "GDCC: %s"
+msgstr "GDCC：%s"
+
+msgid "Last successful build: %s"
+msgstr "上次成功构建：%s"
+
+msgid "Clear GDCC output"
+msgstr "清空 GDCC 输出"
+
+msgid "Not connected"
+msgstr "未连接"
+
+msgid "Unknown"
+msgstr "未知"
+
+msgid "Unavailable: invalid server info"
+msgstr "不可用：服务器信息无效"
+
+msgid "Unavailable: %s"
+msgstr "不可用：%s"
+
+msgid "Compilation server is not connected."
+msgstr "未连接编译服务器。"
+
+msgid "Checking compilation backends..."
+msgstr "正在检查编译后端……"
+
+msgid "No compilation backends are available."
+msgstr "无可用编译后端。"
+
+msgid "Selected compilation backend is unavailable."
+msgstr "所选编译后端不可用。"
+
+msgid "Could not query compilation backends."
+msgstr "无法查询编译后端。"
+
+msgid "Invalid compilation backend response."
+msgstr "编译后端响应无效。"
+
+msgid "Never"
+msgstr "从未"
+
+msgid "Connected"
+msgstr "已连接"
+
+msgid "Disconnected"
+msgstr "未连接"
+
+msgid "%s | Diagnostics: %s | Build: %s"
+msgstr "%s | 诊断：%s | 构建：%s"
+
+msgid "%ds ago"
+msgstr "%d秒前"
+
+msgid "%smin ago"
+msgstr "%s分钟前"
+
+msgid "%sh ago"
+msgstr "%s小时前"
+
+msgid "%sd ago"
+msgstr "%s天前"
+
+msgid "%s failed [%s]: %s"
+msgstr "%s失败 [%s]：%s"
+
+msgid "ping"
+msgstr "连通性检查"
+
+msgid "create module"
+msgstr "创建模块"
+
+msgid "analyze"
+msgstr "分析"
+
+msgid "reserve compile module"
+msgstr "预留编译模块"
+
+msgid "delete stale compile copy"
+msgstr "删除过期编译副本"
+
+msgid "copy diagnostics module"
+msgstr "复制诊断模块"
+
+msgid "get options"
+msgstr "获取选项"
+
+msgid "set options"
+msgstr "设置选项"
+
+msgid "compile start"
+msgstr "启动编译"
+
+msgid "compile poll"
+msgstr "查询编译状态"
+
+msgid "cancel"
+msgstr "取消"
+
+msgid "ping: %s"
+msgstr "连通性检查：%s"
+
+msgid "module created: %s"
+msgstr "模块已创建：%s"
+
+msgid "analyze outcome: %s"
+msgstr "分析结果：%s"
+
+msgid "  no diagnostics"
+msgstr "  无诊断信息"
+
+msgid "build skipped: this project's compile module is owned by another editor; close that editor or restart the gdcc server after an abnormal exit"
+msgstr "已跳过构建：此项目的编译模块由另一个编辑器占用；请关闭该编辑器，若其异常退出则重启 gdcc 服务器"
+
+msgid "compile failed: this gdcc server predates module.copy; upgrade the server"
+msgstr "编译失败：此 gdcc 服务器不支持 module.copy，请升级服务器"
+
+msgid "build skipped: an unowned compile module already exists; restart the gdcc server to clear it"
+msgstr "已跳过构建：已存在无所有者的编译模块，请重启 gdcc 服务器以清理"
+
+msgid "build failed: the gdcc server does not support named module copies; upgrade the server"
+msgstr "构建失败：此 gdcc 服务器不支持命名模块副本，请升级服务器"
+
+msgid "compile copy ready: %s (projectPath: %s)"
+msgstr "编译副本已就绪：%s（项目路径：%s）"
+
+msgid "build skipped: diagnostics channel is not ready yet"
+msgstr "已跳过构建：诊断通道尚未就绪"
+
+msgid "build skipped: %s"
+msgstr "已跳过构建：%s"
+
+msgid "build skipped: diagnostics module id is not available yet"
+msgstr "已跳过构建：诊断模块标识尚不可用"
+
+msgid "build skipped: set the project name in Project Settings (application/config/name)"
+msgstr "已跳过构建：请在项目设置中填写项目名称（application/config/name）"
+
+msgid "build skipped: invalid gdcc/build project settings"
+msgstr "已跳过构建：gdcc/build 项目设置无效"
+
+msgid "compile started: task %s"
+msgstr "编译已启动：任务 %s"
+
+msgid "task %s: %s"
+msgstr "任务 %s：%s"
+
+msgid "task finished: createdAt=%s completedAt=%s"
+msgstr "任务已结束：创建于=%s 完成于=%s"
+
+msgid "compile outcome: %s"
+msgstr "编译结果：%s"
+
+msgid "build poll timed out (task %s still running; press Cancel, or Build again to cancel and replace it)"
+msgstr "构建状态查询超时（任务 %s 仍在运行；请取消，或再次构建以取消并替换该任务）"
+
+msgid "build deployment failed: compile result is not successful"
+msgstr "构建部署失败：编译结果不是成功状态"
+
+msgid "build deployment failed: editor addon sources are included; close those tabs or restore sync exclusions"
+msgstr "构建部署失败：包含编辑器插件源码；请关闭这些标签页或恢复同步排除规则"
+
+msgid "build deployment failed: unsupported target %s"
+msgstr "构建部署失败：不支持的目标 %s"
+
+msgid "build deployment failed: unsupported optimization level %s"
+msgstr "构建部署失败：不支持的优化级别 %s"
+
+msgid "build deployment failed: compile result contains multiple libraries"
+msgstr "构建部署失败：编译结果包含多个库"
+
+msgid "build deployment failed: compiled library is not accessible on this editor's filesystem"
+msgstr "构建部署失败：无法从此编辑器的文件系统访问已编译的库"
+
+msgid "build deployment failed: cannot read compiled library"
+msgstr "构建部署失败：无法读取已编译的库"
+
+msgid "build deployment failed: refusing to overwrite an unmanaged or invalid %s"
+msgstr "构建部署失败：拒绝覆盖非托管或无效的 %s"
+
+msgid "build deployment failed: invalid library ownership/alias metadata in %s"
+msgstr "构建部署失败：%s 中的库所有权或别名元数据无效"
+
+msgid "build deployment failed: editor filesystem scan did not finish"
+msgstr "构建部署失败：编辑器文件系统扫描未完成"
+
+msgid "build deployment failed: cannot create bin (error %s)"
+msgstr "构建部署失败：无法创建 bin 目录（错误 %s）"
+
+msgid "build deployment failed: hash-named library has unexpected contents: %s"
+msgstr "构建部署失败：以哈希命名的库内容不符合预期：%s"
+
+msgid "build deployment failed: cannot publish library/metadata (error %s)"
+msgstr "构建部署失败：无法发布库或元数据（错误 %s）"
+
+msgid "build deployed: %s (%s)"
+msgstr "构建已部署：%s（%s）"
+
+msgid "build activation pending: filesystem scan timed out; restart the editor to load the deployed extension"
+msgstr "构建启用未完成：文件系统扫描超时；请重启编辑器以加载已部署的扩展"
+
+msgid "build installed for %s; not the current editor target"
+msgstr "已为 %s 安装构建；该目标不是当前编辑器目标"
+
+msgid "build activation failed: Godot did not load the extension; check engine errors and restart the editor"
+msgstr "构建启用失败：Godot 未加载扩展；请检查引擎错误并重启编辑器"
+
+msgid "build activation failed: extension reload status %s; restart the editor"
+msgstr "构建启用失败：扩展重载状态为 %s；请重启编辑器"
+
+msgid "build enabled: %s"
+msgstr "构建已启用：%s"
+
+msgid "build cleanup deferred: %s (error %s)"
+msgstr "构建清理已推迟：%s（错误 %s）"
+
+msgid "cancel skipped: no compile task has been started from this project manager"
+msgstr "已跳过取消：此项目管理器尚未启动编译任务"
+
+msgid "cancel requested: task %s state %s"
+msgstr "已请求取消：任务 %s，状态 %s"
+
+msgid "compile service not reachable and could not be launched (error %s); continuing with passive connection"
+msgstr "编译服务无法连接且无法启动（错误 %s）；将继续被动连接"
+
+msgid "inspecting diagnostics module: %s"
+msgstr "正在检查诊断模块：%s"
+
+msgid "diagnostics module not announced yet; waiting for automatic synchronization"
+msgstr "诊断模块尚未公布；正在等待自动同步"
+
+msgid "build settings could not be saved (error %s)"
+msgstr "无法保存构建设置（错误 %s）"
+
+msgid "GDCC: Project Settings dialog not found; open Project > Project Settings > GDCC manually."
+msgstr "GDCC：未找到项目设置窗口；请手动打开“项目 > 项目设置 > GDCC”。"
+
+msgid "GDCC: Project Settings layout changed; open the GDCC category manually."
+msgstr "GDCC：项目设置布局已更改；请手动打开 GDCC 分类。"
+
+msgid "GDCC: Project Settings filter layout changed; open the GDCC category manually."
+msgstr "GDCC：项目设置筛选布局已更改；请手动打开 GDCC 分类。"
+
+msgid "GDCC: settings categories changed; choose a GDCC subcategory manually."
+msgstr "GDCC：设置分类已更改；请手动选择 GDCC 子分类。"
+
+msgid "GDCC: root node '%s' exists with an unexpected type; script language integration is disabled."
+msgstr "GDCC：根节点“%s”已存在但类型不符；已禁用脚本语言集成。"
+
+msgid "GDCC: plugin enabled while the GDScript language server is already running; it keeps its current polling mode until the editor restarts — .gd3 diagnostics will refresh on editor beats instead of synchronously."
+msgstr "GDCC：插件启用时 GDScript 语言服务器已在运行，重启编辑器前将沿用当前轮询模式；.gd3 诊断将随编辑器节拍刷新，而非同步刷新。"
+
+msgid "GDCC: server settings migrated into this project's gdcc/compilation_server settings; save the project to persist them."
+msgstr "GDCC：服务器设置已迁移到此项目的 gdcc/compilation_server 设置；请保存项目以持久化。"
+
+msgid "GDCC: script language install failed (error %d); editor settings restored."
+msgstr "GDCC：脚本语言安装失败（错误 %d）；已恢复编辑器设置。"
+
+msgid "GDCC: invalid gdcc/compilation_server project settings (host='%s', port=%d); expected a non-empty host and a port in 1..65535."
+msgstr "GDCC：gdcc/compilation_server 项目设置无效（主机='%s'，端口=%d）；主机不能为空，端口必须在 1..65535 范围内。"
+
+msgid "GDCC: editor run toolbar not found; the Build control remains at the end of the title bar."
+msgstr "GDCC：未找到编辑器运行工具栏；构建控件将保留在标题栏末尾。"
+
+msgid "GDCC: script icon SVG could not be loaded (error %d)."
+msgstr "GDCC：无法加载脚本 SVG 图标（错误 %d）。"
+
+msgid "GDCC server launcher: spawned service (pid %d) unreachable and its port is closed; leaving it alone."
+msgstr "GDCC 服务器启动器：已启动的服务（pid %d）无法连接且端口已关闭；将不干预该进程。"
+
+msgid "GDCC server launcher: spawned compile service (pid %d) exited before accepting connections; check the launch command."
+msgstr "GDCC 服务器启动器：已启动的编译服务（pid %d）在接受连接前退出；请检查启动命令。"
+
+msgid "GDCC server launcher: spawned compile service did not accept connections within %d ms; killed."
+msgstr "GDCC 服务器启动器：已启动的编译服务未在 %d 毫秒内接受连接，已终止。"
+
+msgid "GDCC server launcher: OS.create_process failed for the configured launch command (executable: %s)."
+msgstr "GDCC 服务器启动器：OS.create_process 无法执行配置的启动命令（可执行文件：%s）。"
+
+msgid "GDCC server launcher: started compile service (pid %d) for %s:%d."
+msgstr "GDCC 服务器启动器：已启动编译服务（pid %d），目标为 %s:%d。"
+
+msgid "GDCC: deleting the stale diagnostics module failed (code %d); will retry."
+msgstr "GDCC：删除过期诊断模块失败（错误码 %d）；稍后重试。"
+
+msgid "GDCC: analysis keeps failing (outcome=%s); pausing until the next change."
+msgstr "GDCC：分析持续失败（结果=%s）；已暂停，等待下一次修改。"

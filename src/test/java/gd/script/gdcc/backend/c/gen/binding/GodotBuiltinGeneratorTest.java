@@ -374,7 +374,7 @@ class GodotBuiltinGeneratorTest {
                 () -> assertFalse(variantNilBody.contains("godot_Variant self = { 0 };"), variantNilBody),
                 () -> assertTrue(vector3ConstructorBody.contains("godot_Vector3 self;")),
                 () -> assertTrue(vector3ConstructorBody.contains(
-                        "gdcc_builtin_ctor_Vector3_3((GDExtensionUninitializedTypePtr)&self, args);"
+                        "GDCC_BINDING_CACHE(gdcc_builtin_ctor_Vector3_3)((GDExtensionUninitializedTypePtr)&self, args);"
                 )),
                 () -> assertFalse(vector3ConstructorBody.contains("godot_Vector3 self = { 0 };"),
                         vector3ConstructorBody),

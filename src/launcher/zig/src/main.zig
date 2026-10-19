@@ -3,12 +3,15 @@ const jar_search = @import("jar_search.zig");
 const tool_search = @import("tool_search.zig");
 const translate = @import("translate.zig");
 
-pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
-    const args = try init.minimal.args.toSlice(arena);
-    const exe_dir = try std.process.executableDirPathAlloc(init.io, arena);
-    const text = translate.fromEnvironment(arena, init.environ_map);
-    const jar_path = switch (jar_search.find(init.io, arena, exe_dir) catch |err| {
+pub fn main() !void {
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const args = try std.process.argsAlloc(arena);
+    const exe_dir = try std.fs.selfExeDirPathAlloc(arena);
+    var env = try std.process.getEnvMap(arena);
+    const text = translate.fromEnvironment(arena, &env);
+    const jar_path = switch (jar_search.find(arena, exe_dir) catch |err| {
         translate.printStderr(
             arena,
             "{s}: {s} {s}: {s}\n",
@@ -55,7 +58,7 @@ pub fn main(init: std.process.Init) !void {
         "-Dgdparser.gdscript.resourceDir={s}/native",
         .{exe_dir},
     );
-    const java_path = tool_search.findJava25(init.io, arena, init.environ_map, exe_dir) catch |err| {
+    const java_path = tool_search.findJava25(arena, &env, exe_dir) catch |err| {
         translate.printStderr(
             arena,
             "{s}: {s}: {s}\n",
@@ -71,11 +74,10 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
 
-    var child_env = try init.environ_map.clone(arena);
     // Zig is optional at launch time: debug builds default to the in-process tinycc backend,
     // which never invokes zig. When discovery errors or finds nothing, ZIG_HOME simply stays
     // unset — the zig backend reports the gap only when a build actually selects it.
-    const zig_home: ?[]const u8 = tool_search.findZigHome(init.io, arena, init.environ_map, exe_dir) catch |err| blk: {
+    const zig_home: ?[]const u8 = tool_search.findZigHome(arena, &env, exe_dir) catch |err| blk: {
         translate.printStderr(
             arena,
             "{s}: {s}: {s}\n",
@@ -84,7 +86,7 @@ pub fn main(init: std.process.Init) !void {
         break :blk null;
     };
     if (zig_home) |home| {
-        try child_env.put("ZIG_HOME", home);
+        try env.put("ZIG_HOME", home);
     }
 
     var child_args: std.ArrayList([]const u8) = .empty;
@@ -97,19 +99,18 @@ pub fn main(init: std.process.Init) !void {
         try child_args.append(arena, arg);
     }
 
-    var child = try std.process.spawn(init.io, .{
-        .argv = child_args.items,
-        .environ_map = &child_env,
-    });
-    const term = try child.wait(init.io);
+    var child = std.process.Child.init(child_args.items, arena);
+    child.env_map = &env;
+    try child.spawn();
+    const term = try child.wait();
     exitWithChildTerm(term);
 }
 
 fn exitWithChildTerm(term: std.process.Child.Term) noreturn {
     switch (term) {
-        .exited => |code| std.process.exit(code),
-        .signal => std.process.exit(128),
-        .stopped => std.process.exit(128),
-        .unknown => std.process.exit(1),
+        .Exited => |code| std.process.exit(code),
+        .Signal => std.process.exit(128),
+        .Stopped => std.process.exit(128),
+        .Unknown => std.process.exit(1),
     }
 }

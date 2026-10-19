@@ -199,6 +199,43 @@ public final class API implements AutoCloseable {
         }
     }
 
+    /// Copies a module into a new, independent module. The source gate is held for the whole
+    /// snapshot so the copy can never observe a mid-mutation tree; `putIfAbsent` is the atomic
+    /// guard against a racing creator of the new id. A missing source fails with
+    /// `ApiModuleNotFoundException`, an occupied target id with `ApiModuleAlreadyExistsException`.
+    public @NotNull ModuleSnapshot copyModule(@NotNull String sourceModuleId, @NotNull String newModuleId) {
+        return copyModule(sourceModuleId, newModuleId, null);
+    }
+
+    /// Overrides the copy's display name without changing its isolated module id. A null name
+    /// preserves the source name, as in the two-argument API used by existing clients.
+    public @NotNull ModuleSnapshot copyModule(
+            @NotNull String sourceModuleId, @NotNull String newModuleId, @Nullable String newModuleName
+    ) {
+        checkOpen();
+        var normalizedSourceId = StringUtil.requireTrimmedNonBlank(sourceModuleId, "sourceModuleId");
+        var normalizedNewId = StringUtil.requireTrimmedNonBlank(newModuleId, "newModuleId");
+        var normalizedNewName = newModuleName == null
+                ? null : StringUtil.requireTrimmedNonBlank(newModuleName, "newModuleName");
+        var source = requireManagedModule(normalizedSourceId);
+        // Fast-fail before waiting on the source gate: recompile flows hit the already-exists
+        // path routinely (delete the stale copy, then re-copy), so they should not queue behind
+        // a busy source first. `putIfAbsent` below remains the atomic guard.
+        if (modules.containsKey(normalizedNewId)) {
+            throw new ApiModuleAlreadyExistsException("Module '" + normalizedNewId + "' already exists");
+        }
+        var copiedGeneration = nextModuleGeneration.getAndIncrement();
+        var copiedState = source.runExclusive(
+                normalizedSourceId,
+                sourceState -> sourceState.copyFor(normalizedNewId, normalizedNewName, copiedGeneration)
+        );
+        var existing = modules.putIfAbsent(normalizedNewId, new ManagedModule(copiedState));
+        if (existing != null) {
+            throw new ApiModuleAlreadyExistsException("Module '" + normalizedNewId + "' already exists");
+        }
+        return copiedState.snapshot();
+    }
+
     public @NotNull VfsEntrySnapshot.DirectoryEntrySnapshot createDirectory(
             @NotNull String moduleId,
             @NotNull String path
@@ -234,6 +271,24 @@ public final class API implements AutoCloseable {
         var normalizedModuleId = normalizeModuleId(moduleId);
         return requireManagedModule(normalizedModuleId).runExclusive(normalizedModuleId, state ->
                 state.putFile(VirtualPath.parse(path), content, displayPath)
+        );
+    }
+
+    /// Full-shape upload: `absolutePath` is the optional host-absolute source path consumed by
+    /// compile-time class metadata (`source_path`); it never affects VFS placement.
+    /// `displayPath` may be null when only the absolute path is known — the VFS then keeps its
+    /// usual fallback (existing label or virtual path).
+    public @NotNull VfsEntrySnapshot.FileEntrySnapshot putFile(
+            @NotNull String moduleId,
+            @NotNull String path,
+            @NotNull String content,
+            @Nullable String displayPath,
+            @Nullable String absolutePath
+    ) {
+        checkOpen();
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(normalizedModuleId, state ->
+                state.putFile(VirtualPath.parse(path), content, displayPath, absolutePath)
         );
     }
 
@@ -663,7 +718,8 @@ public final class API implements AutoCloseable {
                         .map(sourceSnapshot -> new CompileTaskRunner.SourceSnapshot(
                                 sourceSnapshot.displayPath(),
                                 sourceSnapshot.logicalPath(),
-                                sourceSnapshot.source()
+                                sourceSnapshot.source(),
+                                sourceSnapshot.absolutePath()
                         ))
                         .toList(),
                 request.failure() == null

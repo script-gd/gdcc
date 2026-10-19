@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Pure-Java gate for the two-phase zig command construction: no process is ever started. It
 /// pins the compile/link flag split, the per-optimization-level LTO tiers (DEBUG none, RELEASE
 /// `-flto=thin`, known-unsupported targets falling back to full `-flto`), the hard rule that
-/// ABI-substituted builds omit every `-flto*` token, the object path shape
+/// ABI-substituted builds and macOS targets omit every `-flto*` token, the object path shape
 /// `<projectDir>/obj/<opt>/<zigTarget>/<index>_<file>.o`, the buildLog merge forms
 /// (success concatenation vs. per-started-process `Command:` sections), and the PCH contracts:
 /// the name-based TU whitelist (`minicoro.c` never gets `-include-pch`), the exact prefix
@@ -67,7 +67,6 @@ class ZigCcCompilerCommandTest {
 
     @Test
     void compileAndLinkCommandsShareTheSameResolvedTarget() {
-        // The substituted msvc→gnu triple must reach both command kinds.
         var resolution = ZigCcCompiler.resolveZigTarget(TargetPlatform.WINDOWS_X86_64, false);
         var ltoMode = ZigCcCompiler.resolveLtoMode(resolution.zigTarget(), resolution.abiSubstituted(), COptimizationLevel.RELEASE);
         var tuCmd = ZigCcCompiler.buildTuCompileCommand(ZIG, resolution.zigTarget(), ltoMode, COptimizationLevel.RELEASE, INCLUDE_DIRS, objPath(COptimizationLevel.RELEASE, resolution.zigTarget(), 0, "entry.c"), Path.of("entry.c"));
@@ -100,21 +99,60 @@ class ZigCcCompilerCommandTest {
     }
 
     @Test
+    void macosBuildsNeverUseLtoAndNeverEnterThinLtoFallback() {
+        for (var target : List.of(TargetPlatform.MACOS_X86_64, TargetPlatform.MACOS_AARCH64)) {
+            for (var opt : COptimizationLevel.values()) {
+                var zigTarget = target.zigTarget;
+                var ltoMode = ZigCcCompiler.resolveLtoMode(zigTarget, false, opt);
+                assertEquals(CLtoMode.NONE, ltoMode, zigTarget + " " + opt);
+                assertEquals(CLtoMode.NONE, ZigCcCompiler.resolveLtoMode(zigTarget, false, opt, Set.of(zigTarget)),
+                        "macOS must not fall back to full LTO");
+                var object = objPath(opt, zigTarget, 0, "entry.c");
+                var tuCmd = ZigCcCompiler.buildTuCompileCommand(ZIG, zigTarget, ltoMode, opt, INCLUDE_DIRS, object, Path.of("entry.c"));
+                var linkCmd = ZigCcCompiler.buildLinkCommand(ZIG, zigTarget, ltoMode, opt, PROJECT_DIR.resolve("libdemo.dylib"), List.of(object));
+                assertNoLtoToken(tuCmd);
+                assertNoLtoToken(linkCmd);
+                assertTrue(tuCmd.contains(opt == COptimizationLevel.RELEASE ? "-O2" : "-O0"));
+                assertFalse(linkCmd.stream().anyMatch(arg -> arg.startsWith("-O")),
+                        "without LTO the link step performs no code generation: " + linkCmd);
+            }
+        }
+    }
+
+    @Test
     void abiSubstitutedBuildsNeverUseLtoAndNeverEnterThinLtoFallback() {
-        var resolution = ZigCcCompiler.resolveZigTarget(TargetPlatform.WINDOWS_X86_64, false);
-        assertTrue(resolution.abiSubstituted());
-        // Even when the substituted target were listed as ThinLTO-unsupported, the ABI
-        // substitution short-circuits the LTO decision before any fallback check.
-        var ltoMode = ZigCcCompiler.resolveLtoMode(resolution.zigTarget(), true, COptimizationLevel.RELEASE, Set.of(resolution.zigTarget()));
+        var zigTarget = TargetPlatform.WINDOWS_X86_64.zigTarget;
+        var ltoMode = ZigCcCompiler.resolveLtoMode(zigTarget, true, COptimizationLevel.RELEASE, Set.of(zigTarget));
         assertEquals(CLtoMode.NONE, ltoMode);
-        var tuCmd = ZigCcCompiler.buildTuCompileCommand(ZIG, resolution.zigTarget(), ltoMode, COptimizationLevel.RELEASE, INCLUDE_DIRS, objPath(COptimizationLevel.RELEASE, resolution.zigTarget(), 0, "entry.c"), Path.of("entry.c"));
-        var linkCmd = ZigCcCompiler.buildLinkCommand(ZIG, resolution.zigTarget(), ltoMode, COptimizationLevel.RELEASE, PROJECT_DIR.resolve("demo.dll"), List.of(objPath(COptimizationLevel.RELEASE, resolution.zigTarget(), 0, "entry.c")));
+        var tuCmd = ZigCcCompiler.buildTuCompileCommand(ZIG, zigTarget, ltoMode, COptimizationLevel.RELEASE, INCLUDE_DIRS, objPath(COptimizationLevel.RELEASE, zigTarget, 0, "entry.c"), Path.of("entry.c"));
+        var linkCmd = ZigCcCompiler.buildLinkCommand(ZIG, zigTarget, ltoMode, COptimizationLevel.RELEASE, PROJECT_DIR.resolve("demo.dll"), List.of(objPath(COptimizationLevel.RELEASE, zigTarget, 0, "entry.c")));
         assertNoLtoToken(tuCmd);
         assertNoLtoToken(linkCmd);
         assertTrue(tuCmd.contains("-O2"), "the TU still compiles optimized: " + tuCmd);
-        // Without LTO the objects are already final machine code, so the link gets no -O flag.
         assertFalse(linkCmd.stream().anyMatch(arg -> arg.startsWith("-O")), "substituted link must not carry -O flags: " + linkCmd);
-        // zig's LTO link for windows-gnu cannot pull in libmingwex/compiler-rt symbols.
+    }
+
+    @Test
+    void windowsGnuBuildsUseTheCommonLtoPolicyOnEveryHost() {
+        for (var target : List.of(TargetPlatform.WINDOWS_X86_64, TargetPlatform.WINDOWS_AARCH64)) {
+            for (var windowsHost : List.of(false, true)) {
+                var resolution = ZigCcCompiler.resolveZigTarget(target, windowsHost);
+                assertFalse(resolution.abiSubstituted());
+                var releaseLto = ZigCcCompiler.resolveLtoMode(resolution.zigTarget(), resolution.abiSubstituted(), COptimizationLevel.RELEASE);
+                assertEquals(CLtoMode.THIN, releaseLto);
+                var objPath = objPath(COptimizationLevel.RELEASE, resolution.zigTarget(), 0, "entry.c");
+                var compile = ZigCcCompiler.buildTuCompileCommand(ZIG, resolution.zigTarget(), releaseLto,
+                        COptimizationLevel.RELEASE, INCLUDE_DIRS, objPath, Path.of("entry.c"));
+                var link = ZigCcCompiler.buildLinkCommand(ZIG, resolution.zigTarget(), releaseLto,
+                        COptimizationLevel.RELEASE, PROJECT_DIR.resolve("demo.dll"), List.of(objPath));
+                for (var cmd : List.of(compile, link)) {
+                    assertEquals(target.zigTarget, targetOf(cmd));
+                    assertTrue(cmd.contains("-flto=thin"));
+                    assertTrue(cmd.contains("-O2"));
+                }
+                assertEquals(CLtoMode.NONE, ZigCcCompiler.resolveLtoMode(resolution.zigTarget(), resolution.abiSubstituted(), COptimizationLevel.DEBUG));
+            }
+        }
     }
 
     @Test
@@ -208,6 +246,7 @@ class ZigCcCompilerCommandTest {
         assertTrue(ZigCcCompiler.isGodotBindingPchTu(Path.of("entry.c")));
         assertTrue(ZigCcCompiler.isGodotBindingPchTu(Path.of("godot_binding.c")));
         assertTrue(ZigCcCompiler.isGodotBindingPchTu(Path.of("gdcc_coroutine.c")));
+        assertTrue(ZigCcCompiler.isGodotBindingPchTu(Path.of("gdcc_hrx.c")));
         // The isolated assembly-backend TU must never force-include the Godot ABI headers.
         assertFalse(ZigCcCompiler.isGodotBindingPchTu(Path.of("minicoro.c")));
         assertFalse(ZigCcCompiler.isGodotBindingPchTu(Path.of("anything_else.c")));
@@ -259,6 +298,40 @@ class ZigCcCompilerCommandTest {
             var tuCmd = ZigCcCompiler.buildTuCompileCommand(ZIG, TARGET, lto, opt, INCLUDE_DIRS, objPath(opt, TARGET, 0, "entry.c"), Path.of("src/entry.c"), pchOut);
             assertEquals(expectedFlags, tuCmd.subList(4, 4 + expectedFlags.size()), "TU flags anchor: " + tuCmd);
         }
+    }
+
+    @Test
+    void stripNativeSymbolsSuppressDwarfAndStripTheLinkedArtifact() {
+        var objPath = objPath(COptimizationLevel.RELEASE, TARGET, 0, "entry.c");
+        var outputPath = PROJECT_DIR.resolve("libdemo.so");
+        var objPaths = List.of(objPath);
+        for (var opt : COptimizationLevel.values()) {
+            var lto = ZigCcCompiler.resolveLtoMode(TARGET, false, opt);
+            var strippedTu = ZigCcCompiler.buildTuCompileCommand(ZIG, TARGET, lto, opt, true, INCLUDE_DIRS, objPath, Path.of("entry.c"), null);
+            var strippedLink = ZigCcCompiler.buildLinkCommand(ZIG, TARGET, lto, opt, true, outputPath, objPaths);
+            assertTrue(strippedTu.contains("-g0"), "stripped TU compile must suppress DWARF: " + strippedTu);
+            assertTrue(strippedLink.contains("-s"), "stripped link must drop the symbol table: " + strippedLink);
+            assertEquals("-s", strippedLink.get(strippedLink.indexOf("-shared") + 1), "-s follows -shared: " + strippedLink);
+
+            var keptTu = ZigCcCompiler.buildTuCompileCommand(ZIG, TARGET, lto, opt, false, INCLUDE_DIRS, objPath, Path.of("entry.c"), null);
+            var keptLink = ZigCcCompiler.buildLinkCommand(ZIG, TARGET, lto, opt, outputPath, objPaths);
+            assertFalse(keptTu.contains("-g0"), "default TU compile keeps zig's default debug info: " + keptTu);
+            assertFalse(keptLink.contains("-s"), "default link keeps the symbol table: " + keptLink);
+            // The default-shape commands are exactly what the pre-strip signatures produce.
+            assertEquals(keptTu, ZigCcCompiler.buildTuCompileCommand(ZIG, TARGET, lto, opt, INCLUDE_DIRS, objPath, Path.of("entry.c")));
+            assertEquals(keptLink, ZigCcCompiler.buildLinkCommand(ZIG, TARGET, lto, opt, outputPath, objPaths));
+            assertEquals(ZigCcCompiler.languageFlags(lto, opt), ZigCcCompiler.languageFlags(lto, opt, false));
+        }
+    }
+
+    @Test
+    void pchBuildCommandCarriesTheStripFlagThroughTheSharedLanguageFlags() {
+        var prefix = Path.of("cache/pch/key/gdcc_godot_prefix.h");
+        var pchOut = Path.of("cache/pch/key/gdcc_godot_prefix.pch");
+        var stripped = ZigCcCompiler.buildPchBuildCommand(ZIG, TARGET, CLtoMode.NONE, COptimizationLevel.DEBUG, true, INCLUDE_DIRS, prefix, pchOut);
+        assertTrue(stripped.contains("-g0"), stripped::toString);
+        var kept = ZigCcCompiler.buildPchBuildCommand(ZIG, TARGET, CLtoMode.NONE, COptimizationLevel.DEBUG, INCLUDE_DIRS, prefix, pchOut);
+        assertFalse(kept.contains("-g0"), kept::toString);
     }
 
     private static @NotNull Path objPath(COptimizationLevel opt, String zigTarget, int index, String cFileName) {

@@ -1,0 +1,390 @@
+@tool
+class_name GdccInstallUtil
+extends RefCounted
+
+static var MAX_UNPACKED: int = 512 * 1024 * 1024
+static var MAX_ENTRIES: int = 20000
+
+
+static func platform_token(system: String, architecture: String) -> String:
+    var systems := {"Windows": "windows", "Linux": "linux", "macOS": "macos"}
+    var architectures := {"x86_64": "x64", "arm64": "aarch64"}
+    if not systems.has(system) or not architectures.has(architecture):
+        return ""
+    return systems[system] + "-" + architectures[architecture]
+
+
+static func java_major(output: String) -> int:
+    var pattern := RegEx.create_from_string(r'(?m)^(?:openjdk|java)(?: version)?\s+"?(\d+)(?:\.(\d+))?(?:[.\s"+-]|$)')
+    var found := pattern.search(output.strip_edges())
+    if found == null:
+        return 0
+    return int(found.get_string(2)) if found.get_string(1) == "1" else int(found.get_string(1))
+
+
+static func local_date_time(iso: String, format: String) -> String:
+    if iso.is_empty():
+        return ""
+    var utc := Time.get_unix_time_from_datetime_string(iso)
+    var local := Time.get_datetime_dict_from_unix_time(utc + int(Time.get_time_zone_from_system()["bias"]) * 60)
+    return format % [local["year"], local["month"], local["day"], local["hour"], local["minute"]]
+
+
+static func jar_info(path: String) -> Dictionary:
+    if check_zip_size(path) != OK:
+        return {}
+    var zip := ZIPReader.new()
+    if zip.open(path) != OK:
+        return {}
+    if not zip.file_exists("gdcc-version.properties") or not zip.file_exists("META-INF/MANIFEST.MF"):
+        zip.close()
+        return {}
+    var properties := zip.read_file("gdcc-version.properties").get_string_from_utf8()
+    var manifest := zip.read_file("META-INF/MANIFEST.MF").get_string_from_utf8().replace("\r\n", "\n").replace("\n ", "")
+    zip.close()
+    var info := {"path": path, "version": "", "branch": "", "commit": "", "dependencies": []}
+    for line in properties.split("\n"):
+        var parts := line.strip_edges().split("=", true, 1)
+        if parts.size() == 2 and parts[0] in ["version", "branch", "commit"]:
+            info[parts[0]] = parts[1].strip_edges()
+    for line in manifest.split("\n"):
+        if line.begins_with("Class-Path: "):
+            for dependency in line.trim_prefix("Class-Path: ").split(" ", false):
+                if not check_relative_path(dependency):
+                    return {}
+                info["dependencies"].append(dependency)
+    return {} if info["version"].is_empty() else info
+
+
+static func check_dependencies(info: Dictionary) -> bool:
+    if info.is_empty():
+        return false
+    if info.get("local", false):
+        return has_gdparser_library(info["path"])
+    for dependency in info["dependencies"]:
+        if not FileAccess.file_exists(str(info["path"]).get_base_dir().path_join(dependency)):
+            return false
+    return true
+
+
+static func compiler_in_directory(directory: String, local: bool = false) -> Dictionary:
+    var info: Dictionary = {}
+    if not DirAccess.dir_exists_absolute(directory):
+        return info
+    for name in DirAccess.get_files_at(directory):
+        if name.ends_with(".jar"):
+            var candidate := jar_info(directory.path_join(name))
+            if not candidate.is_empty():
+                if not info.is_empty():
+                    return {}
+                info = candidate
+    if not info.is_empty():
+        info["local"] = local
+    return info if check_dependencies(info) else {}
+
+
+static func has_gdparser_library(jar: String) -> bool:
+    var libraries := jar.get_base_dir().path_join("lib")
+    if not DirAccess.dir_exists_absolute(libraries):
+        return false
+    for name in DirAccess.get_files_at(libraries):
+        if name.match("gdparser-*.jar"):
+            return true
+    return false
+
+
+static func check_relative_path(path: String) -> bool:
+    if path.is_empty() or path.is_absolute_path() or path.contains("\\") or path.contains(":"):
+        return false
+    for part in path.split("/", false):
+        if part in [".", ".."]:
+            return false
+    for character in path:
+        if character.unicode_at(0) < 32:
+            return false
+    return true
+
+
+static func remove_tree(path: String) -> void:
+    var directory := DirAccess.open(path)
+    if directory == null:
+        return
+    directory.include_hidden = true
+    directory.include_navigational = false
+    for name in directory.get_files():
+        directory.remove(name)
+    for name in directory.get_directories():
+        var child := path.path_join(name)
+        if directory.is_link(name):
+            directory.remove(name)
+        else:
+            remove_tree(child)
+    DirAccess.remove_absolute(path)
+
+
+static func copy_tree_verified(source: String, destination: String) -> int:
+    var pending: Array = [[source, destination]]
+    var total := 0
+    var count := 0
+    while not pending.is_empty():
+        var pair: Array = pending.pop_back()
+        var directory := DirAccess.open(pair[0])
+        if directory == null:
+            return ERR_CANT_OPEN
+        directory.include_hidden = true
+        directory.include_navigational = false
+        var error := DirAccess.make_dir_recursive_absolute(pair[1])
+        if error != OK:
+            return error
+        for name in directory.get_files():
+            count += 1
+            if count > MAX_ENTRIES or directory.is_link(name):
+                return ERR_INVALID_DATA
+            var input: String = str(pair[0]).path_join(name)
+            var output: String = str(pair[1]).path_join(name)
+            var file := FileAccess.open(input, FileAccess.READ)
+            if file == null:
+                return ERR_CANT_OPEN
+            total += file.get_length()
+            file.close()
+            if total > MAX_UNPACKED:
+                return ERR_OUT_OF_MEMORY
+            var permissions := -1 if OS.get_name() == "Windows" else FileAccess.get_unix_permissions(input)
+            error = DirAccess.copy_absolute(input, output, permissions)
+            if error != OK:
+                return error
+            var digest := FileAccess.get_sha256(input)
+            if digest.is_empty() or digest != FileAccess.get_sha256(output):
+                return ERR_FILE_CORRUPT
+        for name in directory.get_directories():
+            count += 1
+            if count > MAX_ENTRIES or directory.is_link(name):
+                return ERR_INVALID_DATA
+            pending.append([str(pair[0]).path_join(name), str(pair[1]).path_join(name)])
+    return OK
+
+
+static func extract_zip(archive: String, destination: String) -> int:
+    var preflight := check_zip_size(archive)
+    if preflight != OK:
+        return preflight
+    var zip := ZIPReader.new()
+    var error := zip.open(archive)
+    if error != OK:
+        return error
+    var files := zip.get_files()
+    if files.size() > MAX_ENTRIES:
+        zip.close()
+        return ERR_OUT_OF_MEMORY
+    var total := 0
+    for name in files:
+        if not check_relative_path(name):
+            zip.close()
+            return ERR_INVALID_DATA
+        var target := destination.path_join(name)
+        error = DirAccess.make_dir_recursive_absolute(target if name.ends_with("/") else target.get_base_dir())
+        if error != OK:
+            break
+        if name.ends_with("/"):
+            continue
+        # ZIPReader has no streaming entry API; bound the archive and accumulated output.
+        var bytes := zip.read_file(name)
+        total += bytes.size()
+        if total > MAX_UNPACKED:
+            error = ERR_OUT_OF_MEMORY
+            break
+        var file := FileAccess.open(target, FileAccess.WRITE)
+        if file == null:
+            error = FileAccess.get_open_error()
+            break
+        file.store_buffer(bytes)
+        error = file.get_error()
+        file.close()
+        if error != OK:
+            break
+    zip.close()
+    return error
+
+
+static func check_zip_size(archive: String) -> int:
+    var file := FileAccess.open(archive, FileAccess.READ)
+    if file == null:
+        return ERR_CANT_OPEN
+    var length := file.get_length()
+    if length < 22 or length > 128 * 1024 * 1024:
+        return ERR_INVALID_DATA
+    file.seek(maxi(0, length - 65557))
+    var tail := file.get_buffer(mini(length, 65557))
+    var end := -1
+    for index in range(tail.size() - 22, -1, -1):
+        if tail.decode_u32(index) == 0x06054b50 and index + 22 + tail.decode_u16(index + 20) == tail.size():
+            end = index
+            break
+    if end < 0 or tail.decode_u32(end + 4) != 0:
+        return ERR_INVALID_DATA
+    var count := tail.decode_u16(end + 10)
+    var central := tail.decode_u32(end + 16)
+    var central_end := central + tail.decode_u32(end + 12)
+    if count > MAX_ENTRIES or count != tail.decode_u16(end + 8) or central_end > length - 22:
+        return ERR_INVALID_DATA
+    file.seek(central)
+    var total := 0
+    # ZIPReader allocates an entire entry before returning it, so check sizes first.
+    for _index in range(count):
+        var header := file.get_buffer(46)
+        if header.size() != 46 or header.decode_u32(0) != 0x02014b50 or (header.decode_u16(8) & 1) != 0:
+            return ERR_INVALID_DATA
+        total += header.decode_u32(24)
+        if total > MAX_UNPACKED:
+            return ERR_OUT_OF_MEMORY
+        var next := file.get_position() + header.decode_u16(28) + header.decode_u16(30) + header.decode_u16(32)
+        if next > central_end:
+            return ERR_INVALID_DATA
+        file.seek(next)
+    return OK if file.get_position() == central_end else ERR_INVALID_DATA
+
+
+static func _tar_text(bytes: PackedByteArray, offset: int, length: int) -> String:
+    var end := offset
+    var limit := mini(offset + length, bytes.size())
+    while end < limit and bytes[end] != 0:
+        end += 1
+    return bytes.slice(offset, end).get_string_from_utf8().strip_edges()
+
+
+static func _octal(text: String) -> int:
+    var result := 0
+    for digit in text:
+        if digit < "0" or digit > "7":
+            return -1
+        result = result * 8 + int(digit)
+    return result
+
+
+static func extract_tar_gzip(archive: String, destination: String) -> int:
+    var compressed := FileAccess.get_file_as_bytes(archive)
+    if compressed.size() < 18:
+        return ERR_INVALID_DATA
+    var size := compressed.decode_u32(compressed.size() - 4)
+    if size <= 0 or size > MAX_UNPACKED:
+        return ERR_OUT_OF_MEMORY
+    var bytes := compressed.decompress(size, FileAccess.COMPRESSION_GZIP)
+    if bytes.size() != size:
+        return ERR_INVALID_DATA
+    var offset := 0
+    var count := 0
+    var links: Array = []
+    while offset + 512 <= bytes.size():
+        var name := _tar_text(bytes, offset, 100)
+        if name.is_empty():
+            break
+        count += 1
+        var length := _octal(_tar_text(bytes, offset + 124, 12))
+        var checksum := 0
+        for index in range(512):
+            checksum += 32 if index >= 148 and index < 156 else bytes[offset + index]
+        if count > MAX_ENTRIES or checksum != _octal(_tar_text(bytes, offset + 148, 8)) \
+                or length < 0 or offset + 512 + length > bytes.size():
+            return ERR_INVALID_DATA
+        var kind := bytes[offset + 156]
+        var start := offset + 512
+        offset = start + int((length + 511) / 512) * 512
+        if kind == 120:
+            # The JRE publisher emits PAX mtime headers; reject path/size overrides.
+            var extended := bytes.slice(start, start + length).get_string_from_utf8()
+            for line in extended.split("\n", false):
+                if not line.contains(" mtime=") and not line.contains(" atime=") and not line.contains(" ctime="):
+                    return ERR_UNAVAILABLE
+            continue
+        var prefix := _tar_text(bytes, start - 512 + 345, 155)
+        if not prefix.is_empty():
+            name = prefix.path_join(name)
+        if not check_relative_path(name):
+            return ERR_INVALID_DATA
+        var target := destination.path_join(name)
+        if DirAccess.make_dir_recursive_absolute(target if kind == 53 else target.get_base_dir()) != OK:
+            return ERR_CANT_CREATE
+        if kind in [0, 48]:
+            var file := FileAccess.open(target, FileAccess.WRITE)
+            if file == null:
+                return ERR_CANT_CREATE
+            file.store_buffer(bytes.slice(start, start + length))
+            var error := file.get_error()
+            file.close()
+            if error != OK:
+                return error
+            if OS.get_name() != "Windows":
+                error = FileAccess.set_unix_permissions(target, _octal(_tar_text(bytes, start - 512 + 100, 8)) & 511)
+                if error != OK:
+                    return error
+        elif kind == 50:
+            var link := _tar_text(bytes, start - 512 + 157, 100)
+            var resolved := name.get_base_dir().path_join(link).simplify_path()
+            if not check_relative_path(resolved) or link.is_absolute_path():
+                return ERR_INVALID_DATA
+            links.append([target, destination.path_join(resolved)])
+        elif kind != 53:
+            return ERR_UNAVAILABLE
+    # Materialize notice aliases after regular files, never traverse archive-created symlinks.
+    for alias in links:
+        if not FileAccess.file_exists(alias[1]) or DirAccess.copy_absolute(alias[1], alias[0]) != OK:
+            return ERR_CANT_CREATE
+    return OK
+
+
+static func copy_jar(source: String, destination: String) -> Dictionary:
+    var info := jar_info(source)
+    if info.is_empty() or not has_gdparser_library(source):
+        return {}
+    var target := destination.path_join(source.get_file())
+    if DirAccess.make_dir_recursive_absolute(destination) != OK or DirAccess.copy_absolute(source, target) != OK:
+        return {}
+    var libraries := source.get_base_dir().path_join("lib")
+    var output_libraries := destination.path_join("lib")
+    if DirAccess.make_dir_recursive_absolute(output_libraries) != OK:
+        return {}
+    var total := 0
+    for name in DirAccess.get_files_at(libraries):
+        var input := libraries.path_join(name)
+        var file := FileAccess.open(input, FileAccess.READ)
+        if file == null:
+            return {}
+        total += file.get_length()
+        file.close()
+        if total > MAX_UNPACKED or DirAccess.copy_absolute(input, output_libraries.path_join(name)) != OK:
+            return {}
+    var copied := jar_info(target)
+    if copied.is_empty():
+        return {}
+    copied["local"] = true
+    if not check_dependencies(copied):
+        return {}
+    copied["sha256"] = FileAccess.get_sha256(target)
+    return copied if str(copied["sha256"]).length() == 64 else {}
+
+
+static func parse_windows_proxy(text: String) -> Dictionary:
+    var enabled := RegEx.create_from_string(r"(?m)^\h*ProxyEnable\h+REG_DWORD\h+(\S+)").search(text)
+    if enabled == null or enabled.get_string(1).hex_to_int() != 1:
+        return {}
+    var server := RegEx.create_from_string(r"(?m)^\h*ProxyServer\h+REG_SZ\h+([^\r\n]+)").search(text)
+    if server == null:
+        return {}
+    var raw := server.get_string(1).strip_edges()
+    var addresses := {"http": raw, "https": raw}
+    if raw.contains("="):
+        addresses.clear()
+        for entry in raw.split(";", false):
+            var parts := entry.split("=", true, 1)
+            if parts.size() == 2:
+                addresses[parts[0].strip_edges().to_lower()] = parts[1].strip_edges()
+    var proxies := {}
+    var pattern := RegEx.create_from_string(r"(?i)^(?:http://)?(?:\[([^\]]+)\]|([^:/@\s]+))(?::([0-9]+))?$")
+    for protocol in ["http", "https"]:
+        var match := pattern.search(str(addresses.get(protocol, "")))
+        if match != null:
+            var host := match.get_string(1) if not match.get_string(1).is_empty() else match.get_string(2)
+            var port := 80 if match.get_string(3).is_empty() else int(match.get_string(3))
+            if port >= 1 and port <= 65535:
+                proxies[protocol] = [host, port]
+    return proxies

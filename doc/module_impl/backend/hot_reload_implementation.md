@@ -68,7 +68,7 @@ entry.c deinitialize
 
 | 层 | 落点 |
 |---|---|
-| 元数据 | `GdextensionMetadataFile` 始终输出 `reloadable = true` |
+| 元数据 | `GdextensionMetadataFile` 始终输出 `reloadable = true`（渲染合同不变；`EditorAddonProjectInstaller` 的全部安装出口把产物改写为 `false`，因为 `gdcc_for_editor` 注册的 `ScriptLanguageExtension` 实例被 `ScriptServer` 以裸指针持有，热重载会留悬空指针——见 `doc/module_impl/editor_addon/gd3_editor_integration_implementation.md` §6） |
 | entry | `src/main/c/codegen/template_451/entry.c.ftl` / `entry.h.ftl` |
 | HRX runtime | `src/main/c/codegen/include_451/gdcc/gdcc_hrx.h` / `gdcc_hrx.c` |
 | Callable 分流 | `src/main/c/codegen/include_451/gdcc/gdcc_callable.h` |
@@ -145,8 +145,9 @@ C 层细节见 `gdcc_runtime_lib.md` §Static String/StringName Registry。本�
 合同：
 
 - `destroy_all()` 销毁并清空当前表后递增 `generation`；空表调用安全且仍递增；递增跳过哨兵 `GDCC_REGISTRY_GEN_NEVER`（`UINT64_MAX`）。
-- 宏展开点各持独立代际戳，初值为哨兵。戳与当前代际不等时重建 Godot 值并重新登记；同代访问只做一次 64 位比较，不引入线程/TLS（§3.3）。
+- 宏展开点各持独立原子代际戳，初值为哨兵。同代命中仅作 acquire 读取；失配时获取展开点初始化锁并二次检查，完成构造和登记后 release 发布。登记表扩容与追加使用独立短锁，不引入 TLS 或线程析构器。
 - `GD_STATIC_SN_HASH` 必须有独立戳，代际变化时重新计算 hash。
+- registry 销毁必须在停止新调用、等待所有工作线程结束之后进行；原子代际不保护已经借出的指针，不能据此并发卸载。HRX 的线程亲和与回收合同不变。
 - 产生函数内 static 的宏调用必须写入与 `destroy_all()` 相同 TU 的 registry 副本。生产 live 调用点仅允许 generated entry TU。runtime `.c`（`gdcc_hrx.c`、`gdcc_coroutine.c` 等）可以 include 这些头（`gdcc_bind.h` helper 定义会随头文件预处理展开），但禁止调用 `gdcc_make_property` / `gdcc_bind_property` 或在 runtime `.c` 内直接展开 `GD_STATIC_S` / `GD_STATIC_SN`。测试 probe 若直接包含这两个头，则自身即 registry-owning TU。
 - registry 销毁之后禁止再使用这两个宏。注销段内 registry 仍存活，现有 `GD_STATIC_SN` 使用安全。
 - 该合同只保证同映像下静态值干净重建、类能重新注册。它不能让同路径 `dlopen` 执行新代码。测试 harness 用 §10 的内容哈希换库规避 dyld 路径缓存；生产构建仍发布固定库名，macOS 同路径重载会继续执行旧代码（§12）。
@@ -182,7 +183,7 @@ C 层细节见 `gdcc_runtime_lib.md` §Static String/StringName Registry。本�
 
 - `<C>_class_destruct_fields(self)`：无守卫；析构本类字段后递归父段。
 - `<C>_class_destructor(self)`：唯一带守卫入口；已析构则返回。
-- PREDELETE 与 `free_instance` 都只调守卫入口。reload 路径不发 PREDELETE，`free_instance` 必须补齐析构。
+- 普通类只在 `free_instance` 调守卫入口，正常删除和 reload 均覆盖。PREDELETE 必须保留字段：Node 的 `_exit_tree` 随后才运行，不能读取已经析构的状态。
 - 守卫禁止放在链式函数入口，否则派生类置位后父类字段泄漏。
 - `godot_mem_alloc` 不置零，create / recreate 必须显式置 `false`。
 - 协程状态类不接入该标志：PREDELETE 只 cancel，字段清理由 `free_instance` 唯一承担。
@@ -404,6 +405,7 @@ property initializer 与 parameter default 中的 lambda 不进入 `FrontendLamb
 
 编排合同：
 
+- 阶段 marker 等待上限为 240 秒，编辑器退出等待上限为 180 秒，为较慢的 CI 退出收尾留出余量。保持场景并发调度、阶段验证、退出码和诊断断言不变；超时仍终止编辑器并报告失败。
 - 换库必须原子 rename（先拷到临时文件再 `mv`）。禁止 in-place 覆盖已映射 `.so`：会把干净页灌成新内容而 GOT 脏页仍指向旧版，随后 SIGSEGV。
 - 变更后的库必须发布到新路径。测试 harness 按库内容 SHA-256 截断 16 hex 命名 `<base>-<hash>.<ext>`（v1 安装即哈希命名）。内容相同则只写 swap flag、不改路径；内容不同则按「暂存 + 原子 rename 到新路径 → 重写 `.gdextension` libraries → 删除上一代文件 → 写 swap flag」发布。driver 只轮询 flag，因此 `reload_extension` 时元数据已指向完整新库。A→B→A 内容轮回会回到 hash A 的路径：若 dyld 仍缓存该映像，返回的是字节相同的 A，语义正确。macOS dyld 按路径缓存映像，且 Godot 的 `OS_MacOS::open_dynamic_library` 未实现 `generate_temp_files`（4.7.2 仍未修；上游 godotengine/godot#90108、#112202），同路径 `dlopen` 永远返回旧映像。真实用户在 macOS 热重载同样需要每次构建更换库文件名。该流程全平台统一，不做 macOS 分支。
 - driver 在最终 marker / `quit` 前停留 180 帧，让编辑器文档再生成在扩展存活期内排空（上游缺陷，类 godot#123511 / #111048）。

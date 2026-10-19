@@ -77,6 +77,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CCodegenTest {
     @Test
+    void moduleDisplayNameIsEscapedInEntryMessages() throws Exception {
+        var module = new LirModule("My \"Game\" \\ \u6E38\u620F\n", List.of());
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, registry), module);
+
+        var entrySource = generatedFileText(codegen.generate(), "entry.c");
+
+        assertTrue(entrySource.contains("u8\"Loading My \\\"Game\\\" \\\\ \\u6E38\\u620F\\n...\""), entrySource);
+        assertTrue(entrySource.contains("u8\"Unloading My \\\"Game\\\" \\\\ \\u6E38\\u620F\\n...\""), entrySource);
+    }
+
+    @Test
     public void variantGetOpcodeIsRegisteredAndGeneratesBody() {
         var workerClass = new LirClassDef("Worker", "RefCounted");
         var func = new LirFunctionDef("index_load_codegen");
@@ -1273,6 +1288,43 @@ public class CCodegenTest {
         assertContainsAll(acceptIntCallBody, "expected = GDEXTENSION_VARIANT_TYPE_INT;");
     }
 
+    /// Object-typed method args and return values publish the concrete class in the class_name
+    /// slot so Godot-facing surfaces show the real type instead of a bare Object.
+    @Test
+    public void generatesObjectMethodBindingMetadataWithConcreteClassName() throws Exception {
+        var workerClass = new LirClassDef("ObjectMetaWorker", "Node");
+
+        var echoNode = new LirFunctionDef("echo_node");
+        echoNode.setReturnType(new GdObjectType("Node"));
+        echoNode.addParameter(new LirParameterDef("self", new GdObjectType("ObjectMetaWorker"), null, echoNode));
+        echoNode.addParameter(new LirParameterDef("value", new GdObjectType("Node"), null, echoNode));
+        var echoEntry = new LirBasicBlock("entry");
+        echoEntry.setTerminator(new ReturnInsn("value"));
+        echoNode.addBasicBlock(echoEntry);
+        echoNode.setEntryBlockId("entry");
+        workerClass.addFunction(echoNode);
+
+        var module = new LirModule("object_method_bind_metadata_module", List.of(workerClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var hCode = generatedFileText(files, "entry.h");
+
+        var echoNodeBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Node_ret_Node");
+
+        assertContainsAll(
+                echoNodeBindBody,
+                "gdcc_make_property_full(arg0_type, arg0_name, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"Node\"), godot_PROPERTY_USAGE_DEFAULT)",
+                "GDExtensionPropertyInfo return_info = gdcc_make_property_full(GDEXTENSION_VARIANT_TYPE_OBJECT, GD_STATIC_SN(u8\"\"), godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"Node\"), godot_PROPERTY_USAGE_DEFAULT);"
+        );
+    }
+
     @Test
     public void generatesCallWrapperInboundIntToFloatCompatibilityWithoutWeakeningOtherParams() throws Exception {
         var workerClass = new LirClassDef("InboundPrimitiveCallWorker", "Node");
@@ -1669,8 +1721,8 @@ public class CCodegenTest {
         // Method registration splits the outward contract across entry.c and entry.h:
         // entry.c passes the base variant type, while entry.h fixes hint/hint_string/class_name/usage.
         var typedBindCall = resolveMethodBindCall(cCode, "accept_typed_payload");
-        var typedBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Dictionary_ret_int");
-        var mixedBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Dictionary_ret_Dictionary");
+        var typedBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Dictionary_10_StringName_4_Node_ret_int");
+        var mixedBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Dictionary_10_StringName_7_Variant_ret_Dictionary_10_StringName_7_Variant");
         var genericBindCall = resolveMethodBindCall(cCode, "accept_generic_payload");
         var genericBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Dictionary_ret_bool");
 
@@ -1835,8 +1887,8 @@ public class CCodegenTest {
         var hCode = generatedFileText(files, "entry.h");
 
         var typedBindCall = resolveMethodBindCall(cCode, "accept_typed_payload");
-        var typedBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Array_ret_int");
-        var plainBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Array_ret_Array");
+        var typedBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Array_10_StringName_ret_int");
+        var plainBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Array_5_Array_ret_Array_5_Array");
         var genericBindCall = resolveMethodBindCall(cCode, "accept_generic_payload");
         var genericBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Array_ret_bool");
 
@@ -2173,8 +2225,8 @@ public class CCodegenTest {
         var files = codegen.generate();
         var hCode = generatedFileText(files, "entry.h");
 
-        var typedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Array_ret_int");
-        var packedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Array_ret_bool");
+        var typedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Array_4_Node_ret_int");
+        var packedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Array_16_PackedInt32Array_ret_bool");
         var genericCallBody = resolveCallWrapperBody(hCode, "_1_arg_Array_ret_float");
 
         assertContainsAll(
@@ -2298,8 +2350,8 @@ public class CCodegenTest {
         var files = codegen.generate();
         var hCode = generatedFileText(files, "entry.h");
 
-        var typedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Dictionary_ret_int");
-        var mixedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Dictionary_ret_bool");
+        var typedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Dictionary_10_StringName_4_Node_ret_int");
+        var mixedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Dictionary_7_Variant_16_PackedInt32Array_ret_bool");
         var genericCallBody = resolveCallWrapperBody(hCode, "_1_arg_Dictionary_ret_float");
 
         assertContainsAll(
@@ -2416,7 +2468,9 @@ public class CCodegenTest {
         assertEquals(1, countOccurrences(hCode, "godot_Array_destroy(&arg0);"), hCode);
         assertEquals(1, countOccurrences(hCode, "godot_Variant_destroy(&arg0);"), hCode);
         assertEquals(1, countOccurrences(hCode, "godot_Variant_destroy(&r);"), hCode);
-        assertEquals(3, countOccurrences(hCode, "godot_Variant_destroy(&ret);"), hCode);
+        // +1 over the fixture's own wrappers: the synthesized `_gdcc_get_metadata` accessor
+        // contributes the static 0-arg Dictionary shape with the same ret cleanup.
+        assertEquals(4, countOccurrences(hCode, "godot_Variant_destroy(&ret);"), hCode);
         assertFalse(hCode.contains("godot_bool_destroy(&r);"), hCode);
         assertTrue(consumeStringWrapperBody.contains("godot_String_destroy(&arg0);"), consumeStringWrapperBody);
         assertFalse(consumeStringWrapperBody.contains("godot_Variant_destroy(&ret);"), consumeStringWrapperBody);
@@ -2460,7 +2514,9 @@ public class CCodegenTest {
         var echoNodeWrapperBody = resolveCallWrapperBody(hCode, "_1_arg_Node_ret_Node");
         var echoIntWrapperBody = resolveCallWrapperBody(hCode, "_1_arg_int_ret_int");
 
-        assertEquals(2, countOccurrences(hCode, "godot_Variant_destroy(&ret);"), hCode);
+        // +1 over the fixture's own wrappers: the synthesized `_gdcc_get_metadata` accessor
+        // contributes the static 0-arg Dictionary shape with the same ret cleanup.
+        assertEquals(3, countOccurrences(hCode, "godot_Variant_destroy(&ret);"), hCode);
         assertTrue(echoNodeWrapperBody.contains("godot_Variant_destroy(&ret);"), echoNodeWrapperBody);
         assertTrue(echoIntWrapperBody.contains("godot_Variant_destroy(&ret);"), echoIntWrapperBody);
         assertFalse(echoNodeWrapperBody.contains("godot_object_destroy(&arg0);"), echoNodeWrapperBody);
@@ -3071,9 +3127,9 @@ public class CCodegenTest {
         assertFalse(directParentConstructPattern.matcher(cCode).find());
     }
 
-    /// free_instance must re-enter field destruction when the PREDELETE path never ran
-    /// (the engine reload path calls free_instance WITHOUT PREDELETE), while the normal
-    /// PREDELETE-then-free sequence must still destruct exactly once. This pins the guard
+    /// free_instance destroys fields after exit notifications on both normal deletion and
+    /// reload (which does not send PREDELETE). PREDELETE must leave fields intact for
+    /// Node's subsequent `_exit_tree` callback. This pins the guard
     /// layout: the root-only `_gdcc_destructed` flag, the guarded `<C>_class_destructor`
     /// entry, and the unguarded `<C>_class_destruct_fields` chain — with destroyable fields
     /// on BOTH base and derived classes so a flag-set truncation of the parent segment fails
@@ -3167,9 +3223,10 @@ public class CCodegenTest {
                 "godot_object_set_instance("
         );
 
-        // PREDELETE keeps funneling through the same guarded entry.
+        // Node processes PREDELETE after the extension: fields must survive until free_instance.
         var childNotificationBody = resolveFunctionBodyByPrefix(cCode, "void GDGuardChild_class_notification");
-        assertContainsAll(childNotificationBody, "GDGuardChild_class_destructor(self);");
+        assertFalse(childNotificationBody.contains("GDGuardChild_class_destructor("), childNotificationBody);
+        assertFalse(childNotificationBody.contains("GDGuardChild_class_destruct_fields("), childNotificationBody);
     }
 
     /// Every creatable class must supply recreate_instance_func (Godot disables reload for
@@ -4946,6 +5003,85 @@ public class CCodegenTest {
                 "arg0_from_default = true;",
                 "if (arg0_from_default) {",
                 "release_object(gdcc_RefCounted_fat_ptr_live_object(arg0));"
+        );
+    }
+
+    @Test
+    public void objectReturnCallWrapperConsumesOwnedReturnAfterPacking() throws Exception {
+        var workerClass = new LirClassDef("ObjectReturnWorker", "RefCounted");
+
+        var make = new LirFunctionDef("make");
+        make.setReturnType(new GdObjectType("RefCounted"));
+        make.addParameter(new LirParameterDef("self", new GdObjectType("ObjectReturnWorker"), null, make));
+        var makeResult = make.createAndAddVariable("result", new GdObjectType("RefCounted"));
+        var makeEntry = new LirBasicBlock("entry");
+        makeEntry.appendInstruction(new ConstructObjectInsn(makeResult.id(), "RefCounted"));
+        makeEntry.setTerminator(new ReturnInsn(makeResult.id()));
+        make.addBasicBlock(makeEntry);
+        make.setEntryBlockId("entry");
+        workerClass.addFunction(make);
+
+        var module = new LirModule("object_return_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), module);
+        var files = codegen.generate();
+        var hCode = generatedFileText(files, "entry.h");
+
+        var callBody = resolveCallWrapperBody(hCode, "_0_arg_ret_RefCounted");
+        // OWNED objects are Variant-tracked by construction time (gdcc_ref_counted_init_raw),
+        // so packing ADDS a reference and the consume release transfers ownership net-zero
+        // into r_return; any extra own before packing would leak one reference.
+        assertFalse(callBody.contains("own_object("), callBody);
+        assertFalse(callBody.contains("try_own_object("), callBody);
+        assertOrdered(
+                callBody,
+                "godot_Variant ret = gdcc_RefCounted_fat_ptr_to_variant(r);",
+                "godot_variant_new_copy(r_return, &ret);",
+                "godot_Variant_destroy(&ret);",
+                "release_object(gdcc_RefCounted_fat_ptr_live_object(r));"
+        );
+    }
+
+    @Test
+    public void lambdaCallWrapperConsumesObjectReturnAfterPacking() throws Exception {
+        var workerClass = new LirClassDef("LambdaReturnWorker", "RefCounted");
+
+        var lambda = new LirFunctionDef("_lambda_0");
+        lambda.setLambda(true);
+        lambda.setStatic(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("LambdaReturnWorker::run#0", "call(base=sig_a, method=connect, arg=0)"));
+        lambda.setReturnType(new GdObjectType("RefCounted"));
+        var lambdaResult = lambda.createAndAddVariable("result", new GdObjectType("RefCounted"));
+        var lambdaEntry = new LirBasicBlock("entry");
+        lambdaEntry.appendInstruction(new ConstructObjectInsn(lambdaResult.id(), "RefCounted"));
+        lambdaEntry.setTerminator(new ReturnInsn(lambdaResult.id()));
+        lambda.addBasicBlock(lambdaEntry);
+        lambda.setEntryBlockId("entry");
+        workerClass.addFunction(lambda);
+
+        var module = new LirModule("lambda_return_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), module);
+        var files = codegen.generate();
+        var hCode = generatedFileText(files, "entry.h");
+
+        var lambdaCallBody = resolveFunctionBodyByPrefix(hCode, "static void LambdaReturnWorker__lambda_0_call");
+        // The lambda Callable ABI shares the named call wrapper's consume-after-pack contract
+        // for object returns (see the named wrapper test above).
+        assertFalse(lambdaCallBody.contains("own_object("), lambdaCallBody);
+        assertFalse(lambdaCallBody.contains("try_own_object("), lambdaCallBody);
+        assertOrdered(
+                lambdaCallBody,
+                "godot_Variant ret = gdcc_RefCounted_fat_ptr_to_variant(r);",
+                "godot_variant_new_copy(r_return, &ret);",
+                "godot_Variant_destroy(&ret);",
+                "release_object(gdcc_RefCounted_fat_ptr_live_object(r));"
         );
     }
 

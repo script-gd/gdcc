@@ -38,38 +38,58 @@ public final class JsonRpcHttpHandler implements HttpHandler {
 
     @Override
     public void handle(@NotNull HttpExchange exchange) throws IOException {
+        var shutdownServed = false;
         try (exchange) {
-            // `HttpServer` contexts match by longest prefix, so `/rpcfoo` and `/rpc/extra` would
-            // otherwise reach this handler too; the endpoint contract is the exact path only.
-            if (!JsonRpcServer.RPC_CONTEXT.equals(exchange.getRequestURI().getPath())) {
-                exchange.sendResponseHeaders(404, -1);
-                return;
-            }
-            if (!"POST".equals(exchange.getRequestMethod())) {
-                exchange.getResponseHeaders().set("Allow", "POST");
-                exchange.sendResponseHeaders(405, -1);
-                return;
-            }
-            var contentType = exchange.getRequestHeaders().getFirst("Content-Type");
-            if (contentType == null || !isJsonMediaType(contentType)) {
-                exchange.sendResponseHeaders(415, -1);
-                return;
-            }
-            var body = readBodyBounded(exchange.getRequestBody(), maxRequestBytes);
-            if (body == null) {
-                exchange.sendResponseHeaders(413, -1);
-                return;
-            }
-            var response = dispatcher.dispatch(new String(body, StandardCharsets.UTF_8));
-            if (response == null) {
-                exchange.sendResponseHeaders(204, -1);
-                return;
-            }
-            var responseBytes = response.toString().getBytes(StandardCharsets.UTF_8);
-            exchange.getResponseHeaders().set("Content-Type", APPLICATION_JSON);
-            exchange.sendResponseHeaders(200, responseBytes.length);
-            exchange.getResponseBody().write(responseBytes);
+            shutdownServed = handleExchange(exchange);
         }
+        // `server.shutdown` exit point — strictly after the exchange that SERVED the request has
+        // been written AND closed, so the caller always observes the full response before the
+        // process exits. Restricting the trigger to the serving exchange prevents an unrelated
+        // concurrent exchange from racing ahead of the shutdown response (the request executor
+        // is virtual-thread-per-task, so exchanges do complete concurrently). The exit runs on
+        // a dedicated platform thread, never on a request thread (see RpcServerShutdown).
+        if (shutdownServed) {
+            dispatcher.shutdown().exitProcess();
+        }
+    }
+
+    /// Returns `true` when this exchange actually invoked `server.shutdown` (tracked per
+    /// request thread by the registry handler — NOT inferred from the global latch, which an
+    /// unrelated concurrent exchange could observe mid-flight). Only the serving exchange may
+    /// trigger the exit after its own write+close.
+    private boolean handleExchange(@NotNull HttpExchange exchange) throws IOException {
+        // `HttpServer` contexts match by longest prefix, so `/rpcfoo` and `/rpc/extra` would
+        // otherwise reach this handler too; the endpoint contract is the exact path only.
+        if (!JsonRpcServer.RPC_CONTEXT.equals(exchange.getRequestURI().getPath())) {
+            exchange.sendResponseHeaders(404, -1);
+            return false;
+        }
+        if (!"POST".equals(exchange.getRequestMethod())) {
+            exchange.getResponseHeaders().set("Allow", "POST");
+            exchange.sendResponseHeaders(405, -1);
+            return false;
+        }
+        var contentType = exchange.getRequestHeaders().getFirst("Content-Type");
+        if (contentType == null || !isJsonMediaType(contentType)) {
+            exchange.sendResponseHeaders(415, -1);
+            return false;
+        }
+        var body = readBodyBounded(exchange.getRequestBody(), maxRequestBytes);
+        if (body == null) {
+            exchange.sendResponseHeaders(413, -1);
+            return false;
+        }
+        var response = dispatcher.dispatch(new String(body, StandardCharsets.UTF_8));
+        var shutdownServed = dispatcher.shutdown().consumeServingExchange();
+        if (response == null) {
+            exchange.sendResponseHeaders(204, -1);
+            return shutdownServed;
+        }
+        var responseBytes = response.toString().getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", APPLICATION_JSON);
+        exchange.sendResponseHeaders(200, responseBytes.length);
+        exchange.getResponseBody().write(responseBytes);
+        return shutdownServed;
     }
 
     /// Accepts `application/json` with an optional `; charset=...` (or any other parameter)

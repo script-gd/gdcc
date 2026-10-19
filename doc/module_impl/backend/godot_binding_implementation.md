@@ -245,6 +245,12 @@ method-bind accessor 名称为：
 - instance：`gdcc_engine_method_bind_<owner>_<method>_<symbolId>()`
 - static：`gdcc_engine_method_bind_static_<owner>_<method>_<symbolId>()`
 
+缓存指针通过显式 acquire 读取、release 发布。冷路径允许多个线程重复执行只读 Godot 查找，
+依次尝试 primary/compatibility hashes，仅非空结果进入缓存；失败不会覆盖其他线程已经发布的绑定。
+该合同以查找 API 可并发调用、返回绑定在缓存生命周期内稳定为前提。builtin、utility、conversion、
+fixed 与单例的生成绑定使用同样的原子指针发布；TinyCC 路径同样使用显式原子 API，不能依赖 `_Atomic`
+限定符的隐式读写。缓存安全不等于目标引擎方法、场景树操作或 HRX 回收可以跨线程执行。
+
 `BackendMethodCallResolver.ResolvedMethodCall` 只负责 lookup 身份：
 
 - dispatch mode
@@ -294,8 +300,11 @@ symbol identity。
 - helper-owned fixed prefix temps 在 success / error 两条路径都必须清理。
 - `godot_object_method_bind_call(...)` 的 return slot 是
   `GDExtensionUninitializedVariantPtr`，helper 传入 raw `godot_Variant` storage。
-- 只有 `_error.error == GDEXTENSION_CALL_OK` 后才允许 unpack 和 destroy 本地 return
-  `Variant`；error path 不得 destroy 未构造 return storage。
+- 引擎**总是**先 placement 构造返回 `Variant`（含调用失败；4.5
+  `gdextension_interface.cpp` 中 `memnew_placement(r_return, Variant(mb->call(...)))`
+  无条件执行），因此 cleanup 必须恰好 destroy 一次：error path 在替换 nil 兜底前销毁，
+  success path 在 unpack/consume 之后销毁。（旧文"error path 不得 destroy"系误写，
+  已修正。）
 - `void` helper 不允许把 `NULL r_ret` 传给 `godot_object_method_bind_call(...)`。
 
 ## Engine Constructor Wrapper
@@ -323,6 +332,8 @@ module-local wrapper 只输出 `providedByRuntime = false` 的 symbol。当前�
   - `returnTypeName` 来自已验证的 `ExtensionSingleton.type()`，用于 C return type、cast type、cache pointer type
     和 diagnostic `context.type`
   - symbol owner 固定为 `"@GlobalScope"`，symbol name 固定为 `lookupName`
+  - cache 声明为 `static _Atomic(godot_<returnTypeName> *)`，使用显式 acquire load / release store；
+    允许并发冷查找，失败分支先返回 `NULL`，不发布失败结果，也不隐式读写原子槽
   - 只缓存非空结果；`NULL` 走 `gdcc_binding_lookup_fail(...)`
 - class constant：
   - `static inline godot_int godot_<Class>_<CONSTANT>(void)`
@@ -401,6 +412,7 @@ constant 这类模块变化 symbol 才进入 module-local。
 - `<includeRoot>/godot/godot_binding.c`
 - `<includeRoot>/gdcc/minicoro.c`
 - `<includeRoot>/gdcc/gdcc_coroutine.c`
+- `<includeRoot>/gdcc/gdcc_hrx.c`
 
 不允许根据旧文件存在性把 `<includeRoot>/gdextension-lite/gdextension-lite-one.c` 加回
 `cFiles`。`ResourceExtractor` 的覆盖/新增语义不承担旧目录清理；旧工作区残留只作为构建
@@ -422,7 +434,7 @@ constant 这类模块变化 symbol 才进入 module-local。
   - `_class_bind_methods` 只注册当前类 `classDef.signals`
   - 无参 signal 传 `NULL, 0`；有参 signal 复用 `gdcc_make_property_full` /
     `gdcc_destruct_property`，usage 为 method-arg `godot_PROPERTY_USAGE_DEFAULT`
-  - Object signal 参数 `class_name` 保持空默认
+  - Object signal 参数 `class_name` 发布对象类型类名
 - `CallMethodInsnGenTest` / `CallMethodInsnGenEngineTest`
   - caller-side normalized helper surface
   - exact engine route 不回退 public wrapper
@@ -436,6 +448,8 @@ constant 这类模块变化 symbol 才进入 module-local。
   - provided set、module-local explicit registration、C name 冲突和 metadata drift fail-fast
 - `ModuleLocalGodotBindingTemplateTest`
   - singleton / class constant header-only renderer
+  - singleton lookup name 与 return type 独立，原子 cache 的 payload 仍使用 declared return type
+  - 显式 acquire/release 访问及查找失败先于成功发布的控制流顺序
 - `FixedGodotBindingsTest` / `GodotBindingToolAbiSupportTest`
   - fixed source list、ABI support 和 generator contract
 - `CProjectBuilderSharedIncludeTest` / `ApiCompilePipelineTest`

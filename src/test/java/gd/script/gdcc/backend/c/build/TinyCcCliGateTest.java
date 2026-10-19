@@ -15,6 +15,7 @@ import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -128,9 +129,9 @@ class TinyCcCliGateTest {
         private CompilerInput captured;
 
         @Override
-        public CCompileResult compile(Path projectDir, List<Path> includeDirs, List<Path> cFiles,
-                                      String outputBaseName, COptimizationLevel optimizationLevel,
-                                      TargetPlatform targetPlatform) {
+        public CCompileResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles,
+                                      @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel,
+                                      @NotNull TargetPlatform targetPlatform) {
             captured = new CompilerInput(List.copyOf(includeDirs), List.copyOf(cFiles));
             return new CCompileResult(true, "", List.of());
         }

@@ -223,17 +223,27 @@ expansion-site stamps start at `GDCC_REGISTRY_GEN_NEVER` (`UINT64_MAX`, defined 
   `items`/`count`/`capacity`, then increments `generation`. An empty registry is a safe no-op
   that still advances `generation`. If the increment lands on `GDCC_REGISTRY_GEN_NEVER` it wraps
   to `0`, so the sentinel never aliases a live generation.
-- The three macros gate reconstruction on stamp ≠ current TU-local `generation`. A mismatch
-  rebuilds the Godot value, re-registers the pointer, and stores the current generation. Same-
-  generation re-entry is a single 64-bit compare; no thread/TLS (see
-  `hot_reload_implementation.md` §3.3).
+- Registry generations and expansion-site readiness stamps are atomic. The three macros use
+  acquire loads on the hit path, without locking. A mismatch takes a per-site initialization
+  lock, checks again, constructs and registers the value, then release-publishes the stamp.
+  Registration holds a separate short lock across array growth and insertion. Locks use explicit
+  C11 atomic flag operations; no TLS or thread destructors are introduced.
 - Fresh image: stamp `NEVER` ≠ registry `0` → normal first init. Same-image reuse (function-
   local statics survive `destroy_all`): leftover stamp `n` ≠ bumped `n+1` → rebuild. A NEVER-
   stamped site may initialize against any current generation, not only `0`.
 - `GD_STATIC_SN_HASH` keeps an independent hash stamp. The inner `GD_STATIC_SN` expansion's
   function-local static is not visible across statement expressions, and the hash must be
-  recomputed whenever the StringName was rebuilt.
+  recomputed whenever the StringName was rebuilt. StringName initialization finishes before
+  the hash initialization lock is acquired, avoiding nested site locks.
 - There is no content dedup: each expansion site registers its own storage once per generation.
+- `destroy_all()` requires external quiescence: stop new calls and join all workers first.
+  Its release-published generation allows subsequent reuse; it does not protect pointers already
+  borrowed by live callers. Cache locks do not make concurrent unload or HRX reclamation safe.
+- Method, builtin, utility, conversion and singleton pointer caches use explicit acquire loads
+  and release stores. Read-only Godot lookups may run more than once during cold initialization;
+  only a non-NULL result is published. This assumes the corresponding lookup API is safe to call
+  concurrently and its returned pointer stays valid for the cache lifetime. Explicit atomic APIs
+  are required for TinyCC; do not rely on implicit `_Atomic` increment or publication semantics.
 - Per-TU ownership: expansions register into whichever TU includes the header. Live production
   calls must share that copy with `gdcc_sn_registry_destroy_all` / `gdcc_s_registry_destroy_all`
   in generated `entry.c` (`entry.c.ftl` after class unregistration, before HRX deinitialize).

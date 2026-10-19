@@ -2,6 +2,7 @@ package gd.script.gdcc.rpc;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
 import gd.script.gdcc.api.API;
@@ -68,7 +69,8 @@ class RpcJsonCodecTest {
                     "targetPlatform": "LINUX_X86_64",
                     "strictMode": false,
                     "outputMountRoot": "/__build__",
-                    "cCompilerKind": null
+                    "cCompilerKind": null,
+                    "stripNativeSymbols": null
                   },
                   "topLevelCanonicalNameMap": {"Player": "game.Player"},
                   "hasLastCompileResult": true,
@@ -92,7 +94,8 @@ class RpcJsonCodecTest {
                   "targetPlatform": "LINUX_X86_64",
                   "strictMode": false,
                   "outputMountRoot": "/__build__",
-                  "cCompilerKind": null
+                  "cCompilerKind": null,
+                  "stripNativeSymbols": null
                 }
                 """, codec.toJsonTree(withNullPath));
         // Path crosses the wire as host `Path.toString()` text, so the pinned expectation follows
@@ -138,7 +141,8 @@ class RpcJsonCodecTest {
                     "targetPlatform": "LINUX_X86_64",
                     "strictMode": false,
                     "outputMountRoot": "/__build__",
-                    "cCompilerKind": null
+                    "cCompilerKind": null,
+                    "stripNativeSymbols": null
                   },
                   "topLevelCanonicalNameMap": {"Player": "game.Player"},
                   "sourcePaths": ["/src/main.gd"],
@@ -376,6 +380,16 @@ class RpcJsonCodecTest {
     }
 
     @Test
+    void emptyMapResultSerializesAsEmptyObject() {
+        // `server.shutdown` returns `Map.of()`; the wire shape must be exactly `{}` (not `null`)
+        // so the GDScript-side caller always sees a Dictionary.
+        var tree = codec.toJsonTree(Map.of());
+        assertInstanceOf(JsonObject.class, tree);
+        assertTrue(tree.getAsJsonObject().keySet().isEmpty());
+        assertEquals("{}", tree.toString());
+    }
+
+    @Test
     void enumsSerializeWithPinnedWireNames() {
         // Wire values are the Java `name()`s, deliberately unlike the CLI argument spellings.
         assertEnumWireValues(
@@ -527,6 +541,41 @@ class RpcJsonCodecTest {
     }
 
     @Test
+    void moduleCopyParamsRoundTripAndValidate() {
+        // The compact constructor trims both ids; the wire shape uses the record component names.
+        var params = new RpcParams.ModuleCopyParams(" src ", " copy ", " My Game ");
+        assertEquals("src", params.sourceModuleId());
+        assertEquals("copy", params.newModuleId());
+        var json = codec.toJsonTree(params).getAsJsonObject();
+        assertEquals("src", json.get("sourceModuleId").getAsString());
+        assertEquals("copy", json.get("newModuleId").getAsString());
+        assertEquals("My Game", json.get("newModuleName").getAsString());
+
+        var bound = codec.bindParams(
+                parse("{\"sourceModuleId\": \"a\", \"newModuleId\": \"b\"}"),
+                RpcParams.ModuleCopyParams.class
+        );
+        assertEquals(new RpcParams.ModuleCopyParams("a", "b", null), bound);
+        assertEquals(bound, codec.bindParams(
+                parse("{\"sourceModuleId\": \"a\", \"newModuleId\": \"b\", \"newModuleName\": null}"),
+                RpcParams.ModuleCopyParams.class));
+        assertEquals(params, codec.bindParams(json, RpcParams.ModuleCopyParams.class));
+        assertThrows(IllegalArgumentException.class, () -> codec.bindParams(
+                parse("{\"sourceModuleId\": \"a\", \"newModuleId\": \"b\", \"newModuleName\": \"  \"}"),
+                RpcParams.ModuleCopyParams.class));
+
+        var missingTarget = assertThrows(NullPointerException.class, () ->
+                codec.bindParams(parse("{\"sourceModuleId\": \"a\"}"), RpcParams.ModuleCopyParams.class));
+        assertEquals("newModuleId must not be null", missingTarget.getMessage());
+        var blankSource = assertThrows(IllegalArgumentException.class, () ->
+                codec.bindParams(
+                        parse("{\"sourceModuleId\": \"\", \"newModuleId\": \"b\"}"),
+                        RpcParams.ModuleCopyParams.class
+                ));
+        assertEquals("sourceModuleId must not be blank", blankSource.getMessage());
+    }
+
+    @Test
     void bindParamsRejectsTypeMismatchedComponents() {
         assertThrows(JsonSyntaxException.class, () ->
                 codec.bindParams(parse("{\"taskId\": \"abc\"}"), RpcParams.CompileGetTaskParams.class));
@@ -621,13 +670,31 @@ class RpcJsonCodecTest {
         );
 
         assertNull(putFileWithoutDisplayPath.displayPath());
+        // The optional absolutePath stays null for pre-existing callers.
+        assertNull(putFileWithoutDisplayPath.absolutePath());
+    }
+
+    @Test
+    void bindParamsRejectsBlankPutFileAbsolutePath() {
+        // Blank-but-present absolutePath is a caller bug, not "absent": fail with the same
+        // -32602-contract exception shape as the other trimmed string fields.
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> codec.bindParams(
+                        parse("{\"moduleId\": \"demo\", \"path\": \"/src/main.gd\", "
+                                + "\"content\": \"extends Node\\n\", \"absolutePath\": \"  \"}"),
+                        RpcParams.VfsPutFileParams.class
+                )
+        );
+        assertEquals("absolutePath must not be blank", exception.getMessage());
     }
 
     @Test
     void bindParamsBindsCompleteObjects() {
         var putFile = codec.bindParams(
                 parse("{\"moduleId\": \"demo\", \"path\": \"/src/main.gd\", "
-                        + "\"content\": \"extends Node\\n\", \"displayPath\": \"res://main.gd\"}"),
+                        + "\"content\": \"extends Node\\n\", \"displayPath\": \"res://main.gd\", "
+                        + "\"absolutePath\": \"E:/work/demo/src/main.gd\"}"),
                 RpcParams.VfsPutFileParams.class
         );
 
@@ -635,6 +702,7 @@ class RpcJsonCodecTest {
         assertEquals("/src/main.gd", putFile.path());
         assertEquals("extends Node\n", putFile.content());
         assertEquals("res://main.gd", putFile.displayPath());
+        assertEquals("E:/work/demo/src/main.gd", putFile.absolutePath());
 
         var classMap = codec.bindParams(
                 parse("{\"moduleId\": \"demo\", \"topLevelCanonicalNameMap\": {\"Player\": \"game.Player\"}}"),
@@ -694,6 +762,29 @@ class RpcJsonCodecTest {
                 parse(baseShape.formatted(", \"cCompilerKind\": \"GCC\"")),
                 CompileOptions.class
         ));
+    }
+
+    @Test
+    void compileOptionsStripNativeSymbolsBindsFalseForMissingAndRoundTrips() {
+        // Wire compat: clients predating the field omit it, and the boxed component keeps the
+        // `false` default instead of failing record binding.
+        var baseShape = """
+                {"godotVersion": "V451", "projectPath": null, "optimizationLevel": "RELEASE", \
+                "targetPlatform": "LINUX_X86_64", "strictMode": false, "outputMountRoot": "/__build__"%s}""";
+        var missing = codec.bindParams(parse(baseShape.formatted("")), CompileOptions.class);
+        assertNull(missing.stripNativeSymbols());
+        assertFalse(missing.isStripNativeSymbols());
+        var explicitNull = codec.bindParams(parse(baseShape.formatted(", \"stripNativeSymbols\": null")), CompileOptions.class);
+        assertFalse(explicitNull.isStripNativeSymbols());
+        // The codec serializes nulls, so the unset component rides the wire as an explicit
+        // null — which older and newer peers both bind back to the `false` default.
+        assertTrue(codec.toJsonTree(missing).getAsJsonObject().get("stripNativeSymbols").isJsonNull());
+
+        var stripped = codec.bindParams(parse(baseShape.formatted(", \"stripNativeSymbols\": true")), CompileOptions.class);
+        assertTrue(stripped.isStripNativeSymbols());
+        var serialized = codec.toJsonTree(stripped).getAsJsonObject();
+        assertTrue(serialized.get("stripNativeSymbols").getAsBoolean());
+        assertTrue(codec.bindParams(serialized, CompileOptions.class).isStripNativeSymbols());
     }
 
     private static CompileOptions options(Path projectPath) {

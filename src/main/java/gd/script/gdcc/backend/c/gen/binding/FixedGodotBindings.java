@@ -199,7 +199,7 @@ abstract class FixedGodotBindings {
         ) {
             var method = requireClassMethod(className, methodName);
             var cacheName = "gdcc_fixed_method_" + className + "_" + methodName;
-            out.append("static GDExtensionMethodBindPtr ").append(cacheName).append(" = NULL;\n\n");
+            out.append("static _Atomic(GDExtensionMethodBindPtr) ").append(cacheName).append(" = NULL;\n\n");
             out.append(returnType).append(' ').append(functionName).append('(').append(parameters).append(") {\n")
                     .append("    GDCC_RESOLVE_FIXED_METHOD_CACHE(")
                     .append(cacheName)
@@ -229,7 +229,7 @@ abstract class FixedGodotBindings {
                 }
             }
             out.append("    godot_object_method_bind_ptrcall(")
-                    .append(cacheName).append(", (GDExtensionObjectPtr)").append(selfExpression)
+                    .append("GDCC_BINDING_CACHE(").append(cacheName).append("), (GDExtensionObjectPtr)").append(selfExpression)
                     .append(", ")
                     .append(args.isEmpty() ? "NULL" : "args")
                     .append(", ")
@@ -247,7 +247,7 @@ abstract class FixedGodotBindings {
 
         protected void appendObjectCall(@NotNull StringBuilder out) {
             var method = requireClassMethod("Object", "call");
-            out.append("static GDExtensionMethodBindPtr gdcc_fixed_method_Object_call = NULL;\n\n")
+            out.append("static _Atomic(GDExtensionMethodBindPtr) gdcc_fixed_method_Object_call = NULL;\n\n")
                     .append("""
                             godot_Variant godot_Object_call(
                                     GDExtensionObjectPtr self,
@@ -267,10 +267,14 @@ abstract class FixedGodotBindings {
                     .append("    }\n")
                     .append("    godot_Variant result;\n")
                     .append("    GDExtensionCallError error = { 0 };\n")
-                    .append("    godot_object_method_bind_call(gdcc_fixed_method_Object_call, self, args, 1 + argc, ")
+                    .append("    godot_object_method_bind_call(GDCC_BINDING_CACHE(gdcc_fixed_method_Object_call), self, args, 1 + argc, ")
                     .append("(GDExtensionUninitializedVariantPtr)&result, &error);\n")
                     .append("    godot_Variant_destroy(&method_variant);\n")
                     .append("    if (error.error != GDEXTENSION_CALL_OK) {\n")
+                    .append("        // gdextension_object_method_bind_call placement-constructs `result` even on call\n")
+                    .append("        // errors (4.5 gdextension_interface.cpp), so it must be destroyed before returning\n")
+                    .append("        // the nil fallback.\n")
+                    .append("        godot_Variant_destroy(&result);\n")
                     .append("        return godot_new_Variant_nil();\n")
                     .append("    }\n")
                     .append("    return result;\n")

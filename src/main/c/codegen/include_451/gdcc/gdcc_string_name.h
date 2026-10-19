@@ -3,6 +3,7 @@
 
 #include <godot_binding.h>
 #include "gdcc_likely.h"
+#include "gdcc_cache.h"
 
 // Generation stamp sentinel for GD_STATIC_SN / GD_STATIC_S expansion sites. Function-local statics
 // start at this value so a fresh image (registry generation 0) always mismatches and initializes.
@@ -19,7 +20,7 @@ typedef struct StringNameDestroyRegistry {
     // function-local statics of GD_STATIC_SN survive while every StringName is destroyed here, so
     // the macros gate re-construction on a generation mismatch instead of init-once booleans that
     // would stay stuck at true and hand back destroyed values.
-    uint64_t generation;
+    _Atomic(uint64_t) generation;
 } StringNameDestroyRegistry;
 
 typedef struct gdcc_StringNameWithHash {
@@ -28,8 +29,10 @@ typedef struct gdcc_StringNameWithHash {
 } gdcc_StringNameWithHash;
 
 static StringNameDestroyRegistry g_sn_registry = {NULL};
+static atomic_flag g_sn_registry_lock = ATOMIC_FLAG_INIT;
 
 static void gdcc_sn_registry_add(godot_StringName* p_sn) {
+    gdcc_cache_lock(&g_sn_registry_lock);
     // No deduplication: each expansion site registers once per generation.
     if (g_sn_registry.count == g_sn_registry.capacity) {
         const uint32_t new_cap = (g_sn_registry.capacity == 0) ? 128u : (g_sn_registry.capacity * 2u);
@@ -42,9 +45,11 @@ static void gdcc_sn_registry_add(godot_StringName* p_sn) {
         g_sn_registry.capacity = new_cap;
     }
     g_sn_registry.items[g_sn_registry.count++] = p_sn;
+    gdcc_cache_unlock(&g_sn_registry_lock);
 }
 
 static void gdcc_sn_registry_destroy_all(void) {
+    // No live cache readers or initializers may overlap teardown.
     for (uint32_t i = 0; i < g_sn_registry.count; ++i) {
         godot_StringName_destroy(g_sn_registry.items[i]);
     }
@@ -54,11 +59,12 @@ static void gdcc_sn_registry_destroy_all(void) {
     g_sn_registry.items = NULL;
     g_sn_registry.count = 0;
     g_sn_registry.capacity = 0;
-    g_sn_registry.generation++;
-    if (g_sn_registry.generation == GDCC_REGISTRY_GEN_NEVER) {
+    uint64_t generation = atomic_load_explicit(&g_sn_registry.generation, memory_order_relaxed) + 1;
+    if (generation == GDCC_REGISTRY_GEN_NEVER) {
         // Reaching the sentinel needs 2^64 reloads; wrap so it can never alias a real generation.
-        g_sn_registry.generation = 0;
+        generation = 0;
     }
+    atomic_store_explicit(&g_sn_registry.generation, generation, memory_order_release);
 }
 
 // Macro: In-place declaration + generation-gated (re)initialization + registration + return pointer.
@@ -70,11 +76,17 @@ static void gdcc_sn_registry_destroy_all(void) {
 #define GD_STATIC_SN(U8_LIT)                                                       \
     ({                                                                             \
         static godot_StringName _gd_sn;                                            \
-        static uint64_t _gd_sn_gen = GDCC_REGISTRY_GEN_NEVER;                      \
-        if (unlikely(_gd_sn_gen != g_sn_registry.generation)) {                    \
-            _gd_sn = godot_new_StringName_with_utf8_chars((const char*)(U8_LIT));  \
-            gdcc_sn_registry_add(&_gd_sn);                                         \
-            _gd_sn_gen = g_sn_registry.generation;                                 \
+        static _Atomic(uint64_t) _gd_sn_gen = GDCC_REGISTRY_GEN_NEVER;              \
+        static atomic_flag _gd_sn_lock = ATOMIC_FLAG_INIT;                         \
+        uint64_t _gd_sn_epoch = atomic_load_explicit(&g_sn_registry.generation, memory_order_acquire); \
+        if (unlikely(atomic_load_explicit(&_gd_sn_gen, memory_order_acquire) != _gd_sn_epoch)) { \
+            gdcc_cache_lock(&_gd_sn_lock);                                        \
+            if (atomic_load_explicit(&_gd_sn_gen, memory_order_relaxed) != _gd_sn_epoch) { \
+                _gd_sn = godot_new_StringName_with_utf8_chars((const char*)(U8_LIT)); \
+                gdcc_sn_registry_add(&_gd_sn);                                    \
+                atomic_store_explicit(&_gd_sn_gen, _gd_sn_epoch, memory_order_release); \
+            }                                                                     \
+            gdcc_cache_unlock(&_gd_sn_lock);                                      \
         }                                                                          \
         &_gd_sn;                                                                   \
     })
@@ -85,11 +97,17 @@ static void gdcc_sn_registry_destroy_all(void) {
 #define GD_STATIC_SN_HASH(U8_LIT)                                                   \
     ({                                                                              \
         static godot_int _gd_sn_hash = 0;                                           \
-        static uint64_t _gd_sn_hash_gen = GDCC_REGISTRY_GEN_NEVER;                  \
+        static _Atomic(uint64_t) _gd_sn_hash_gen = GDCC_REGISTRY_GEN_NEVER;          \
+        static atomic_flag _gd_sn_hash_lock = ATOMIC_FLAG_INIT;                    \
         godot_StringName *_gd_sn_ptr = GD_STATIC_SN((const char*)(U8_LIT));         \
-        if (unlikely(_gd_sn_hash_gen != g_sn_registry.generation)) {                \
-            _gd_sn_hash = godot_StringName_hash(_gd_sn_ptr);                        \
-            _gd_sn_hash_gen = g_sn_registry.generation;                             \
+        uint64_t _gd_sn_hash_epoch = atomic_load_explicit(&g_sn_registry.generation, memory_order_acquire); \
+        if (unlikely(atomic_load_explicit(&_gd_sn_hash_gen, memory_order_acquire) != _gd_sn_hash_epoch)) { \
+            gdcc_cache_lock(&_gd_sn_hash_lock);                                   \
+            if (atomic_load_explicit(&_gd_sn_hash_gen, memory_order_relaxed) != _gd_sn_hash_epoch) { \
+                _gd_sn_hash = godot_StringName_hash(_gd_sn_ptr);                    \
+                atomic_store_explicit(&_gd_sn_hash_gen, _gd_sn_hash_epoch, memory_order_release); \
+            }                                                                     \
+            gdcc_cache_unlock(&_gd_sn_hash_lock);                                 \
         }                                                                           \
         (gdcc_StringNameWithHash){ .name = _gd_sn_ptr, .hash = _gd_sn_hash };       \
     })

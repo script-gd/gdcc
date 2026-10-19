@@ -21,7 +21,7 @@ pub fn writeStderrUtf8(arena: std.mem.Allocator, bytes: []const u8) void {
     }
 
     var mode: windows.DWORD = 0;
-    if (GetConsoleMode(handle, &mode).toBool()) {
+    if (GetConsoleMode(handle, &mode) != 0) {
         const utf16 = std.unicode.utf8ToUtf16LeAlloc(arena, bytes) catch {
             std.debug.print("{s}", .{bytes});
             return;
@@ -38,10 +38,10 @@ pub fn writeStderrUtf8(arena: std.mem.Allocator, bytes: []const u8) void {
 fn detectPreferredUiLanguage(arena: std.mem.Allocator) ?translation_text.Language {
     var language_count: windows.ULONG = 0;
     var buffer_len: windows.ULONG = 0;
-    if (!GetUserPreferredUILanguages(mui_language_name, &language_count, null, &buffer_len).toBool() or buffer_len == 0) return null;
+    if (GetUserPreferredUILanguages(mui_language_name, &language_count, null, &buffer_len) == 0 or buffer_len == 0) return null;
 
     const buffer = arena.alloc(u16, buffer_len) catch return null;
-    if (!GetUserPreferredUILanguages(mui_language_name, &language_count, buffer.ptr, &buffer_len).toBool()) return null;
+    if (GetUserPreferredUILanguages(mui_language_name, &language_count, buffer.ptr, &buffer_len) == 0) return null;
 
     var index: usize = 0;
     while (index < buffer_len and buffer[index] != 0) {
@@ -82,7 +82,7 @@ fn writeConsoleUtf16(handle: windows.HANDLE, bytes: []const u16) bool {
     while (index < bytes.len) {
         const chunk_len: windows.DWORD = @intCast(@min(bytes.len - index, std.math.maxInt(windows.DWORD)));
         var written: windows.DWORD = 0;
-        if (!WriteConsoleW(handle, bytes[index..].ptr, chunk_len, &written, null).toBool() or written == 0) return false;
+        if (WriteConsoleW(handle, bytes[index..].ptr, chunk_len, &written, null) == 0 or written == 0) return false;
         index += written;
     }
     return true;
@@ -93,7 +93,7 @@ fn writeFileBytes(handle: windows.HANDLE, bytes: []const u8) bool {
     while (index < bytes.len) {
         const chunk_len: windows.DWORD = @intCast(@min(bytes.len - index, std.math.maxInt(windows.DWORD)));
         var written: windows.DWORD = 0;
-        if (!WriteFile(handle, bytes[index..].ptr, chunk_len, &written, null).toBool() or written == 0) return false;
+        if (WriteFile(handle, bytes[index..].ptr, chunk_len, &written, null) == 0 or written == 0) return false;
         index += written;
     }
     return true;

@@ -83,10 +83,19 @@ func delete_module(moduleId: String) -> PendingRequest:
     return call_rpc("module.delete", {"moduleId": moduleId})
 
 
-func put_file(moduleId: String, path: String, content: String, displayPath: String = "") -> PendingRequest:
+func copy_module(sourceModuleId: String, newModuleId: String) -> PendingRequest:
+    return call_rpc("module.copy", {"sourceModuleId": sourceModuleId, "newModuleId": newModuleId})
+
+
+func put_file(moduleId: String, path: String, content: String, displayPath: String = "", absolutePath: String = "") -> PendingRequest:
     var params: Dictionary = {"moduleId": moduleId, "path": path, "content": content}
     if displayPath != "":
         params["displayPath"] = displayPath
+    # Optional host-absolute source path (feeds the compile-time class metadata
+    # `source_path`); omitted
+    # entirely when empty so pre-existing callers keep their old wire shape.
+    if absolutePath != "":
+        params["absolutePath"] = absolutePath
     return call_rpc("vfs.putFile", params)
 
 
@@ -96,6 +105,10 @@ func read_file(moduleId: String, path: String) -> PendingRequest:
 
 func list_directory(moduleId: String, path: String) -> PendingRequest:
     return call_rpc("vfs.listDirectory", {"moduleId": moduleId, "path": path})
+
+
+func get_compile_options(moduleId: String) -> PendingRequest:
+    return call_rpc("options.get", {"moduleId": moduleId})
 
 
 func set_compile_options(moduleId: String, compileOptions: Dictionary) -> PendingRequest:

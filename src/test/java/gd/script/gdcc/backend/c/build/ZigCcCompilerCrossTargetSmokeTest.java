@@ -20,13 +20,10 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Cross-target smoke for the release link: for every target the current zig toolchain can
-/// actually build — host, linux cross (zig's bundled libc), and windows cross — a release
-/// build must link and produce the artifact. Linux targets exercise `-flto=thin`; windows
-/// targets exercise ThinLTO on the MSVC ABI when running on a Windows host, and the
-/// substituted MinGW build without LTO everywhere else (the msvc→gnu rule never enters the
-/// ThinLTO fallback decision). macOS needs a Darwin sysroot to link from a non-macOS host,
-/// so it is not in this matrix; native macOS CI covers host dylib builds.
+/// Cross-target smoke for the release link: Linux and Windows GNU targets must link and
+/// produce the artifact using zig's bundled libc. These targets exercise
+/// `-flto=thin` through the same per-TU compile and link pipeline on every host.
+/// macOS targets disable LTO and are outside this LTO smoke matrix.
 ///
 /// Known limitations (deliberately not smoke-tested here, unrelated to LTO): web-wasm32 fails
 /// by design — minicoro locks `MCO_USE_ASM` and zig ships no Emscripten sysroot — and android

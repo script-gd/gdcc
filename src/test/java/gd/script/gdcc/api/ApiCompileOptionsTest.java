@@ -9,8 +9,10 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ApiCompileOptionsTest {
     @Test
@@ -164,5 +166,29 @@ class ApiCompileOptionsTest {
                 false, CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT, null);
         assertNull(api.setCompileOptions("demo", auto).cCompilerKind());
         assertEquals(auto, api.getCompileOptions("demo"));
+    }
+
+    @Test
+    void stripNativeSymbolsDefaultsToFalseAndRoundTripsThroughTheApi() {
+        // Every pre-strip constructor shape leaves the flag unset, so existing builds keep
+        // zig's default DWARF output and full symbol table byte-identically.
+        assertNull(CompileOptions.defaults().stripNativeSymbols());
+        assertFalse(CompileOptions.defaults().isStripNativeSymbols());
+        var sixArg = new CompileOptions(
+                GodotVersion.V451, null, COptimizationLevel.RELEASE, TargetPlatform.LINUX_X86_64, false, "/build");
+        assertNull(sixArg.stripNativeSymbols());
+        assertFalse(sixArg.isStripNativeSymbols());
+        var sevenArgNull = new CompileOptions(
+                GodotVersion.V451, null, COptimizationLevel.RELEASE, TargetPlatform.LINUX_X86_64, false, "/build", null);
+        assertFalse(sevenArgNull.isStripNativeSymbols());
+
+        var api = new API();
+        api.createModule("demo", "Demo");
+        var stripped = new CompileOptions(
+                GodotVersion.V451, null, COptimizationLevel.RELEASE, TargetPlatform.LINUX_X86_64,
+                false, CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT, CCompilerKind.ZIG_CC, true);
+        assertTrue(stripped.isStripNativeSymbols());
+        assertEquals(stripped, api.setCompileOptions("demo", stripped));
+        assertTrue(api.getCompileOptions("demo").isStripNativeSymbols());
     }
 }

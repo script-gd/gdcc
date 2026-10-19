@@ -61,10 +61,11 @@ public final class JsonRpcMethodRegistry {
         return handlers.size();
     }
 
-    public static @NotNull JsonRpcMethodRegistry create() {
+    public static @NotNull JsonRpcMethodRegistry create(@NotNull RpcServerShutdown shutdown) {
+        Objects.requireNonNull(shutdown, "shutdown must not be null");
         var handlers = new LinkedHashMap<String, RpcHandler>();
-        handlers.put("server.ping", (api, codec, params) -> "pong");
-        handlers.put("server.info", (api, codec, params) -> {
+        handlers.put("server.ping", (_, _, _) -> "pong");
+        handlers.put("server.info", (_, _, _) -> {
             var info = GdccVersion.current();
             return new ServerInfo(
                     info.version(),
@@ -72,6 +73,14 @@ public final class JsonRpcMethodRegistry {
                     info.commit(),
                     API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE
             );
+        });
+        // `server.shutdown` is process control, not an `API` facade mapping: the handler only
+        // records the exit intent (idempotent) and returns an empty object. The actual exit is
+        // triggered by the HTTP transport after the response exchange is fully written and
+        // closed (`RpcServerShutdown` documents the deadlock that any earlier exit causes).
+        handlers.put("server.shutdown", (api, codec, params) -> {
+            shutdown.requestExit();
+            return Map.of();
         });
         handlers.put("server.availableCCompilerKinds", (api, codec, params) -> api.availableCCompilerKinds());
         handlers.put("module.create", (api, codec, params) -> {
@@ -82,10 +91,14 @@ public final class JsonRpcMethodRegistry {
             var bound = codec.bindParams(params, RpcParams.ModuleGetParams.class);
             return api.getModule(bound.moduleId());
         });
-        handlers.put("module.list", (api, codec, params) -> api.listModules());
+        handlers.put("module.list", (api, _, _) -> api.listModules());
         handlers.put("module.delete", (api, codec, params) -> {
             var bound = codec.bindParams(params, RpcParams.ModuleDeleteParams.class);
             return api.deleteModule(bound.moduleId());
+        });
+        handlers.put("module.copy", (api, codec, params) -> {
+            var bound = codec.bindParams(params, RpcParams.ModuleCopyParams.class);
+            return api.copyModule(bound.sourceModuleId(), bound.newModuleId(), bound.newModuleName());
         });
         handlers.put("vfs.createDirectory", (api, codec, params) -> {
             var bound = codec.bindParams(params, RpcParams.VfsCreateDirectoryParams.class);
@@ -94,9 +107,19 @@ public final class JsonRpcMethodRegistry {
         handlers.put("vfs.putFile", (api, codec, params) -> {
             var bound = codec.bindParams(params, RpcParams.VfsPutFileParams.class);
             // A missing displayPath must reach the API as "not provided", not as an explicit null.
-            return bound.displayPath() == null
-                    ? api.putFile(bound.moduleId(), bound.path(), bound.content())
-                    : api.putFile(bound.moduleId(), bound.path(), bound.content(), bound.displayPath());
+            // absolutePath must never be dropped by that shortcut: a caller providing ONLY
+            // absolutePath still goes through the full overload (displayPath stays absent and
+            // the VFS falls back to the virtual path, same as the 3-arg form).
+            if (bound.displayPath() == null && bound.absolutePath() == null) {
+                return api.putFile(bound.moduleId(), bound.path(), bound.content());
+            }
+            return api.putFile(
+                    bound.moduleId(),
+                    bound.path(),
+                    bound.content(),
+                    bound.displayPath(),
+                    bound.absolutePath()
+            );
         });
         handlers.put("vfs.readFile", (api, codec, params) -> {
             var bound = codec.bindParams(params, RpcParams.VfsReadFileParams.class);

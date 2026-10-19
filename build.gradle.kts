@@ -1,9 +1,12 @@
+import java.util.jar.JarFile
+
 plugins {
     id("java")
     id("org.gradlex.extra-java-module-info") version "1.9"
 }
 
-// TinyCC CLI detection/build helpers and the `buildTinyccCli` task (wired into `test`).
+// TinyCC CLI test helpers and four-platform runtime bundle packaging.
+apply(from = "gradle/tinycc-bundle.gradle.kts")
 apply(from = "gradle/tinycc.gradle.kts")
 
 group = "gd.script"
@@ -61,12 +64,26 @@ dependencies {
 }
 
 tasks.test {
+    dependsOn(tasks.jar)
+    doFirst {
+        systemProperty("gdcc.test.jar", tasks.jar.get().archiveFile.get().asFile.absolutePath)
+    }
     useJUnitPlatform {
         // Throughput-tagged tests (real release builds of the benchmark suite) are excluded by
         // default; opt in locally with `./gradlew test -PrunThroughputTests=true`.
         val runThroughputTests = providers.gradleProperty("runThroughputTests").map(String::toBoolean).getOrElse(false)
         if (!runThroughputTests) {
             excludeTags("throughput")
+        }
+        // Editor-addon tests (Godot editor integration scenarios against src/editor_addon) are
+        // excluded by default; opt in locally with `./gradlew test -PincludeEditorAddonTest=true`,
+        // or run only them with `./gradlew test -PeditorAddonTestOnly=true`.
+        val includeEditorAddonTest = providers.gradleProperty("includeEditorAddonTest").map(String::toBoolean).getOrElse(false)
+        val editorAddonTestOnly = providers.gradleProperty("editorAddonTestOnly").map(String::toBoolean).getOrElse(false)
+        if (editorAddonTestOnly) {
+            includeTags("editor_addon")
+        } else if (!includeEditorAddonTest) {
+            excludeTags("editor_addon")
         }
     }
     // The in-process libtcc backend calls FFM restricted methods; tests run on the classpath
@@ -97,7 +114,8 @@ val buildAddonNative by tasks.registering(JavaExec::class) {
 
 val buildAddonAllPlatform by tasks.registering(JavaExec::class) {
     group = "build"
-    description = "Builds the editor addon native libraries for Windows x86_64 and Linux x86_64/AArch64 and installs them into src/editor_addon."
+    description =
+        "Builds the editor addon native libraries for Windows x86_64 and Linux x86_64/AArch64 and installs them into src/editor_addon."
 
     dependsOn(tasks.testClasses)
     classpath = sourceSets.test.get().runtimeClasspath
@@ -202,6 +220,15 @@ fun registerLauncherDistribution(distribution: LauncherDistribution) = tasks.reg
         }
         dirPermissions {
             unix("0755")
+        }
+    }
+    doFirst {
+        val resource = "gdcc/tinycc-bundle/${distribution.platform}/MANIFEST"
+        JarFile(tasks.jar.get().archiveFile.get().asFile).use { jar ->
+            check(jar.getJarEntry(resource) != null) {
+                "Missing TinyCC bundle for ${distribution.platform}; build/stage it under " +
+                        "build/tinycc-bundle/${distribution.platform} before packaging this distribution."
+            }
         }
     }
 }

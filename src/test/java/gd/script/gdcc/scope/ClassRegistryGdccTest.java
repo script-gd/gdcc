@@ -146,6 +146,31 @@ public class ClassRegistryGdccTest {
     }
 
     @Test
+    void gdccClassInheritingRefCountedThroughEngineAncestorsIsYes() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var registry = new ClassRegistry(api);
+        // Regression: the walk used to stop at the first non-GDCC ancestor and fall through
+        // to NO, so GDCC classes whose RefCounted ancestry passes through an engine class
+        // (e.g. ScriptExtension -> Script -> Resource -> RefCounted) were misclassified.
+        var userOnScriptExtension = new LirClassDef("UserOnScriptExtension", "ScriptExtension");
+        var userOnResourceFormatLoader = new LirClassDef("UserOnResourceFormatLoader", "ResourceFormatLoader");
+        var userOnScriptLanguage = new LirClassDef("UserOnScriptLanguage", "ScriptLanguageExtension");
+        var userChildOfLoader = new LirClassDef("UserChildOfLoader", "UserOnResourceFormatLoader");
+        registry.addGdccClass(userOnScriptExtension);
+        registry.addGdccClass(userOnResourceFormatLoader);
+        registry.addGdccClass(userOnScriptLanguage);
+        registry.addGdccClass(userChildOfLoader);
+
+        // Engine classes that are themselves RefCounted propagate YES to GDCC subclasses.
+        assertEquals(RefCountedStatus.YES, registry.getRefCountedStatus(new GdObjectType("UserOnScriptExtension")));
+        assertEquals(RefCountedStatus.YES, registry.getRefCountedStatus(new GdObjectType("UserOnResourceFormatLoader")));
+        // ... including through a GDCC intermediate link in the chain.
+        assertEquals(RefCountedStatus.YES, registry.getRefCountedStatus(new GdObjectType("UserChildOfLoader")));
+        // Non-RefCounted engine ancestors (ScriptLanguage chain reaches Object) stay NO.
+        assertEquals(RefCountedStatus.NO, registry.getRefCountedStatus(new GdObjectType("UserOnScriptLanguage")));
+    }
+
+    @Test
     void addMappedTopLevelGdccClassKeepsSourceNameOverrideSideTableInSync() throws IOException {
         var api = ExtensionApiLoader.loadDefault();
         var registry = new ClassRegistry(api);

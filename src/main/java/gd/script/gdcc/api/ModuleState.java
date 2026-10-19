@@ -77,6 +77,47 @@ final class ModuleState {
         );
     }
 
+    /// Creates an independent copy of this module under a new id. The VFS is deep-copied with
+    /// fresh directory nodes while immutable file/link leaves are shared by reference (their
+    /// content and metadata, including `updatedAt`, can never change, and later writes replace
+    /// nodes instead of mutating them, so neither module can observe the other's edits).
+    /// Compile options and the frozen class-name map are immutable values carried over as-is;
+    /// compile runtime state deliberately starts fresh on the copy: no last result, no
+    /// publication tracking, and the compiler-managed output links (`generated`/`artifacts`
+    /// under the published mount root) are stripped — they would dangle onto the source's
+    /// build directory, and the copy's first compile re-creates them anyway.
+    synchronized @NotNull ModuleState copyFor(
+            @NotNull String newModuleId, @Nullable String newModuleName, long newModuleGeneration
+    ) {
+        var copy = new ModuleState(newModuleId, newModuleName == null ? moduleName : newModuleName, clock, newModuleGeneration);
+        copyChildrenInto(root, copy.root, ROOT_PATH);
+        copy.compileOptions = compileOptions;
+        copy.topLevelCanonicalNameMap = topLevelCanonicalNameMap;
+        return copy;
+    }
+
+    private void copyChildrenInto(
+            @NotNull DirectoryNode source,
+            @NotNull DirectoryNode target,
+            @NotNull VirtualPath currentPath
+    ) {
+        for (var entry : source.children()) {
+            if (currentPath.equals(publishedOutputMountRoot)
+                    && (GENERATED_OUTPUT_DIR.equals(entry.getKey()) || ARTIFACT_OUTPUT_DIR.equals(entry.getKey()))) {
+                continue;
+            }
+            target.putChild(entry.getKey(), switch (entry.getValue()) {
+                case DirectoryNode directory -> {
+                    var directoryCopy = new DirectoryNode();
+                    copyChildrenInto(directory, directoryCopy, currentPath.child(entry.getKey()));
+                    yield directoryCopy;
+                }
+                case FileNode file -> file;
+                case LinkNode link -> link;
+            });
+        }
+    }
+
     /// `createDirectory(...)` is idempotent for existing directories and creates missing ancestors.
     /// `contentVersion` advances only when the tree actually changes: an idempotent mkdir and a
     /// type-conflict failure both leave the version untouched.
@@ -139,19 +180,38 @@ final class ModuleState {
             @NotNull String content,
             @Nullable String displayPath
     ) {
+        return putFile(path, content, displayPath, null);
+    }
+
+    /// `absolutePath` is an optional host-absolute source path (compile-time class
+    /// metadata `source_path`); like `displayPath`, a re-put without it preserves the value the
+    /// file already has, and it stays absent entirely for callers that never provide one.
+    synchronized @NotNull VfsEntrySnapshot.FileEntrySnapshot putFile(
+            @NotNull VirtualPath path,
+            @NotNull String content,
+            @Nullable String displayPath,
+            @Nullable String absolutePath
+    ) {
         if (path.isRoot()) {
             throw new IllegalArgumentException("path '/' cannot be used as a file path");
         }
         Objects.requireNonNull(content, "content must not be null");
-        // Validate the caller-facing label before creating missing parents: a failed write must
+        // Validate the caller-facing paths before creating missing parents: a failed write must
         // not leave mutated parent directories behind at an unchanged content version.
         var normalizedDisplayPath = displayPath == null ? null : normalizeDisplayPath(displayPath);
+        var normalizedAbsolutePath = absolutePath == null
+                ? null : StringUtil.requireTrimmedNonBlank(absolutePath, "absolutePath");
         var parent = requireParentDirectory(path, true);
         var existing = parent.child(path.name());
         if (existing instanceof DirectoryNode) {
             throw typeMismatch(path.text(), "directory", VfsEntrySnapshot.Kind.FILE);
         }
-        var fileNode = FileNode.fromContent(content, resolveDisplayPath(path, normalizedDisplayPath, existing), clock);
+        var fileNode = FileNode.fromContent(
+                content,
+                resolveDisplayPath(path, normalizedDisplayPath, existing),
+                resolveAbsolutePath(normalizedAbsolutePath, existing),
+                clock
+        );
         contentVersion++;
         parent.putChild(path.name(), fileNode);
         return fileNode.snapshot(path);
@@ -664,7 +724,8 @@ final class ModuleState {
                 surfacePath.text(),
                 fileNode.displayPath(),
                 logicalPathFor(surfacePath),
-                fileNode.content()
+                fileNode.content(),
+                fileNode.absolutePath()
         );
         var existing = sourcesByFile.get(fileNode);
         if (existing == null || candidate.virtualPath().compareTo(existing.virtualPath()) < 0) {
@@ -688,6 +749,18 @@ final class ModuleState {
             return normalizeDisplayPath(displayPath);
         }
         return existingNode instanceof FileNode fileNode ? fileNode.displayPath() : surfacePath.text();
+    }
+
+    /// Mirrors the displayPath retention rule: a re-put without `absolutePath` keeps the stored
+    /// value instead of dropping provenance the earlier upload established.
+    private @Nullable String resolveAbsolutePath(
+            @Nullable String absolutePath,
+            @Nullable VfsNode existingNode
+    ) {
+        if (absolutePath != null) {
+            return StringUtil.requireTrimmedNonBlank(absolutePath, "absolutePath");
+        }
+        return existingNode instanceof FileNode fileNode ? fileNode.absolutePath() : null;
     }
 
     /// Compiler-facing paths are internal anchors only. They stay detached from caller-facing
@@ -894,7 +967,8 @@ final class ModuleState {
             @NotNull String virtualPath,
             @NotNull String displayPath,
             @NotNull Path logicalPath,
-            @NotNull String source
+            @NotNull String source,
+            @Nullable String absolutePath
     ) {
         SourceSnapshot {
             virtualPath = VirtualPath.parse(virtualPath).text();

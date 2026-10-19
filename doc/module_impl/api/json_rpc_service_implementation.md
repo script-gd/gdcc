@@ -9,7 +9,11 @@
 ## 文档状态
 
 - 状态：事实源维护中
-- 更新日期：2026-09-13
+- 更新日期：2026-10-18
+- 近期变更（2026-09-28）：新增第 27 个方法 `module.copy`（模块快照复制，见 §2.2 表末
+  语义说明与 §5 测试锚点），编辑器插件 dock 编译流改为"复制私有诊断模块 → 副本
+  options.set → 编译副本"，详见
+  `doc/module_impl/editor_addon/gd3_editor_integration_implementation.md` §4.9。
 - 范围：
   - `src/main/java/gd/script/gdcc/rpc/**`
   - `src/main/java/gd/script/gdcc/api/ModuleState.java`（`.gd`/`.gd3` 源码收集过滤）
@@ -28,8 +32,8 @@
   - 认证/授权、TLS、非 loopback 暴露加固。
   - JSON-RPC 批量请求、位置（by-index）参数、WebSocket/流式传输。
   - 将编辑器插件发布到任何资产库。
-  - 让 `plugin.gd` / dock UI 脚本可被 gdcc 编译。只有客户端库
-    （`gdcc_rpc_client.gd3`）是自举编译目标。
+- 让 `plugin.gd` / dock / `server_launcher.gd` 等解释型脚本可被 gdcc 编译。只有
+  `.gd3` 源文件（客户端库与 §4.1 列出的语言集成文件）是自举编译目标。
 
 ---
 
@@ -81,7 +85,8 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 
 ### 2.2 方法面
 
-方法名采用点分命名空间，与公开 `API` 面一一对应，共 26 个方法。
+方法名采用点分命名空间，与公开 `API` 面一一对应，共 28 个方法（唯一的例外是进程控制
+方法 `server.shutdown`，它不映射 `API` 门面，见本节表末说明）。
 `API.recordCurrentCompileTaskEvent(...)` 被排除，因为它绑定进程内编译线程，远程调用
 没有意义；未分页的 `listCompileTaskEvents(taskId)` 重载也被排除，因为 RPC 面始终使用
 分页、带索引的变体。
@@ -94,13 +99,15 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 |---|---|---|
 | `server.ping` | 无 | `"pong"` |
 | `server.info` | 无 | `{version, branch, commit, maxCompileTaskEventPageSize}` |
+| `server.shutdown` | 无 | `{}` |
 | `server.availableCCompilerKinds` | 无 | `CCompilerKind[]`（本机当前可用后端，枚举名数组） |
 | `module.create` | `{moduleId, moduleName}` | `ModuleSnapshot` |
 | `module.get` | `{moduleId}` | `ModuleSnapshot` |
 | `module.list` | `{}` | `ModuleSnapshot[]` |
 | `module.delete` | `{moduleId}` | `ModuleSnapshot` |
+| `module.copy` | `{sourceModuleId, newModuleId, newModuleName?}` | `ModuleSnapshot` |
 | `vfs.createDirectory` | `{moduleId, path}` | `DirectoryEntrySnapshot` |
-| `vfs.putFile` | `{moduleId, path, content, displayPath?}` | `FileEntrySnapshot` |
+| `vfs.putFile` | `{moduleId, path, content, displayPath?, absolutePath?}` | `FileEntrySnapshot` |
 | `vfs.readFile` | `{moduleId, path}` | 文件内容字符串 |
 | `vfs.deletePath` | `{moduleId, path, recursive}` | `VfsEntrySnapshot` |
 | `vfs.listDirectory` | `{moduleId, path}` | `VfsEntrySnapshot[]` |
@@ -123,6 +130,32 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 
 - `compile.listEvents` 始终使用分页、带索引的 API 变体，以保证 wire shape 稳定；
   `maxCount` 受 `API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE`（1000）上限约束。
+- `module.copy` 在源模块门上一次性取一致快照（VFS + options + 类名映射），目录节点
+  深拷贝、不可变文件/链接叶子按引用共享；副本的编译运行态清零（lastResult、发布跟
+  踪、任务槽），且源模块已发布根下的托管输出链接（`generated`/`artifacts`）不随快
+  照带入副本。目标 id 已占用返回 `-32001`（常见路径在源门等待前快速失败；并发竞争
+  由注册表 `putIfAbsent` 原子判定），源不存在返回 `-32000`；两个 id 都会被 trim，
+  空白值按 `-32602` 处理。可选 `newModuleName` 缺省或 `null` 时继承源名称；提供时 trim
+  并拒绝空白，仅改变副本名称，不改变源模块或副本 id。返回副本的 `ModuleSnapshot`。
+- `server.shutdown` 请求进程级优雅退出，幂等：重复调用返回相同的 `{}`。时序合同（由
+  `RpcServerShutdown` 与 `JsonRpcHttpHandler` 实现，`RpcServerShutdownTest` 钉死）：
+  方法 handler **只**登记退出意图（`AtomicBoolean` + 请求线程上的 ThreadLocal 服务标记）
+  并返回 `{}`；HTTP 层在**实际调用了该方法的 exchange** 写完响应且
+  try-with-resources 关闭之后（由 ThreadLocal 标记精确识别，无关并发请求不可能冒领），
+  由一条**不属于请求 executor** 的平台线程调用 `System.exit(0)`。禁止在 handler 内启动
+  退出线程、禁止在请求线程上直接 `System.exit`（JDK `HttpServer.stop(0)` 等待 handler
+  返回，shutdown hook 的 `stop(0)`/`executor.close()` 会与尚未返回的请求线程互相等待
+  死锁）、禁止用 sleep 赌写回完成。notification 形态（无 `id`）同样触发退出（204 后
+  生效）。边界：若服务 exchange 在写回前断开，进程按设计保持运行（客户端从未看到确认；
+  编辑器侧的端口探测+kill 兜底覆盖清理，见集成实现 §3.7）；两个**并发** shutdown 请求
+  各自标记自己的 exchange，先完成写回者触发退出，另一并发调用方可能观测到连接中断而
+  非 `{}`（二者请求的是同一退出，结果等价）。退出后的优雅收尾由 `gdcc serve` 既有的
+  JVM shutdown hook 完成（`server.close()` + `API.close()`，见 §2.5）。仅 `OS.kill`
+  不够：Windows 上它是 `TerminateProcess`，不执行 shutdown hook。该方法服务于编辑器
+  插件的服务进程管理（
+  `doc/module_impl/editor_addon/gd3_editor_integration_implementation.md` §2.8/§3.7）；
+  GDScript 客户端库不为其提供 wrapper（调用方是 `_exit_tree` 中帧泵可能已停的
+  `server_launcher.gd`，用裸 `HTTPClient` 有界轮询）。
 - `options.set` 接受与 `options.get` 返回完全相同的 JSON 形状（对称 wire format）；
   `compileOptions` 必须是完整对象，因为 `API.setCompileOptions` 替换整个快照。
 - `classMap.*` 是 `getTopLevelCanonicalNameMap` / `setTopLevelCanonicalNameMap` 的
@@ -182,7 +215,10 @@ DTO codec 规则：
 3. 可选组件在 param record 上使用装箱类型以便检测缺失：`Long startIndex`
    （默认 `0`）、`Integer maxCount`（默认 `API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE`）、
    `Boolean includeLowering`（默认 `false`）、`String displayPath` /
-   `String category`（默认 `null`）。
+   `String absolutePath` / `String category`（默认 `null`）。`absolutePath`
+   （2026-09-28 新增）是可选的宿主绝对源路径，仅被编译期类元数据
+   （`gd3_editor_integration_implementation.md` §7.1 的 `source_path`）消费；
+   与 `displayPath` 同规则——重传缺省时保留既有值，空白串报 -32602。
 4. 类型错误的组件（Gson `JsonSyntaxException`/`JsonParseException`）以 `-32602` 失败。
 5. param record 在紧凑构造器中执行 blank/格式校验，覆盖那些 API 层更晚才会失败的
    情况；API 层抛出的 `IllegalArgumentException` **和** `NullPointerException`
@@ -232,7 +268,7 @@ DTO codec 规则：
 - `RpcServeCommand` 是 picocli `Callable<Integer>`，带 `mixinStandardHelpOptions`：
   `--host`（默认 `127.0.0.1`）、`--port`（默认 `6099`）、`--max-request-bytes`
   （默认 16 MiB）。它拥有服务端生命周期：创建 `API`、创建并启动 `JsonRpcServer`、
-  阻塞至 SIGINT、优雅停止。
+  阻塞至 SIGINT 或 `server.shutdown` RPC（§2.2）、优雅停止。
 - `server.info` 复用 CLI `--version` 输出已在使用的 `gdcc-version.properties` 生成
   资源机制。
 - zig launcher 原样把用户参数传给 jar，因此 `gdcc serve` 无需 launcher 改动即可在
@@ -319,11 +355,29 @@ DTO codec 规则：
   version="0.1.0"
   script="plugin.gd"
   ```
-- `plugin.gd` — `@tool extends EditorPlugin`；拥有 dock 与一个 `GdccRpcClient` 节点；
-  在编辑器中解释执行（不是自举目标）。
-- `gdcc_dock.gd` — `@tool extends VBoxContainer`；用代码构建的最小 UI：host/port 输入、
-  连接检查（`server.ping`）、module id 输入、按钮（创建 module、上传当前脚本、
-  analyze、compile、cancel），以及只读日志 `TextEdit`。解释执行。
+- `plugin.gd` — `@tool extends EditorPlugin`；拥有 dock、标题栏 Build、共享项目管理器及项目专用
+  `GdccRpcClient` 节点与 `server_launcher.gd` 实例；持有低功耗 busy 协调器
+  （`OS.low_processor_usage_mode` 单一写入者，§6.3）；负责 `GdccEditorService`
+  常驻节点的就位与 `install(...)`/`uninstall()` 调用（含
+  `network/language_server/use_thread` 的暂存/恢复）。在编辑器中解释执行（不是自举
+  目标）。
+- `gdcc_dock.gd` — `@tool extends VBoxContainer`；顶部单行显示诊断通道连接状态、上次
+  诊断/成功构建的相对时间，其余空间由只读输出 `TextEdit` 填满，右侧图标可清空输出。
+  不再提供 module id 输入或 Ping/Create/Analyze/Build/Cancel 按钮；构建走标题栏 Build，
+  配置走项目设置 `gdcc/*`。仅为共享管理器的解释型视图，不持有项目模块/任务所有权。
+- `gdcc_project_manager.gd` — `@tool extends Node`；独立共享项目操作节点，拥有模块副本
+  预约、项目操作、编译/取消和部署/延迟启用；保留信号 await 及解释型编辑器 API。
+- `gdcc_build_toolbar.gd` — `@tool extends HBoxContainer`；标题栏图标/Build/箭头分裂按钮，
+  PopupPanel 显示服务版本、与 dock 同格式且每秒刷新的成功构建相对时间、项目级编译参数
+  以及真实 GDCC 项目设置入口。相对时间阈值与旧时间记录读取见编辑器集成文档。
+- `server_launcher.gd` — `@tool extends Node`；按需拉起/所有权内关闭 `gdcc serve`
+  （解释执行；dock 在 gdcc 语言注册前就依赖它）。合同见集成实现 §3.7。
+- `gdcc_syntax_highlighter.gd` — `@tool extends EditorSyntaxHighlighter`；`.gd3` 的
+  GDScript 对等语法高亮（解释执行——编译类在 GDExtension SCENE 级注册，够不到
+  EDITOR 级的 EditorSyntaxHighlighter 基类）。合同见集成实现 §3.9。
+- `gdcc_editor_service.gd3`、`gdcc_script_language.gd3`、`gdcc_script.gd3`、
+  `gdcc_script_format_loader.gd3`、`gdcc_script_format_saver.gd3` — `.gd3` 语言集成
+  （编译目标；与客户端同模块 `gdcc_for_editor`）。合同见集成实现 §3。
 - `gdcc_rpc_client.gd3` — JSON-RPC 客户端库源码。**自举编译目标。** 使用专属扩展名
   `.gd3` 而非 `.gd`：Godot 引擎（含编辑器）不加载、不解析、不注册 `.gd3` 文件，
   因此源码中的 `class_name GdccRpcClient` 与编译产物 GDExtension 注册的同名类
@@ -506,10 +560,12 @@ var request_timeout: float = 30.0
     非法；`-4` = 响应既无 `result` 也无 `error`。
 - 类型化便捷 wrapper（`call_rpc` 之上的薄封装，同样返回 `PendingRequest` 的普通
   方法）：`ping`、`server_info`、`create_module`、`delete_module`、`put_file`、
-  `read_file`、`list_directory`、`set_compile_options`（接受 `options.get` wire
-  形状的普通 Dictionary）、`start_compile`、`get_compile_task`、
-  `cancel_compile_task`、`get_last_compile_result`、`list_compile_task_events`、
-  `analyze`。wrapper 的参数名与 §2.2 保持一致。**解释型调用方必须显式传递全部
+  `read_file`、`list_directory`、`get_compile_options`、`set_compile_options`
+  （接受 `options.get` wire 形状的普通 Dictionary）、`start_compile`、
+  `get_compile_task`、`cancel_compile_task`、`get_last_compile_result`、
+  `list_compile_task_events`、`analyze`。wrapper 的参数名与 §2.2 保持一致。新增的
+  wrapper 只有在重新编译安装 GDExtension 后才存在于 ClassDB；此前解释型调用方必须
+  走通用 `call_rpc("options.get", ...)` 路由（§4.4）。**解释型调用方必须显式传递全部
   参数**：gdcc 按设计不向 ClassDB 注册默认参数值（
   `frontend_parameter_default_implementation.md` §5.2，`default_argument_count`
   恒 0），跨边界省略实参会被引擎以 too-few-arguments 静态拒绝；源码中的默认值
@@ -559,22 +615,63 @@ fixture，列入 §7 后续工作。
 
 ### 4.4 插件与 Dock（仅解释执行）
 
-- `plugin.gd` 在 `_enter_tree()` 中通过
-  `add_control_to_dock(EditorPlugin.DOCK_SLOT_RIGHT_UL, dock)` 创建 dock，在
-  `_exit_tree()` 中用 `remove_control_from_docks(dock)` 加 `dock.free()` 移除，并把
-  一个 `GdccRpcClient` 节点加为自己的子节点（使客户端位于编辑器 `SceneTree` 内）。
+- `plugin.gd` 在 `_enter_tree()` 中通过 `add_control_to_bottom_panel(dock, "GDCC")`
+  创建底部面板，在 `_exit_tree()` 中用 `remove_control_from_bottom_panel(dock)` 加
+  `dock.free()` 移除，并把一个 `GdccRpcClient` 节点加为自己的子节点（使客户端位于
+  编辑器 `SceneTree` 内）。独立项目管理器入树后 `plugin.gd` 以 fire-and-forget 方式调用
+  `_project_manager.auto_setup_module()`：确保服务可达并等待驻留服务宣布诊断模块 id，将 Module
+  检查字段指向它。诊断模块由服务独立创建并自动同步，无需 Upload。
+  **Build** 按钮复制诊断模块到基于项目名称和根路径的固定编译副本，传入当前
+  `application/config/name` 作为 `newModuleName`（空白项目名拒绝构建）；随后
+  `options.get` 取完整快照，把 `projectPath` 改为
+  `res://.godot/gdcc/<副本id>/<端点hash>` 的 globalize 结果，并应用点击时冻结的项目
+  `gdcc/build/optimization_level`（DEBUG/RELEASE）与 `gdcc/build/strict_mode` 后通过
+  `options.set` 回传，再启动异步编译；诊断模块选项不变。
+  固定 id 为 `gdcc_editor_compile_<安全化项目名前32字符>_<hash>`，hash 为
+  `globalize_path("res://") + "\n" + trim 后项目名` 的 SHA-256 前16字符，不含 PID。
+  文件名安全化在 `validate_filename()` 基础上将 U+0000–U+001F 和 U+007F 替换为 `_`。
+  端点 hash 为 `host + "\n" + port` 的 SHA-256 前16字符；相同端点跨会话复用目录，
+  不同服务器使用独立目录，避免各服务的内存占用无法协调跨进程磁盘写入。
+  以 `<副本id>_owner` 内存模块和共享项目管理器随机 token 原子占用，其他编辑器占用时拒绝
+  构建，不删除/取消其任务；正常空闲卸载释放副本及占用，异常退出或在途请求卸载
+  保留占用，提示重启服务，不自动接管。诊断模块仍保持进程隔离。
+  options/copy 调用走通用 `call_rpc`，无需依赖已安装扩展中的新 typed wrapper；副本
+  名称回显不匹配时明确提示升级服务端，不继续用诊断名称构建。
+  成功任务的 `CompileResult.artifacts` 中的动态库部署到项目 `bin`，库名使用
+  安全化项目名称、平台、优化级别、Godot 架构标签及库内容 SHA-256 前16字符；写入
+  `res://bin/gdcc.gdextension` 后通过 EditorFileSystem 扫描让引擎维护扩展清单并首次
+  加载，已加载时显式重载。项目描述文件的 `[libraries]` 使用 `<platform>.<architecture>`，
+  不带 debug/release；同一目标指向本次安装库，旧模式条目迁移且别名字段移除，
+  避免 Debug 编辑器选中历史 Debug 库而忽略当前 Release 构建。DLL 文件名仍保留
+  优化级别和内容哈希，其他目标条目保留。CLI/编辑器 addon 库安装器的元数据生成
+  不受此项目 Build 合同影响。详细文件发布、失败和跨目标合同见编辑器集成文档的
+  “Build 部署与启用”节；API/RPC 本身不生成描述文件。
   注意：`.gd3` 源码不被引擎加载，编辑器中的 `GdccRpcClient` 只能来自**已安装的
   编译产物 GDExtension**（§5 的安装器与 gradle 任务负责就地安装）。
-- dock 直接以 `var res: Dictionary = await client.create_module(...).completed` 的
-  形式驱动 `GdccRpcClient`（挂起对象信号，§4.3；无需任何辅助文件），并向
-  日志追加人类可读的行。它按 §2.2/§2.3 的定义精确读取 JSON 中的 record 组件名：
+- 项目管理器以 `var res: Dictionary = await client.create_module(...).completed` 的
+  形式驱动 `GdccRpcClient`（挂起对象信号，§4.3），通过日志/状态信号供 dock 与
+  标题栏共享。它按 §2.2/§2.3 的定义精确读取 JSON 中的 record 组件名：
   ping 结果、module 快照、analyze 结果与 diagnostics
   （`severity`/`category`/`message`/`sourcePath`/`range`）、编译任务进度
   （`state`/`stage`/`completedUnits`/`totalUnits`；没有单独的 `progress` 字段，
   `createdAt`/`completedAt` 是 ISO-8601 字符串），以及最终的
   `CompileResult.outcome`。
-- dock 绝不阻塞编辑器主线程；所有网络等待都是信号 await。编辑器空闲活性的已实现
-  缓解见 §6.3。
+- dock 的 host/port/启动命令是**项目级设置**（ProjectSettings `gdcc/compilation_server/host`、
+  `gdcc/compilation_server/port`、`gdcc/compilation_server/launch_command`；旧项目的 `gdcc/server/*` 三键一次性迁移并移除，新键优先，见集成实现 §3.7 的
+  配置来源修订与一次性 EditorSettings 迁移说明），dock 自身不再提供编辑框，只在状态
+  区只读显示 configured/effective 端点与 auto-launch 是否已配置；`auto_setup_module`
+  在任何连接尝试前先经 `server_launcher.gd` 的 `ensure_running_async`（见集成实现
+  §3.7）：已侦听则直连（外部服务，绝不关闭）；未配置命令则保持被动失败行为；配置了
+  命令则按 `{host}`/`{port}` 占位符拉起并等待就绪（≤15s）。`server_launcher.gd` 还
+  持有 `shutdown_owned()`（插件 `_exit_tree` 最后一步）：对本会话拉起的进程发
+  `server.shutdown` RPC，收到 200 响应即完成；不可达且端口仍在侦听时才 `OS.kill`
+  兜底（PID 复用防护，见集成实现 §10 R19）。
+- 标题栏菜单通过独立客户端查询 `server.availableCCompilerKinds`，可用项之外始终提供
+  默认 Auto。项目选择保存于 `gdcc/build/c_compiler_kind`，Auto 在构建副本的 `options.set`
+  中写入 `cCompilerKind: null`；显式选择回传枚举名称。断连、查询失败或无后端时禁用
+  Build，并显示黄色警告图标与提示；端点改变后的旧响应不可更新缓存。
+- 管理器的正常操作不阻塞网络等待；所有网络等待都是信号 await。卸载时清理副本使用
+  有界阻塞 HTTPClient，因为帧泵客户端已离树。编辑器空闲活性的缓解见 §6.3。
 
 ---
 
@@ -601,7 +698,14 @@ fixture，列入 §7 后续工作。
   `maxCount` 按 `1000` 而非 `0` 处理；缺 `moduleId` → `-32602`，即使 API 抛出的
   是 `NullPointerException`）、§2.4 的每个错误码（通过真实 `API` 实例触发）、
   notification 执行后不产生响应对象、批量拒绝、空事件日志使
-  `compile.getLatestEvent` 返回 `null`，以及全部 26 个方法的路由。
+  `compile.getLatestEvent` 返回 `null`、`module.copy` 的源缺失/目标占用/空白参数
+  错误码，以及全部 28 个方法的路由。
+- 进程关闭：`RpcServerShutdownTest` —— `server.shutdown` 的三级合同：dispatcher 层
+  （`{}` 结果 + 意图登记幂等）；进程内 HTTP 层（注入非退出测试 latch：200 + `{}` 到达
+  客户端**之后**退出动作恰好触发一次、运行在 `gdcc-rpc-exit` 平台线程而非请求
+  executor 虚拟线程、notification 204 路径同样触发）；真实子进程层（
+  `java -cp <测试 classpath> gd.script.gdcc.Main serve --port <空闲端口>`：读到 200 与
+  body 之后进程才退出且退出码为 0，端口随后关闭）。
 - HTTP 传输：`RpcServerHttpTest` —— 临时端口上的真实服务端加 JDK `HttpClient`：
   POST 往返、`Content-Type` 强制（`415`）、经有界读取的大小上限（`413`，用刚好
   超过上限的 body 覆盖）、非 POST（`405` 带 `Allow: POST`）、格式错误的 JSON
@@ -611,8 +715,12 @@ fixture，列入 §7 后续工作。
 - API 往返：`RpcApiRoundTripHttpTest` —— 真实 `API` 上的完整 HTTP 工作流：
   `module.create` → `vfs.putFile`（两个源文件）→ `options.get`/`options.set` →
   `classMap.set`/`classMap.get` → `analyze.run`（合法源码预期 `COMPLETED` 且无
-  diagnostics；非法源码预期带 diagnostics）→ `module.delete`。该路径绝不启动原生
-  构建。
+  diagnostics；非法源码预期带 diagnostics）→ `module.delete`；以及编辑器编译流
+  使用的 `module.copy` 工作流（复制保真、目标占用 `-32001`、副本独立 analyze、
+  源后续写入不泄漏进副本、删除副本不影响源）。该路径绝不启动原生构建。
+- API 层模块复制：`ApiModuleCopyTest`（api 包内）—— `copyModule` 的
+  VFS/元数据/options/类名映射逐项保真、编译运行态重置、缺源/目标占用/空参数错误、
+  复制后双向隔离、副本经 `RecordingCompiler` 独立编译成功、源忙时按模块门等待。
 - HTTP 上的编译（zig 门控）：`RpcCompileHttpIntegrationTest` —— 同上 HTTP 工作流，
   外加用 `@TempDir` `projectPath` 的 `options.set`、`compile.start`、带 deadline
   轮询 `compile.getTask` 直至完成、断言 `SUCCESS`、断言 `compile.getLastResult` 与
@@ -632,9 +740,30 @@ fixture，列入 §7 后续工作。
   `call_rpc` 栈上完成，踩中"先发射后 await"陷阱，而 ping 成功路径暴露不出它）。
   合同断言运行在去注释后的代码上：文件自身文档会提到这些记号，匹配原始源码会在
   删掉真实代码后仍保持绿色（false green）。该测试还包含 `plugin.gd` /
-  `gdcc_dock.gd` 的解析级检查（仅解析，不 lowering，因为编辑器专用 API 不是自举
+  `gdcc_dock.gd` / `gdcc_project_manager.gd` / `gdcc_build_toolbar.gd` 的解析级检查
+  （仅解析，不 lowering，因为编辑器专用 API 不是自举
   目标）与 `plugin.cfg` 五字段检查。若分析或 lowering 拒绝了客户端的某个构造，
   按 §4.2 简化客户端后重跑；不得削弱测试期望。
+- `.gd3` 语言集成静态门禁：`EditorAddonScriptLanguageAnalysisTest`（gd3 编辑器集成）—— `addons/gdcc/` 下**全部** `.gd3` 源码（语言/脚本/加载器/保存器/
+  常驻服务/客户端）作为一个模块 analyze+lowering 干净（跨类引用可解析）；全部编译源
+  去注释+去字符串内容后无 `await`；plugin/dock/项目管理器/工具栏/launcher/高亮器
+  等解释型 `.gd` 仅语法解析；安装器两个 `.gdextension` 安装出口（单平台/多平台）产物均含
+  `reloadable = false` 且无 `reloadable = true`（热重载悬空指针防护，集成实现 §6；
+  后端 `GdextensionMetadataFile` 的 `reloadable = true` 渲染合同不变，改写只做在
+  安装器后处理）；无动态库产物的安装必须抛 `IOException`（负例）。
+- `.gd3` 语言集成引擎测试（zig + `GODOT_BIN` 门控）：
+  `EditorAddonScriptLanguageEngineTest` —— 真实 headless **编辑器**
+  （`--headless --editor --path <副本> --quit-after <兜底帧数>`），驱动插件
+  `addons/gdcc_test_driver`（仅测试用，不随插件发布）逐行输出 `GD3_TEST_RESULT: `。
+  子进程的配置目录被重定向进用例目录（`APPDATA`/`XDG_CONFIG_HOME`/`HOME`），
+  EditorSettings 写入（`use_thread` 等）绝不污染真实用户配置；`gdcc/compilation_server/*` 自
+  2026-10 起是 harness 项目内的项目级设置，天然随用例目录隔离。用例：
+  `language`（语言注册 GD3、`ResourceLoader.load` 往返、`ResourceSaver.save` 往返、
+  `_reload` 重读、worker 线程 `load_threaded_*` 路径、`_validate` 返回 valid、
+  禁用/启用循环中语言实例同一性）；`launch`（冷启动无服务时经配置的启动命令自动拉起
+  `gdcc serve`——测试用 `java -cp <测试 classpath> gd.script.gdcc.Main serve` 而非
+  预构建 jar 以保持自包含——dock 连接成功，禁用插件后被拉起的进程退出）；
+  `launch_bad`（不存在的可执行文件：launcher 输出 `GDCC server launcher: ...`
 - 引擎自举（zig + Godot 门控）：`EditorAddonBootstrapEngineTest` —— 端到端自举
   证明：
   1. 通过公开 `API`（`gdcc_rpc_client.gd3` 以 `.gd3` 虚拟路径写入模块 VFS +
@@ -679,10 +808,18 @@ fixture，列入 §7 后续工作。
 `buildAddonNative`（本机平台）与 `buildAddonAllPlatform`（Windows x86_64 + Linux
 x86_64/AArch64），供真实编辑器手工验收（启用插件 + dock ping + §6.3 的空闲活性
 检查）。编译产物库名为 `gdcc_for_editor`（module id；插件后续将扩展到 RPC 之外的
-编辑器功能，源码的 `class_name GdccRpcClient` 不受库名影响）。注：在非 Windows
-主机上构建 Windows 平台时，`ZigCcCompiler` 会把声明的 `x86_64-windows-msvc` 替换为
-`x86_64-windows-gnu` 并发出警告（zig 无法为 msvc 目标提供 libc；该替换同时关闭
-LTO，产物仍为可正常加载的自包含 GDExtension DLL，与 zig launcher 的 ABI 选择一致）。
+编辑器功能，源码的 `class_name GdccRpcClient` 不受库名影响）。Windows 目标统一声明
+`x86_64-windows-gnu` / `aarch64-windows-gnu`，不依赖 MSVC SDK，使用与其他平台一致的
+PCH、逐 TU 编译与单次链接策略。GDExtension 的边界为 C ABI，具体构建合同见
+`backend_build_system_implementation.md`。
+
+发布插件使用同一入口的 `--package` 模式：
+`./gradlew buildAddonAllPlatform --args=--package --no-daemon --info --console=plain`。
+该模式独立为 Windows x86_64、Linux x86_64/AArch64、macOS AArch64 编译 Release 库，
+生成 `build/distributions/gdcc_editor_addon.zip`，不改变源码目录的手工安装。
+包根为 `addons/gdcc/`，排除 `.gd3` 与其他 addon；debug/release 模式均加载对应 Release 库，
+扩展保持 `reloadable = false`。CI 的 Linux x64 editor-addon 任务和 Release 工作流共用此入口，
+详细内容边界见 `gd3_editor_integration_implementation.md` §3.12。
 
 ---
 
@@ -720,10 +857,12 @@ test_suite 中新增聚焦 fixture 单独定位环节（特别是 2、4）。
 发送与同步失败完成依赖 `SceneTree.process_frame`，且 `HTTPRequest` 默认在主循环中
 推进；Godot 编辑器默认开启 `OS.low_processor_usage_mode`，无输入/重绘时主循环跳过
 迭代，`process_frame` 不发射、HTTP 不前进。自举测试的 `--headless` 全速主循环测
-不到该场景，headless ping 碰巧成功也不能证明编辑器空闲活性。已实现的缓解：dock
-（解释型，可用编辑器 API）在任何请求在途期间暂时关闭
-`OS.low_processor_usage_mode`（`_busy_count` 计数），最后一个在途动作结束后恢复原
-模式；客户端另以 `request_timeout` 设置 `HTTPRequest.timeout` 兜底挂起请求。真实
+不到该场景，headless ping 碰巧成功也不能证明编辑器空闲活性。已实现的缓解（
+2026-09-23 起）：`plugin.gd` 持有**单一写入者** busy 协调器——dock 与
+`server_launcher.gd` 只在 busy 起止时向它上报 ±1（`_report_busy`），首个 0→1 时保存
+原值并置 `false`，归 0 时恢复该原值（不写死 `true`）；dock 与 launcher 不再直写
+`OS.*`，双写入者互相覆盖的风险由此消除（集成实现 §3.5/§3.6）。客户端另以
+`request_timeout` 设置 `HTTPRequest.timeout` 兜底挂起请求。真实
 编辑器手工验收必须包含"点击 ping/compile 后不再移动鼠标，请求仍能完成"一条。
 
 ### 6.4 其余已知事项
