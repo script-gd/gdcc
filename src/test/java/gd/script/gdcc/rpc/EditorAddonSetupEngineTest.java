@@ -108,64 +108,64 @@ class EditorAddonSetupEngineTest {
             server.createContext("/", exchange -> {
                 var path = exchange.getRequestURI().getPath();
                 byte[] body;
-                if (path.equals("/redirect")) {
-                    exchange.getResponseHeaders().add("Location", base + "compiler.jar");
-                    exchange.sendResponseHeaders(302, -1);
-                    exchange.close();
-                    return;
-                } else if (path.equals("/compiler.jar")) {
-                    body = jar;
-                } else if (path.equals("/libs.zip")) {
-                    body = libraries;
-                } else if (path.equals("/preview.zip")) {
-                    body = preview;
-                } else if (path.equals("/gdcc-jre/releases/latest") || path.equals("/bad/gdcc-jre/releases/latest")) {
-                    body = ("""
+                switch (path) {
+                    case "/redirect" -> {
+                        exchange.getResponseHeaders().add("Location", base + "compiler.jar");
+                        exchange.sendResponseHeaders(302, -1);
+                        exchange.close();
+                        return;
+                    }
+                    case "/compiler.jar" -> body = jar;
+                    case "/libs.zip" -> body = libraries;
+                    case "/preview.zip" -> body = preview;
+                    case "/gdcc-jre/releases/latest", "/bad/gdcc-jre/releases/latest" -> body = ("""
                             {"assets":[{"name":"gdcc-jre-1.0.0-windows-x64.zip","browser_download_url":"%sruntime.zip","size":%d},
                             {"name":"SHA256SUMS","browser_download_url":"%sSHA256SUMS"}]}
                             """.formatted(base, runtimeBytes.length, base + (path.startsWith("/bad/") ? "bad/" : ""))).getBytes(StandardCharsets.UTF_8);
-                } else if (path.equals("/runtime.zip")) {
-                    exchange.sendResponseHeaders(200, runtimeBytes.length);
-                    for (var offset = 0; offset < runtimeBytes.length; offset += 65536) {
-                        exchange.getResponseBody().write(runtimeBytes, offset, Math.min(65536, runtimeBytes.length - offset));
-                        exchange.getResponseBody().flush();
-                        try {
-                            Thread.sleep(2);
-                        } catch (InterruptedException exception) {
-                            Thread.currentThread().interrupt();
-                            break;
+                    case "/runtime.zip" -> {
+                        exchange.sendResponseHeaders(200, runtimeBytes.length);
+                        for (var offset = 0; offset < runtimeBytes.length; offset += 65536) {
+                            exchange.getResponseBody().write(runtimeBytes, offset, Math.min(65536, runtimeBytes.length - offset));
+                            exchange.getResponseBody().flush();
+                            try {
+                                Thread.sleep(2);
+                            } catch (InterruptedException exception) {
+                                Thread.currentThread().interrupt();
+                                break;
+                            }
                         }
+                        exchange.close();
+                        return;
                     }
-                    exchange.close();
-                    return;
-                } else if (path.equals("/SHA256SUMS")) {
-                    body = (sha256(runtimeBytes).toUpperCase(Locale.ROOT) + "  gdcc-jre-1.0.0-windows-x64.zip\n").getBytes(StandardCharsets.UTF_8);
-                } else if (path.equals("/bad/SHA256SUMS")) {
-                    body = ("0".repeat(64) + "  gdcc-jre-1.0.0-windows-x64.zip\n").getBytes(StandardCharsets.UTF_8);
-                } else if (path.equals("/gdcc/releases")) {
-                    var count = exchange.getRequestURI().getQuery().endsWith("page=2") ? 1 : 20;
-                    var releases = new com.google.gson.JsonArray();
-                    for (var index = 0; index < count; index++) {
-                        var identifier = index + (count == 1 ? 20 : 0);
-                        var release = JsonParser.parseString("""
-                                {"id":%d,"tag_name":"v1.%d","name":"Fixture %d","published_at":"2026-10-17T09:30:00Z","assets":[
-                                  {"name":"gdcc.jar","browser_download_url":"%sredirect","digest":"sha256:%s"},
-                                  {"name":"gdcc-libs.zip","browser_download_url":"%slibs.zip"}]}
-                                """.formatted(identifier, identifier, identifier, base, sha256(jar), base));
-                        releases.add(release);
+                    case "/SHA256SUMS" ->
+                            body = (sha256(runtimeBytes).toUpperCase(Locale.ROOT) + "  gdcc-jre-1.0.0-windows-x64.zip\n").getBytes(StandardCharsets.UTF_8);
+                    case "/bad/SHA256SUMS" ->
+                            body = ("0".repeat(64) + "  gdcc-jre-1.0.0-windows-x64.zip\n").getBytes(StandardCharsets.UTF_8);
+                    case "/gdcc/releases" -> {
+                        var count = exchange.getRequestURI().getQuery().endsWith("page=2") ? 1 : 20;
+                        var releases = new com.google.gson.JsonArray();
+                        for (var index = 0; index < count; index++) {
+                            var identifier = index + (count == 1 ? 20 : 0);
+                            var release = JsonParser.parseString("""
+                                    {"id":%d,"tag_name":"v1.%d","name":"Fixture %d","published_at":"2026-10-17T09:30:00Z","assets":[
+                                      {"name":"gdcc.jar","browser_download_url":"%sredirect","digest":"sha256:%s"},
+                                      {"name":"gdcc-libs.zip","browser_download_url":"%slibs.zip"}]}
+                                    """.formatted(identifier, identifier, identifier, base, sha256(jar), base));
+                            releases.add(release);
+                        }
+                        body = releases.toString().getBytes(StandardCharsets.UTF_8);
                     }
-                    body = releases.toString().getBytes(StandardCharsets.UTF_8);
-                } else if (path.equals("/gdcc/actions/artifacts")) {
-                    body = """
+                    case "/gdcc/actions/artifacts" -> body = """
                             {"artifacts":[{"id":123,"name":"gdcc-jar-and-libs","expired":false,"created_at":"2026-10-17T09:30:00Z",
                             "workflow_run":{"head_branch":"feature/setup","head_sha":"abcdef123456"}}]}
                             """.getBytes(StandardCharsets.UTF_8);
-                } else {
-                    body = "not found".getBytes(StandardCharsets.UTF_8);
-                    exchange.sendResponseHeaders(404, body.length);
-                    exchange.getResponseBody().write(body);
-                    exchange.close();
-                    return;
+                    default -> {
+                        body = "not found".getBytes(StandardCharsets.UTF_8);
+                        exchange.sendResponseHeaders(404, body.length);
+                        exchange.getResponseBody().write(body);
+                        exchange.close();
+                        return;
+                    }
                 }
                 exchange.sendResponseHeaders(200, body.length);
                 exchange.getResponseBody().write(body);
@@ -203,7 +203,7 @@ class EditorAddonSetupEngineTest {
                 var steps = JsonParser.parseString(result.orElseThrow().substring("GDCC_SETUP_RESULT: ".length())).getAsJsonArray();
                 var expected = new ArrayList<>(List.of("disconnected", "connected", "timeline", "window_bounds", "footer_bounds",
                         "native_coroutine_bridge", "proxy_initialization", "java_parser", "java_process", "java_scan", "java_check_stays", "header_alignment", "next_navigation", "load_more_item", "action_layout", "action_alignment",
-                        "process_timeout", "user_cancellation", "safe_paths", "manual_proxy", "jar_metadata", "zip_traversal",
+                        "process_timeout", "user_cancellation", "safe_paths", "manual_proxy", "environment_proxy", "jar_metadata", "zip_traversal",
                         "release_pagination", "release_dates", "nightly_link", "preview_dates", "release_install", "preview_nested_libraries",
                         "local_import_reuse", "local_dependency_sentinel", "missing_dependency_dialog", "checksum_failure", "cache_inventory"));
                 if (distributionSmoke) {
@@ -418,6 +418,14 @@ class EditorAddonSetupEngineTest {
                 check_step("safe_paths", not GdccInstallUtil.check_relative_path("../escape") and not GdccInstallUtil.check_relative_path("C:/escape") and not GdccInstallUtil.check_relative_path("a/../../escape") and GdccInstallUtil.check_relative_path("lib/a.jar"))
                 var proxy := GdccInstallUtil.parse_windows_proxy("  ProxyEnable    REG_DWORD    0x1\\n  ProxyServer    REG_SZ    http=127.0.0.1:7890;https=[::1]:8080\\n")
                 check_step("manual_proxy", proxy.get("http") == ["127.0.0.1", 7890] and proxy.get("https") == ["::1", 8080] and GdccInstallUtil.parse_windows_proxy("ProxyEnable REG_DWORD 0x0\\nProxyServer REG_SZ x:1").is_empty(), str(proxy))
+                var saved_http_proxy := OS.get_environment("http_proxy")
+                var saved_https_proxy := OS.get_environment("https_proxy")
+                OS.set_environment("http_proxy", "http://user:pass@127.0.0.1:7890")
+                OS.set_environment("https_proxy", "[::1]:8080")
+                var env_proxy := GdccInstallUtil.environment_proxies()
+                OS.set_environment("http_proxy", saved_http_proxy)
+                OS.set_environment("https_proxy", saved_https_proxy)
+                check_step("environment_proxy", env_proxy.get("http") == ["127.0.0.1", 7890] and env_proxy.get("https") == ["::1", 8080] and GdccInstallUtil.parse_proxy_address("proxy.local") == ["proxy.local", 80] and GdccInstallUtil.parse_proxy_address("garbage::").is_empty(), str(env_proxy))
                 var info := GdccInstallUtil.jar_info(ProjectSettings.globalize_path("res://fixture/compiler.jar"))
                 check_step("jar_metadata", info.get("version") == "1.2.3" and GdccInstallUtil.check_dependencies(info))
                 check_step("zip_traversal", GdccInstallUtil.extract_zip(ProjectSettings.globalize_path("res://fixture/unsafe.zip"), ProjectSettings.globalize_path("res://unsafe")) != OK and not FileAccess.file_exists("res://escaped.txt"))

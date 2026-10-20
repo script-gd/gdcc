@@ -1008,9 +1008,11 @@ lifecycle/reconciler/scheduler/mirror/outline）、LSP 通道门面与对外公�
   插件既有 busy 计数维持帧泵。服务经 `phase_changed` 更新当前阶段（读取发布信息、
   下载、SHA-256 校验、解压、检验解压后的 Java、安装/复制校验、检验安装后的 Java、
   清理、完成），非下载阶段使用不确定进度动画。JRE 必须有 SHA-256；编译器在 GitHub
-  提供 digest 时校验，旧资产无 digest 时依赖 HTTPS。Windows 自动读取当前用户手动
-  代理的 `ProxyEnable`/`ProxyServer`（忽略 PAC/绕过规则）；显式 Godot Editor HTTP
-  代理优先；系统策略强制机器级代理、SOCKS 和代理认证不在此接口范围。
+  提供 digest 时校验，旧资产无 digest 时依赖 HTTPS。显式 Godot Editor HTTP
+  代理优先；未配置时读取 `http_proxy`/`https_proxy` 环境变量（小写优先、兼容大写，
+  允许 scheme 前缀，忽略认证信息，缺省端口 80）；Windows 上环境变量未覆盖的协议再
+  读取当前用户手动代理的 `ProxyEnable`/`ProxyServer`（忽略 PAC/绕过规则）；系统策略
+  强制机器级代理、SOCKS 和代理认证不在此接口范围。
   ZIP 解包前检查中央目录的大小/条目数，拒绝路径穿越、加密和不支持的 ZIP64；
   tar.gz 有解压大小、头校验和及条目数上限，支持发行包的 PAX 时间戳和普通文件/目录，
   保留 Unix 执行位；法律声明符号链接在普通文件完成后物化为包内副本，不创建可用于
