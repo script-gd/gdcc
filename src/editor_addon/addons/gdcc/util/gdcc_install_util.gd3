@@ -379,12 +379,33 @@ static func parse_windows_proxy(text: String) -> Dictionary:
             if parts.size() == 2:
                 addresses[parts[0].strip_edges().to_lower()] = parts[1].strip_edges()
     var proxies := {}
-    var pattern := RegEx.create_from_string(r"(?i)^(?:http://)?(?:\[([^\]]+)\]|([^:/@\s]+))(?::([0-9]+))?$")
     for protocol in ["http", "https"]:
-        var match := pattern.search(str(addresses.get(protocol, "")))
-        if match != null:
-            var host := match.get_string(1) if not match.get_string(1).is_empty() else match.get_string(2)
-            var port := 80 if match.get_string(3).is_empty() else int(match.get_string(3))
-            if port >= 1 and port <= 65535:
-                proxies[protocol] = [host, port]
+        var address := parse_proxy_address(str(addresses.get(protocol, "")))
+        if not address.is_empty():
+            proxies[protocol] = address
     return proxies
+
+
+static func environment_proxies() -> Dictionary:
+    var proxies := {}
+    for protocol in ["http", "https"]:
+        for variable in [protocol + "_proxy", protocol.to_upper() + "_PROXY"]:
+            var address := parse_proxy_address(OS.get_environment(variable))
+            if not address.is_empty():
+                proxies[protocol] = address
+                break
+    return proxies
+
+
+# Accepts [scheme://][user:pass@]host[:port]; credentials are dropped because
+# HTTPRequest proxies have no authentication support.
+static func parse_proxy_address(raw: String) -> Array:
+    var pattern := RegEx.create_from_string(r"(?i)^\s*(?:[a-z][a-z0-9+.-]*://)?(?:[^/@\s]+@)?(?:\[([^\]]+)\]|([^:/@\s]+))(?::([0-9]+))?/?\s*$")
+    var found := pattern.search(raw)
+    if found == null:
+        return []
+    var host := found.get_string(1) if not found.get_string(1).is_empty() else found.get_string(2)
+    var port := 80 if found.get_string(3).is_empty() else int(found.get_string(3))
+    if port < 1 or port > 65535:
+        return []
+    return [host, port]

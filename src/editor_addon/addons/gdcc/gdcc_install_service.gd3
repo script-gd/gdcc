@@ -139,12 +139,18 @@ func initialize_proxy() -> Variant:
     if not host.is_empty():
         var port := int(settings.get_setting("network/http_proxy/port"))
         _proxies = {"http": [host, port], "https": [host, port]}
-    elif OS.get_name() == "Windows":
-        var result := await run_process("reg.exe", PackedStringArray([
-            "query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
-        ]))
-        if result["code"] == 0:
-            _proxies = GdccInstallUtil.parse_windows_proxy(result["output"])
+    else:
+        _proxies = GdccInstallUtil.environment_proxies()
+        # Per-protocol fallback: the registry covers protocols the environment leaves unset.
+        if OS.get_name() == "Windows" and not (_proxies.has("http") and _proxies.has("https")):
+            var result := await run_process("reg.exe", PackedStringArray([
+                "query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+            ]))
+            if result["code"] == 0:
+                var registry := GdccInstallUtil.parse_windows_proxy(result["output"])
+                for protocol in ["http", "https"]:
+                    if not _proxies.has(protocol) and registry.has(protocol):
+                        _proxies[protocol] = registry[protocol]
 
 
 func fetch(url: String, destination: String = "") -> Variant:
