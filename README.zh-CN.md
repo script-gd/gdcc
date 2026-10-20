@@ -23,21 +23,6 @@ GDCC 是一个将 GDScript 编译为 GDExtension 本机二进制模块的编译�
 
 GDCC 目前仍处于 beta 阶段，在使用前请先针对您的项目进行评估。
 
-## 目前支持的 GDScript 用法
-
-- 基本脚本结构：`class_name`、`extends`、函数声明、变量声明。
-- 常见标量、内置类型、对象类型、`Variant`、`Array`、`Dictionary` 和 PackedArray 类型。
-- 局部变量、赋值、返回值类型检查，以及带 `break` / `continue` 的普通 `if` / `elif` / `while` 控制流。
-- 条件表达式中的 Godot 风格真值判断。
-- 三元表达式（`value if condition else other`），包括嵌套三元。
-- `for` 循环，支持 range、字符串、数组、字典键、PackedArray 与通用 `Variant` 可迭代对象。
-- 函数体内声明的 lambda （匿名函数），包括捕获与 `Callable` 用法。
-- 所有的内置类型和引擎对象的属性读取与写入。
-- 常见函数调用、方法调用、构造调用和全局调用，包括语句位置的 `void` 调用。
-- 已支持数组、字典、PackedArray 和类型化容器的索引访问。
-- 常见的属性初始化语法。
-- 混合强类型和弱类型变量代码，允许渐进式迁移到gdcc。
-
 ## 亮点
 
 - 几乎全部的 `GDScript` 功能支持，兼容 `Godot >= 4.5.0`，可使用任意 Godot 引擎中的类、成员和函数。
