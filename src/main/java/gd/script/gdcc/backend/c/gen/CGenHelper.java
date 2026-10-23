@@ -56,15 +56,23 @@ public final class CGenHelper {
     private final @NotNull CIntrinsicManager intrinsicManager;
     private final @NotNull OperatorResolver operatorResolver = new OperatorResolver();
     private final @NotNull Set<BindingData> bindingDataSet = new HashSet<>();
+    /// The authoritative module class list, borrowed — not copied: read once while the plan
+    /// captures it (production forces the capture during prepare, standalone helpers on first
+    /// onready query); never re-read once the plan exists.
+    private final @NotNull List<? extends ClassDef> moduleClassDefs;
     private final boolean hasCoroutineFunctions;
     /// Module-wide GDCC vtable plan, computed eagerly so inheritance/signature conflicts fail
     /// fast at helper construction. Production registers the whole module before this point;
     /// directly constructed fixtures with incomplete registries are planned as hierarchy roots
     /// with an empty inherited prefix under the planner's tolerance rule.
     private final @NotNull CVtablePlanner vtablePlanner;
+    /// Frozen onready session plan, built once. `CCodegen.prepare` forces it right after this
+    /// helper exists; direct fixtures build it lazily on first query.
+    private @Nullable COnreadyPlan onreadyPlan;
 
     public CGenHelper(@NotNull CodegenContext context, @NotNull List<? extends ClassDef> classDefs) {
         this.context = context;
+        this.moduleClassDefs = Objects.requireNonNull(classDefs);
         this.builtinBuilder = new CBuiltinBuilder(this);
         this.intrinsicManager = new CIntrinsicManager();
         this.collectBindingData(classDefs);
@@ -2006,6 +2014,44 @@ public final class CGenHelper {
 
     public boolean checkGdccClassByName(@NotNull String className) {
         return context.classRegistry().isGdccClass(className);
+    }
+
+    // ==== onready session plan ====
+    //
+    // Chain/descendant/user-`_ready` facts are frozen plan lookups (see COnreadyPlan);
+    // `checkOnreadyProperty` alone stays a raw tag query on live annotations.
+
+    /// Raw `@onready` tag check: true exactly when the property carries the `onready`
+    /// annotation key — independent of value, staticness, type or initializer provenance.
+    public boolean checkOnreadyProperty(@NotNull LirPropertyDef property) {
+        return property.getAnnotations().containsKey("onready");
+    }
+
+    /// The frozen onready plan for this helper's module classes, built on first use when the
+    /// caller did not already force it during prepare.
+    public @NotNull COnreadyPlan onreadyPlan() {
+        if (onreadyPlan == null) {
+            onreadyPlan = COnreadyPlan.create(this, moduleClassDefs);
+        }
+        return onreadyPlan;
+    }
+
+    /// True when the class or any same-module GDCC ancestor contributes at least one
+    /// source-initializer onready property.
+    public boolean checkClassChainHasOnreadyInitializer(@NotNull LirClassDef classDef) {
+        return onreadyPlan().classPlan(classDef.getName()).chainHasOnreadyInitializer();
+    }
+
+    /// True when this class's chain fact or any same-module descendant's chain fact is true —
+    /// a descendant may inherit this class's `_ready`, so entry decisions need both.
+    public boolean checkClassOrDescendantHasOnreadyInitializer(@NotNull LirClassDef classDef) {
+        return onreadyPlan().classPlan(classDef.getName()).classOrDescendantHasOnreadyInitializer();
+    }
+
+    /// The chain's nearest valid user `_ready` function; null when absent. The declaring
+    /// class is `ClassPlan.userReadyOwnerClassName()` on the same frozen plan.
+    public @Nullable LirFunctionDef resolveChainUserReadyFunctionOrNull(@NotNull LirClassDef classDef) {
+        return onreadyPlan().classPlan(classDef.getName()).userReadyFunction();
     }
 
     /// Renders generated per-class object pointer helper name for a GDCC object type.

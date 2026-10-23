@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -39,12 +40,16 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CGenHelperTest {
     private CGenHelper helper;
     private ClassRegistry classRegistry;
+    private CodegenContext context;
 
     @BeforeEach
     void setUp() throws IOException {
@@ -60,8 +65,32 @@ class CGenHelperTest {
         classRegistry.addGdccClass(gdccChild);
         classRegistry.addGdccClass(gdccInner);
 
-        var context = new CodegenContext(projectInfo, classRegistry);
+        context = new CodegenContext(projectInfo, classRegistry);
         helper = new CGenHelper(context, List.of(gdccBase, gdccChild, gdccInner));
+    }
+
+    /// Registers all classes and builds a helper whose module list is exactly these classes.
+    private CGenHelper newModuleHelper(List<LirClassDef> classes) {
+        for (var classDef : classes) {
+            classRegistry.addGdccClass(classDef);
+        }
+        return new CGenHelper(context, classes);
+    }
+
+    private static LirPropertyDef newProperty(
+            String name,
+            boolean isStatic,
+            String initFunc,
+            Map<String, String> annotations
+    ) {
+        return new LirPropertyDef(name, GdIntType.INT, isStatic, initFunc, null, null, annotations);
+    }
+
+    private static LirFunctionDef newReadyFunction(String ownerClassName) {
+        var ready = new LirFunctionDef("_ready");
+        ready.setReturnType(GdVoidType.VOID);
+        ready.addParameter(new LirParameterDef("self", new GdObjectType(ownerClassName), null, ready));
+        return ready;
     }
 
     @Test
@@ -1586,5 +1615,433 @@ class CGenHelperTest {
     void bindingDataRejectsNonEmptyDefaultVariables() {
         assertThrows(IllegalArgumentException.class, () -> new BindingData(
                 "Worker", List.of(GdIntType.INT), GdVoidType.VOID, List.of(GdIntType.INT), false, 1));
+    }
+
+    // ==== onready session plan ====
+
+    @Test
+    @DisplayName("checkOnreadyProperty should be a raw annotation-key tag check")
+    void checkOnreadyPropertyShouldBeRawAnnotationKeyCheck() {
+        var tagged = newProperty("a", false, null, Map.of("onready", ""));
+        var arbitraryValue = newProperty("b", false, null, Map.of("onready", "anything"));
+        var untagged = newProperty("c", false, null, Map.of());
+        var otherAnnotation = newProperty("d", false, null, Map.of("export", ""));
+
+        assertTrue(helper.checkOnreadyProperty(tagged));
+        assertTrue(helper.checkOnreadyProperty(arbitraryValue));
+        assertFalse(helper.checkOnreadyProperty(untagged));
+        assertFalse(helper.checkOnreadyProperty(otherAnnotation));
+    }
+
+    @Test
+    @DisplayName("onready plan should count only non-static onready properties with source initializers")
+    void onreadyPlanShouldCountOnlySourceInitializerInstanceProperties() {
+        var host = new LirClassDef("PlanHost", "Node");
+        var onreadySource = newProperty("onready_source", false, "_field_init_onready_source", Map.of("onready", ""));
+        var onreadyNoSource = newProperty("onready_no_source", false, null, Map.of("onready", ""));
+        var plainSource = newProperty("plain_source", false, "_field_init_plain_source", Map.of());
+        var staticOnready = newProperty("static_onready", true, "_field_init_static_onready", Map.of("onready", ""));
+        host.addProperty(onreadySource);
+        host.addProperty(onreadyNoSource);
+        host.addProperty(plainSource);
+        host.addProperty(staticOnready);
+        var moduleHelper = newModuleHelper(List.of(host));
+
+        var plan = moduleHelper.onreadyPlan().classPlan("PlanHost");
+
+        assertEquals(List.of(onreadySource), plan.onreadyInitializers());
+        assertTrue(plan.chainHasOnreadyInitializer());
+        assertTrue(plan.classOrDescendantHasOnreadyInitializer());
+        assertThrows(UnsupportedOperationException.class,
+                () -> plan.onreadyInitializers().add(plainSource));
+    }
+
+    @Test
+    @DisplayName("onready plan should exclude backend-default-marked initializers")
+    void onreadyPlanShouldExcludeBackendDefaultMarkedInitializers() {
+        var host = new LirClassDef("BackfillHost", "Node");
+        var onreadyProp = newProperty("onready_prop", false, null, Map.of("onready", ""));
+        host.addProperty(onreadyProp);
+
+        var firstHelper = newModuleHelper(List.of(host));
+        assertTrue(firstHelper.onreadyPlan().classPlan("BackfillHost").onreadyInitializers().isEmpty());
+        assertFalse(firstHelper.checkClassChainHasOnreadyInitializer(host));
+
+        // Simulates the backend default synthesis that backfills initFunc on the shared
+        // module objects: a second session must still see "no source initializer".
+        onreadyProp.setBackendSynthesizedInitFunc("_field_init_onready_prop");
+        var secondHelper = newModuleHelper(List.of(host));
+        var plan = secondHelper.onreadyPlan().classPlan("BackfillHost");
+        assertTrue(plan.onreadyInitializers().isEmpty());
+        assertFalse(plan.chainHasOnreadyInitializer());
+
+        // Clearing initFunc through the regular setter also clears the marker.
+        onreadyProp.setInitFunc(null);
+        assertFalse(onreadyProp.isInitializerSynthesizedByBackend());
+        assertNull(onreadyProp.getInitFunc());
+    }
+
+    @Test
+    @DisplayName("onready plan should keep the per-class list in property declaration order")
+    void onreadyPlanShouldKeepDeclarationOrder() {
+        var host = new LirClassDef("OrderHost", "Node");
+        var first = newProperty("first", false, "_field_init_first", Map.of("onready", ""));
+        var skippedPlain = newProperty("plain", false, "_field_init_plain", Map.of());
+        var skippedNoInit = newProperty("no_init", false, null, Map.of("onready", ""));
+        var second = newProperty("second", false, "_field_init_second", Map.of("onready", ""));
+        host.addProperty(first);
+        host.addProperty(skippedPlain);
+        host.addProperty(skippedNoInit);
+        host.addProperty(second);
+        var moduleHelper = newModuleHelper(List.of(host));
+
+        assertEquals(List.of(first, second),
+                moduleHelper.onreadyPlan().classPlan("OrderHost").onreadyInitializers());
+    }
+
+    @Test
+    @DisplayName("onready chain fact should propagate up through same-module ancestors")
+    void onreadyChainFactShouldPropagateThroughSameModuleAncestors() {
+        // parent-only: child inherits the chain fact without own initializers
+        var base = new LirClassDef("ChainBase", "Node");
+        base.addProperty(newProperty("base_prop", false, "_field_init_base_prop", Map.of("onready", "")));
+        var child = new LirClassDef("ChainChild", "ChainBase");
+        // local-only: parent stays clean
+        var plainBase = new LirClassDef("PlainBase", "Node");
+        var localChild = new LirClassDef("LocalChild", "PlainBase");
+        localChild.addProperty(newProperty("own_prop", false, "_field_init_own_prop", Map.of("onready", "")));
+        // middle-only three-level chain: root <- mid <- leaf
+        var root = new LirClassDef("ChainRoot", "Node");
+        var mid = new LirClassDef("ChainMid", "ChainRoot");
+        mid.addProperty(newProperty("mid_prop", false, "_field_init_mid_prop", Map.of("onready", "")));
+        var leaf = new LirClassDef("ChainLeaf", "ChainMid");
+        var moduleHelper = newModuleHelper(List.of(base, child, plainBase, localChild, root, mid, leaf));
+
+        assertTrue(moduleHelper.checkClassChainHasOnreadyInitializer(base));
+        assertTrue(moduleHelper.checkClassChainHasOnreadyInitializer(child));
+        assertFalse(moduleHelper.checkClassChainHasOnreadyInitializer(plainBase));
+        assertTrue(moduleHelper.checkClassChainHasOnreadyInitializer(localChild));
+        assertFalse(moduleHelper.checkClassChainHasOnreadyInitializer(root));
+        assertTrue(moduleHelper.checkClassChainHasOnreadyInitializer(mid));
+        assertTrue(moduleHelper.checkClassChainHasOnreadyInitializer(leaf));
+    }
+
+    @Test
+    @DisplayName("onready chain should stop at engine, unknown, blank and outside-module parents")
+    void onreadyChainShouldStopAtModuleBoundaries() {
+        var engineRooted = new LirClassDef("EngineRooted", "Node");
+        engineRooted.addProperty(newProperty("p", false, "_field_init_er", Map.of("onready", "")));
+        var orphan = new LirClassDef("Orphan", "NoSuchRegisteredClass");
+        orphan.addProperty(newProperty("p", false, "_field_init_or", Map.of("onready", "")));
+        var rootless = new LirClassDef("Rootless", "");
+        rootless.addProperty(newProperty("p", false, "_field_init_rl", Map.of("onready", "")));
+        // Registered outside the module: its onready facts must not leak into module chains.
+        var external = new LirClassDef("ExternalBase", "Node");
+        external.addProperty(newProperty("ext_prop", false, "_field_init_ext", Map.of("onready", "")));
+        var internalChild = new LirClassDef("InternalChild", "ExternalBase");
+        // Listed in the module but not registered: the parent edge must not be honored.
+        var unregisteredParent = new LirClassDef("UnregisteredParent", "Node");
+        unregisteredParent.addProperty(newProperty("up_prop", false, "_field_init_up", Map.of("onready", "")));
+        var childOfUnregistered = new LirClassDef("ChildOfUnregistered", "UnregisteredParent");
+
+        classRegistry.addGdccClass(engineRooted);
+        classRegistry.addGdccClass(orphan);
+        classRegistry.addGdccClass(rootless);
+        classRegistry.addGdccClass(external);
+        classRegistry.addGdccClass(internalChild);
+        classRegistry.addGdccClass(childOfUnregistered);
+        var moduleHelper = new CGenHelper(context, List.of(
+                engineRooted, orphan, rootless, internalChild, unregisteredParent, childOfUnregistered));
+
+        assertTrue(moduleHelper.checkClassChainHasOnreadyInitializer(engineRooted));
+        assertTrue(moduleHelper.checkClassChainHasOnreadyInitializer(orphan));
+        assertTrue(moduleHelper.checkClassChainHasOnreadyInitializer(rootless));
+        assertFalse(moduleHelper.checkClassChainHasOnreadyInitializer(internalChild));
+        assertTrue(moduleHelper.checkClassChainHasOnreadyInitializer(unregisteredParent));
+        assertFalse(moduleHelper.checkClassChainHasOnreadyInitializer(childOfUnregistered));
+    }
+
+    @Test
+    @DisplayName("onready plan should resolve chains when the module lists derived classes first")
+    void onreadyPlanShouldResolveDerivedFirstModuleOrder() {
+        var base = new LirClassDef("LateBase", "Node");
+        base.addProperty(newProperty("p", false, "_field_init_p", Map.of("onready", "")));
+        var derived = new LirClassDef("EarlyDerived", "LateBase");
+        var moduleHelper = newModuleHelper(List.of(derived, base));
+
+        assertTrue(moduleHelper.checkClassChainHasOnreadyInitializer(derived));
+        assertTrue(moduleHelper.checkClassChainHasOnreadyInitializer(base));
+    }
+
+    @Test
+    @DisplayName("onready descendant fact should cover own or same-module descendant chain facts")
+    void onreadyDescendantFactShouldCoverOwnAndSameModuleDescendants() {
+        var anc = new LirClassDef("Anc", "Node");
+        var der = new LirClassDef("Der", "Anc");
+        der.addProperty(newProperty("p", false, "_field_init_der", Map.of("onready", "")));
+        var lone = new LirClassDef("Lone", "Node");
+        lone.addProperty(newProperty("p", false, "_field_init_lo", Map.of("onready", "")));
+        var quietRoot = new LirClassDef("QuietRoot", "Node");
+        var quietChild = new LirClassDef("QuietChild", "QuietRoot");
+        var sibRoot = new LirClassDef("SibRoot", "Node");
+        var sibA = new LirClassDef("SibA", "SibRoot");
+        sibA.addProperty(newProperty("p", false, "_field_init_sa", Map.of("onready", "")));
+        var sibB = new LirClassDef("SibB", "SibRoot");
+        var moduleHelper = newModuleHelper(List.of(anc, der, lone, quietRoot, quietChild, sibRoot, sibA, sibB));
+
+        // derived-only: ancestor sees the descendant fact without an own chain fact
+        assertFalse(moduleHelper.checkClassChainHasOnreadyInitializer(anc));
+        assertTrue(moduleHelper.checkClassOrDescendantHasOnreadyInitializer(anc));
+        assertTrue(moduleHelper.checkClassOrDescendantHasOnreadyInitializer(der));
+        // local-only
+        assertTrue(moduleHelper.checkClassOrDescendantHasOnreadyInitializer(lone));
+        // all-none
+        assertFalse(moduleHelper.checkClassOrDescendantHasOnreadyInitializer(quietRoot));
+        assertFalse(moduleHelper.checkClassOrDescendantHasOnreadyInitializer(quietChild));
+        // a sibling's onready chain must not leak across the hierarchy
+        assertFalse(moduleHelper.checkClassOrDescendantHasOnreadyInitializer(sibB));
+        assertTrue(moduleHelper.checkClassOrDescendantHasOnreadyInitializer(sibRoot));
+    }
+
+    @Test
+    @DisplayName("resolveChainUserReadyFunction should return the most-derived valid declaration and its owner")
+    void resolveChainUserReadyFunctionShouldReturnMostDerivedValidDeclaration() {
+        var base = new LirClassDef("ReadyBase", "Node");
+        var baseReady = newReadyFunction("ReadyBase");
+        base.addFunction(baseReady);
+        var derived = new LirClassDef("ReadyDerived", "ReadyBase");
+        var derivedReady = newReadyFunction("ReadyDerived");
+        derived.addFunction(derivedReady);
+        var inheritedOnly = new LirClassDef("ReadyInherited", "ReadyBase");
+        var empty = new LirClassDef("ReadyEmpty", "Node");
+        var moduleHelper = newModuleHelper(List.of(base, derived, inheritedOnly, empty));
+
+        assertSame(derivedReady, moduleHelper.resolveChainUserReadyFunctionOrNull(derived));
+        assertEquals("ReadyDerived",
+                moduleHelper.onreadyPlan().classPlan("ReadyDerived").userReadyOwnerClassName());
+
+        assertSame(baseReady, moduleHelper.resolveChainUserReadyFunctionOrNull(inheritedOnly));
+        assertEquals("ReadyBase",
+                moduleHelper.onreadyPlan().classPlan("ReadyInherited").userReadyOwnerClassName());
+
+        assertNull(moduleHelper.resolveChainUserReadyFunctionOrNull(empty));
+    }
+
+    @Test
+    @DisplayName("resolveChainUserReadyFunction should skip declarations failing the engine signature check")
+    void resolveChainUserReadyFunctionShouldSkipInvalidDeclarations() {
+        var badReturn = new LirClassDef("BadReturn", "Node");
+        var badReturnReady = newReadyFunction("BadReturn");
+        badReturnReady.setReturnType(GdIntType.INT);
+        badReturn.addFunction(badReturnReady);
+        var badArity = new LirClassDef("BadArity", "Node");
+        var badArityReady = newReadyFunction("BadArity");
+        badArityReady.addParameter(new LirParameterDef("extra", GdIntType.INT, null, badArityReady));
+        badArity.addFunction(badArityReady);
+        // A static _ready is excluded from virtual dispatch: the valid parent declaration
+        // must still win instead of being shadowed by the invalid child declaration.
+        var validBase = new LirClassDef("ValidBase", "Node");
+        var validReady = newReadyFunction("ValidBase");
+        validBase.addFunction(validReady);
+        var staticChild = new LirClassDef("StaticReadyChild", "ValidBase");
+        var staticReady = newReadyFunction("StaticReadyChild");
+        staticReady.setStatic(true);
+        staticChild.addFunction(staticReady);
+        // Not Node-derived at all: the engine exposes no `_ready` on this ancestry.
+        var refCountedHost = new LirClassDef("RefCountedHost", "RefCounted");
+        refCountedHost.addFunction(newReadyFunction("RefCountedHost"));
+        var moduleHelper = newModuleHelper(List.of(badReturn, badArity, validBase, staticChild, refCountedHost));
+
+        assertNull(moduleHelper.resolveChainUserReadyFunctionOrNull(badReturn));
+        assertNull(moduleHelper.resolveChainUserReadyFunctionOrNull(badArity));
+        assertSame(validReady, moduleHelper.resolveChainUserReadyFunctionOrNull(staticChild));
+        assertEquals("ValidBase",
+                moduleHelper.onreadyPlan().classPlan("StaticReadyChild").userReadyOwnerClassName());
+        assertNull(moduleHelper.resolveChainUserReadyFunctionOrNull(refCountedHost));
+    }
+
+    @Test
+    @DisplayName("resolveChainUserReadyFunction should keep the coroutine function reference intact")
+    void resolveChainUserReadyFunctionShouldKeepCoroutineFunctionReference() {
+        var host = new LirClassDef("CoroReady", "Node");
+        var coroReady = newReadyFunction("CoroReady");
+        coroReady.setCoroutine(true);
+        host.addFunction(coroReady);
+        var moduleHelper = newModuleHelper(List.of(host));
+
+        var resolution = moduleHelper.resolveChainUserReadyFunctionOrNull(host);
+        assertSame(coroReady, resolution);
+        assertEquals("CoroReady",
+                moduleHelper.onreadyPlan().classPlan("CoroReady").userReadyOwnerClassName());
+        assertTrue(resolution.isCoroutine());
+    }
+
+    @Test
+    @DisplayName("onready plan should answer unknown classes with an empty plan")
+    void onreadyPlanShouldAnswerUnknownClassesWithEmptyPlan() {
+        var host = new LirClassDef("KnownHost", "Node");
+        var moduleHelper = newModuleHelper(List.of(host));
+
+        var unknown = moduleHelper.onreadyPlan().classPlan("Nobody");
+        assertTrue(unknown.onreadyInitializers().isEmpty());
+        assertFalse(unknown.chainHasOnreadyInitializer());
+        assertFalse(unknown.classOrDescendantHasOnreadyInitializer());
+        assertNull(unknown.userReadyOwnerClassName());
+        assertNull(unknown.userReadyFunction());
+        var stray = new LirClassDef("Stray", "Node");
+        assertFalse(moduleHelper.checkClassChainHasOnreadyInitializer(stray));
+        assertFalse(moduleHelper.checkClassOrDescendantHasOnreadyInitializer(stray));
+        assertNull(moduleHelper.resolveChainUserReadyFunctionOrNull(stray));
+    }
+
+    @Test
+    @DisplayName("onready plan snapshot should stay stable under later LIR mutation")
+    void onreadyPlanSnapshotShouldStayStableUnderLaterLirMutation() {
+        var base = new LirClassDef("SnapBase", "Node");
+        var baseReady = newReadyFunction("SnapBase");
+        base.addFunction(baseReady);
+        var baseProp = newProperty("base_prop", false, "_field_init_base_prop", Map.of("onready", ""));
+        base.addProperty(baseProp);
+        var leaf = new LirClassDef("SnapLeaf", "SnapBase");
+        var leafProp = newProperty("leaf_prop", false, "_field_init_leaf_prop", Map.of("onready", ""));
+        leaf.addProperty(leafProp);
+        // The helper borrows the authoritative list rather than copying it, so the honest
+        // fixture is an externally held mutable list.
+        var moduleClasses = new ArrayList<LirClassDef>(List.of(base, leaf));
+        classRegistry.addGdccClass(base);
+        classRegistry.addGdccClass(leaf);
+        var moduleHelper = new CGenHelper(context, moduleClasses);
+
+        var leafPlanBefore = moduleHelper.onreadyPlan().classPlan("SnapLeaf");
+        var basePlanBefore = moduleHelper.onreadyPlan().classPlan("SnapBase");
+
+        // Mutate everything the snapshot consumed: initFunc, annotations, super name, and
+        // the class's function list. The frozen facts must not move.
+        leafProp.setInitFunc(null);
+        baseProp.getAnnotations().remove("onready");
+        leaf.setSuperName("Node");
+        leaf.addFunction(newReadyFunction("SnapLeaf"));
+        // The captured plan is closed: clearing/replacing the borrowed source list afterwards
+        // cannot add or remove members.
+        moduleClasses.clear();
+        var late = new LirClassDef("SnapLate", "Node");
+        late.addProperty(newProperty("late_prop", false, "_field_init_late", Map.of("onready", "")));
+        moduleClasses.add(late);
+
+        var leafPlanAfter = moduleHelper.onreadyPlan().classPlan("SnapLeaf");
+        assertSame(leafPlanBefore, leafPlanAfter);
+        assertEquals(List.of(leafProp), leafPlanAfter.onreadyInitializers());
+        assertTrue(leafPlanAfter.chainHasOnreadyInitializer());
+        assertTrue(leafPlanAfter.classOrDescendantHasOnreadyInitializer());
+        assertEquals("SnapBase", leafPlanAfter.userReadyOwnerClassName());
+        assertSame(baseReady, leafPlanAfter.userReadyFunction());
+        assertSame(basePlanBefore, moduleHelper.onreadyPlan().classPlan("SnapBase"));
+        assertTrue(moduleHelper.onreadyPlan().classPlan("SnapLate").onreadyInitializers().isEmpty());
+        assertFalse(moduleHelper.checkClassChainHasOnreadyInitializer(late));
+        // The raw tag predicate intentionally reads live annotations, not the snapshot.
+        assertFalse(moduleHelper.checkOnreadyProperty(baseProp));
+    }
+
+    @Test
+    @DisplayName("onready plan should read the authoritative class list at first query")
+    void onreadyPlanShouldUseAuthoritativeClassListAtFirstQuery() {
+        var base = new LirClassDef("BorrowBase", "Node");
+        var moduleClasses = new ArrayList<LirClassDef>(List.of(base));
+        classRegistry.addGdccClass(base);
+        var moduleHelper = new CGenHelper(context, moduleClasses);
+
+        // No onready query has run yet: a class added to the authoritative list before the
+        // first query still participates in the captured plan.
+        var late = new LirClassDef("BorrowLate", "Node");
+        var lateProp = newProperty("late_prop", false, "_field_init_late", Map.of("onready", ""));
+        late.addProperty(lateProp);
+        classRegistry.addGdccClass(late);
+        moduleClasses.add(late);
+
+        var plan = moduleHelper.onreadyPlan();
+        assertEquals(List.of(lateProp), plan.classPlan("BorrowLate").onreadyInitializers());
+        assertTrue(moduleHelper.checkClassChainHasOnreadyInitializer(late));
+        assertTrue(moduleHelper.checkClassOrDescendantHasOnreadyInitializer(late));
+    }
+
+    @Test
+    @DisplayName("ClassPlan should defensively copy its initializer membership")
+    void classPlanShouldDefensivelyCopyInitializerMembership() {
+        var prop = newProperty("p", false, "_field_init_p", Map.of("onready", ""));
+        var callerList = new ArrayList<LirPropertyDef>(List.of(prop));
+        var plan = new COnreadyPlan.ClassPlan(callerList, true, true, null, null);
+
+        callerList.clear();
+        callerList.add(newProperty("other", false, "_field_init_other", Map.of("onready", "")));
+
+        assertEquals(List.of(prop), plan.onreadyInitializers());
+        assertThrows(UnsupportedOperationException.class,
+                () -> plan.onreadyInitializers().add(prop));
+    }
+
+    @Test
+    @DisplayName("ClassPlan should require ready owner and function to be both present or both absent")
+    void classPlanShouldRequireReadyOwnerAndFunctionPairInvariant() {
+        var bothNull = new COnreadyPlan.ClassPlan(List.of(), false, false, null, null);
+        assertNull(bothNull.userReadyOwnerClassName());
+        assertNull(bothNull.userReadyFunction());
+
+        var ready = newReadyFunction("Host");
+        var bothPresent = new COnreadyPlan.ClassPlan(List.of(), false, false, "Host", ready);
+        assertEquals("Host", bothPresent.userReadyOwnerClassName());
+        assertSame(ready, bothPresent.userReadyFunction());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new COnreadyPlan.ClassPlan(List.of(), false, false, "Host", null));
+        assertThrows(IllegalArgumentException.class,
+                () -> new COnreadyPlan.ClassPlan(List.of(), false, false, null, ready));
+    }
+
+    @Test
+    @DisplayName("cyclic super names should fail fast at planner construction and at plan build")
+    void onreadyPlanningShouldFailFastOnCyclicInput() {
+        // Cycle already present at construction: the vtable planner rejects it first.
+        var cycA = new LirClassDef("CycA", "CycB");
+        var cycB = new LirClassDef("CycB", "CycA");
+        classRegistry.addGdccClass(cycA);
+        classRegistry.addGdccClass(cycB);
+        assertThrows(IllegalStateException.class,
+                () -> new CGenHelper(context, List.of(cycA, cycB)));
+
+        // Cycle introduced after helper construction but before the first onready query:
+        // the plan's own visited walk must refuse it instead of looping.
+        var lateA = new LirClassDef("LateCycA", "Node");
+        lateA.addFunction(newReadyFunction("LateCycA"));
+        var lateB = new LirClassDef("LateCycB", "Node");
+        classRegistry.addGdccClass(lateA);
+        classRegistry.addGdccClass(lateB);
+        var lateHelper = new CGenHelper(context, List.of(lateA, lateB));
+        lateA.setSuperName("LateCycB");
+        lateB.setSuperName("LateCycA");
+        assertThrows(IllegalStateException.class, lateHelper::onreadyPlan);
+
+        // Self-cycle introduced the same way.
+        var selfCyc = new LirClassDef("SelfCyc", "Node");
+        classRegistry.addGdccClass(selfCyc);
+        var selfHelper = new CGenHelper(context, List.of(selfCyc));
+        selfCyc.setSuperName("SelfCyc");
+        assertThrows(IllegalStateException.class, selfHelper::onreadyPlan);
+    }
+
+    @Test
+    @DisplayName("onready plan should fail fast on a cyclic registry ancestry outside the module")
+    void onreadyPlanShouldPreflightRegistryAncestryBeforeVirtualCheck() {
+        // The module itself is acyclic, but the host's parent lives outside the module and
+        // forms a registered cycle; resolving `_ready` must not recurse into it.
+        var host = new LirClassDef("RegistryCycHost", "ExternalA");
+        host.addFunction(newReadyFunction("RegistryCycHost"));
+        var externalA = new LirClassDef("ExternalA", "ExternalB");
+        var externalB = new LirClassDef("ExternalB", "ExternalA");
+        classRegistry.addGdccClass(host);
+        classRegistry.addGdccClass(externalA);
+        classRegistry.addGdccClass(externalB);
+        var hostHelper = new CGenHelper(context, List.of(host));
+
+        assertThrows(IllegalStateException.class, hostHelper::onreadyPlan);
     }
 }

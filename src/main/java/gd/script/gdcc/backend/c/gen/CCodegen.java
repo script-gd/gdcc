@@ -146,7 +146,9 @@ public class CCodegen implements Codegen {
                 // Static properties stay entirely out of instance member synthesis: no
                 // getter/setter, and no `_field_init_` default helper either. Static default
                 // values are materialized inline by the module-lifecycle defaults section,
-                // so `initFunc != null` keeps meaning "source has an explicit initializer".
+                // so on static properties `initFunc != null` keeps meaning "source has an
+                // explicit initializer". Instance properties instead may carry a synthesized
+                // default helper, distinguishable via `isInitializerSynthesizedByBackend`.
                 if (propertyDef.isStatic()) {
                     continue;
                 }
@@ -181,7 +183,6 @@ public class CCodegen implements Codegen {
                 }
                 if (propertyDef.getInitFunc() == null) {
                     var initName = "_field_init_" + propertyDef.getName();
-                    propertyDef.setInitFunc(initName);
                     var func = new LirFunctionDef(initName);
                     func.setHidden(true);
                     func.setReturnType(propertyDef.getType());
@@ -214,6 +215,9 @@ public class CCodegen implements Codegen {
                     bb.setTerminator(new ReturnInsn(tmpVar.id()));
                     func.setEntryBlockId("entry");
                     classDef.addFunction(func);
+                    // Marker goes last so a mid-build failure cannot publish a synthetic init
+                    // name without it; later sessions use it to tell this backfill from source.
+                    propertyDef.setBackendSynthesizedInitFunc(initName);
                 }
             }
         }
@@ -1052,5 +1056,16 @@ public class CCodegen implements Codegen {
         // `() -> Dictionary` binding shape is collected together with user functions.
         this.metadataJsonByClass = CClassMetadataSupport.synthesize(module, ctx, Instant.now()).metadataJsonByClass();
         this.helper = new CGenHelper(ctx, module.getClassDefs());
+        // Freeze the onready plan before `generate` backfills `initFunc` — only a
+        // pre-synthesis snapshot separates source initializers from synthesized defaults.
+        helper.onreadyPlan();
+    }
+
+    /// Delegates to the helper's frozen onready session plan.
+    @NotNull COnreadyPlan onreadyPlan() {
+        if (helper == null) {
+            throw new IllegalStateException("CCodegen not prepared. Call prepare() before onreadyPlan().");
+        }
+        return helper.onreadyPlan();
     }
 }

@@ -1,13 +1,14 @@
 package gd.script.gdcc.lir;
 
-import gd.script.gdcc.scope.PropertyDef;
-import gd.script.gdcc.type.GdType;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
-
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import gd.script.gdcc.scope.PropertyDef;
+import gd.script.gdcc.type.GdType;
 
 public final class LirPropertyDef implements PropertyDef {
     private @NotNull String name;
@@ -16,6 +17,8 @@ public final class LirPropertyDef implements PropertyDef {
     private @Nullable String initFunc;
     private @Nullable String getterFunc;
     private @Nullable String setterFunc;
+    /// True when initFunc was synthesized by the backend rather than lowered from source.
+    private transient boolean initializerSynthesizedByBackend;
     private Map<String, String> annotations;
 
     public LirPropertyDef(
@@ -77,8 +80,23 @@ public final class LirPropertyDef implements PropertyDef {
         return initFunc;
     }
 
+    /// Assigns a source/explicit init function; clears the synthesized marker left by any
+    /// earlier backend synthesis so the property counts as source again.
     public void setInitFunc(@Nullable String initFunc) {
         this.initFunc = initFunc;
+        this.initializerSynthesizedByBackend = false;
+    }
+
+    /// True when `initFunc` was produced by backend synthesis rather than source.
+    public boolean isInitializerSynthesizedByBackend() {
+        return initializerSynthesizedByBackend;
+    }
+
+    /// Publishes a backend-synthesized default init function together with its provenance
+    /// marker, so readers can tell it apart from a source initializer.
+    public void setBackendSynthesizedInitFunc(@NotNull String initFunc) {
+        this.initFunc = Objects.requireNonNull(initFunc);
+        this.initializerSynthesizedByBackend = true;
     }
 
     public @Nullable String getGetterFunc() {
