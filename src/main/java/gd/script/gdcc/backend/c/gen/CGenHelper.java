@@ -2054,6 +2054,13 @@ public final class CGenHelper {
         return onreadyPlan().classPlan(classDef.getName()).userReadyFunction();
     }
 
+    /// Frozen plan membership check: true only for this class's own non-static properties
+    /// snapshotted with a source-initializer `onready` — never re-reads live annotations or
+    /// `initFunc`, so routing reflects the membership captured for this session.
+    public boolean checkOnreadyInitializer(@NotNull LirClassDef clazz, @NotNull LirPropertyDef property) {
+        return onreadyPlan().classPlan(clazz.getName()).onreadyInitializers().contains(property);
+    }
+
     /// Renders generated per-class object pointer helper name for a GDCC object type.
     public @NotNull String renderGdccObjectPtrHelperName(@NotNull GdObjectType gdObjectType) {
         if (!gdObjectType.checkGdccType(context.classRegistry())) {
@@ -2350,6 +2357,40 @@ public final class CGenHelper {
             @NotNull LirPropertyDef propertyDef
     ) {
         return classDef.getName() + "_class_apply_property_init_" + propertyDef.getName();
+    }
+
+    /// Reserved hidden LIR helper producing a source-initializer onready property's type
+    /// default; construction applies this while the real initializer defers to ready.
+    public @NotNull String renderOnreadyFieldDefaultFunctionName(@NotNull LirPropertyDef propertyDef) {
+        return "_onready_field_default_" + propertyDef.getName();
+    }
+
+    /// Constructor-time apply helper that first-writes the type default for a
+    /// source-initializer onready property.
+    public @NotNull String renderPropertyDefaultApplyHelperName(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef
+    ) {
+        return classDef.getName() + "_class_apply_property_default_" + propertyDef.getName();
+    }
+
+    /// Ready-time apply helper that overwrites the field with the real source initializer.
+    public @NotNull String renderOnreadyApplyHelperName(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef
+    ) {
+        return classDef.getName() + "_class_apply_onready_init_" + propertyDef.getName();
+    }
+
+    /// The apply helper constructor/init_fields call for one property: the type-default
+    /// write for a source-initializer onready property, the ordinary init apply otherwise.
+    public @NotNull String renderPropertyConstructionApplyHelperName(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef
+    ) {
+        return checkOnreadyInitializer(classDef, propertyDef)
+                ? renderPropertyDefaultApplyHelperName(classDef, propertyDef)
+                : renderPropertyInitApplyHelperName(classDef, propertyDef);
     }
 
     // ==== Static property storage symbols ====

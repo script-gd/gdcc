@@ -390,9 +390,21 @@ static inline const ${vtableTypeName}* ${helper.renderVtableAccessorName(classDe
 <#list classDef.properties as property>
 <#-- Static properties have no instance apply helper; their init runs via module lifecycle. -->
 <#if !property.static>
+<#if helper.checkOnreadyInitializer(classDef, property)>
+static inline void ${helper.renderPropertyDefaultApplyHelperName(classDef, property)}(${classDef.name}* self) {
+    <#-- First-write the field's type default. -->
+    ${bodyRender.generatePropertyDefaultApplyBody(classDef, property)}
+}
+
+static inline void ${helper.renderOnreadyApplyHelperName(classDef, property)}(${classDef.name}* self) {
+    <#-- Overwrite the field with its onready initializer. -->
+    ${bodyRender.generateOnreadyApplyBody(classDef, property)}
+}
+<#else>
 static inline void ${helper.renderPropertyInitApplyHelperName(classDef, property)}(${classDef.name}* self) {
     ${bodyRender.generatePropertyInitApplyBody(classDef, property)}
 }
+</#if>
 </#if>
 </#list>
 
@@ -437,7 +449,8 @@ void ${classDef.name}_class_init_fields(${classDef.name}* self) {
         <#-- Static properties are not instance fields; statics are re-initialized by the -->
         <#-- module lifecycle, never here. -->
         <#if !property.static>
-        ${helper.renderPropertyInitApplyHelperName(classDef, property)}(self);
+        <#-- Call the onready default or ordinary initializer apply helper. -->
+        ${helper.renderPropertyConstructionApplyHelperName(classDef, property)}(self);
         </#if>
     </#list>
 }
@@ -498,7 +511,8 @@ void ${classDef.name}_class_constructor(${classDef.name}* self) {
     <#list classDef.properties as property>
         <#-- Static properties are not instance fields; the constructor must not touch them. -->
         <#if !property.static>
-        ${helper.renderPropertyInitApplyHelperName(classDef, property)}(self);
+        <#-- Call the onready default or ordinary initializer apply helper. -->
+        ${helper.renderPropertyConstructionApplyHelperName(classDef, property)}(self);
         </#if>
     </#list>
     <#list classDef.functions as function>

@@ -18,6 +18,8 @@ import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirInstruction;
+import gd.script.gdcc.lir.LirParameterDef;
+import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
@@ -256,6 +258,70 @@ class CCodegenEngineMethodUsageSessionTest {
         assertTrue(session.engineMethods().isEmpty());
         assertEquals(1, session.engineConstructors().size(), session.engineConstructors().toString());
         assertEquals("Node", session.engineConstructors().getFirst().className());
+    }
+
+    @Test
+    @DisplayName("onready apply renderers should reuse the shared session without inventing or losing bindings")
+    void onreadyApplyRenderersShouldReuseSharedSessionWithoutInventingBindings() {
+        var hostClass = newClass("Worker", "RefCounted");
+
+        var sourceInit = new LirFunctionDef("_field_init_peer");
+        sourceInit.setHidden(true);
+        sourceInit.setReturnType(new GdObjectType("Probe"));
+        sourceInit.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, sourceInit));
+        sourceInit.createAndAddVariable("probe", new GdObjectType("Probe"));
+        var sourceEntry = new LirBasicBlock("entry");
+        sourceEntry.appendInstruction(new ConstructObjectInsn("probe", "Probe"));
+        sourceEntry.appendInstruction(new CallMethodInsn(null, "touch", "probe", List.of()));
+        sourceEntry.setTerminator(new ReturnInsn("probe"));
+        sourceInit.addBasicBlock(sourceEntry);
+        sourceInit.setEntryBlockId("entry");
+        hostClass.addFunction(sourceInit);
+        hostClass.addProperty(new LirPropertyDef(
+                "peer", new GdObjectType("Probe"), false, "_field_init_peer", null, null, Map.of("onready", "")));
+        hostClass.addProperty(new LirPropertyDef(
+                "plain", GdIntType.INT, false, null, null, null, Map.of()));
+
+        var module = new LirModule("onready_apply_usage_module", List.of(hostClass));
+        var codegen = newCodegen(module, apiWith(List.of(), List.of(probeClassWithFailureAnchors())), List.of(hostClass));
+        var files = codegen.generate();
+        var bindHeader = generatedFileText(files, "engine_method_binds.h");
+        // The constructor and method used inside the real source helper body land in the
+        // bind header exactly once.
+        assertTrue(bindHeader.contains("godot_new_Probe("), bindHeader);
+        assertTrue(bindHeader.contains("gdcc_engine_method_bind_probe_touch_"), bindHeader);
+
+        var session = GodotBindingUsageSession.forRegistry(codegen.ctx.classRegistry());
+        var peer = hostClass.getProperties().stream()
+                .filter(property -> property.getName().equals("peer"))
+                .findFirst()
+                .orElseThrow();
+        codegen.generateFuncBody(hostClass, sourceInit, session);
+        assertEquals(1, session.engineConstructors().size(), session.engineConstructors().toString());
+        assertEquals("Probe", session.engineConstructors().getFirst().className());
+        assertEquals(1, session.engineMethods().size(), session.engineMethods().toString());
+        assertEquals("touch", session.engineMethods().getFirst().methodName());
+
+        // The default/ready wrappers only emit class-local helper calls and shared builtin
+        // destroys — repeated renders neither invent bindings nor drop the recorded ones.
+        codegen.generatePropertyDefaultApplyBody(hostClass, peer, session);
+        codegen.generateOnreadyApplyBody(hostClass, peer, session);
+        codegen.generatePropertyDefaultApplyBody(hostClass, peer, session);
+        codegen.generateOnreadyApplyBody(hostClass, peer, session);
+        assertEquals(1, session.engineConstructors().size(), session.engineConstructors().toString());
+        assertEquals(1, session.engineMethods().size(), session.engineMethods().toString());
+
+        // A rejected route leaves the shared session untouched.
+        var plain = hostClass.getProperties().stream()
+                .filter(property -> property.getName().equals("plain"))
+                .findFirst()
+                .orElseThrow();
+        assertThrows(IllegalStateException.class,
+                () -> codegen.generateOnreadyApplyBody(hostClass, plain, session));
+        assertThrows(IllegalStateException.class,
+                () -> codegen.generatePropertyDefaultApplyBody(hostClass, plain, session));
+        assertEquals(1, session.engineConstructors().size());
+        assertEquals(1, session.engineMethods().size());
     }
 
     @Test

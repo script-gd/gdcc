@@ -2044,4 +2044,50 @@ class CGenHelperTest {
 
         assertThrows(IllegalStateException.class, hostHelper::onreadyPlan);
     }
+
+    @Test
+    @DisplayName("onready apply naming and chooser should follow frozen plan membership, not live annotations")
+    void onreadyApplyNamingAndChooserShouldFollowFrozenPlanMembership() {
+        var host = new LirClassDef("ApplyHost", "Node");
+        var onreadySource = newProperty("onready_source", false, "_field_init_onready_source", Map.of("onready", ""));
+        var plainSource = newProperty("plain_source", false, "_field_init_plain_source", Map.of());
+        var onreadyMissing = newProperty("onready_missing", false, null, Map.of("onready", ""));
+        var staticOnready = newProperty("static_onready", true, "_field_init_static", Map.of("onready", ""));
+        host.addProperty(onreadySource);
+        host.addProperty(plainSource);
+        host.addProperty(onreadyMissing);
+        host.addProperty(staticOnready);
+        var moduleHelper = newModuleHelper(List.of(host));
+
+        assertTrue(moduleHelper.checkOnreadyInitializer(host, onreadySource));
+        assertFalse(moduleHelper.checkOnreadyInitializer(host, plainSource));
+        // Missing initializers and statics are never frozen-eligible, annotation or not.
+        assertFalse(moduleHelper.checkOnreadyInitializer(host, onreadyMissing));
+        assertFalse(moduleHelper.checkOnreadyInitializer(host, staticOnready));
+
+        assertEquals("_onready_field_default_onready_source",
+                moduleHelper.renderOnreadyFieldDefaultFunctionName(onreadySource));
+        assertEquals("ApplyHost_class_apply_property_default_onready_source",
+                moduleHelper.renderPropertyDefaultApplyHelperName(host, onreadySource));
+        assertEquals("ApplyHost_class_apply_onready_init_onready_source",
+                moduleHelper.renderOnreadyApplyHelperName(host, onreadySource));
+
+        // The construction chooser picks the default route only for frozen members.
+        assertEquals("ApplyHost_class_apply_property_default_onready_source",
+                moduleHelper.renderPropertyConstructionApplyHelperName(host, onreadySource));
+        assertEquals("ApplyHost_class_apply_property_init_plain_source",
+                moduleHelper.renderPropertyConstructionApplyHelperName(host, plainSource));
+        assertEquals("ApplyHost_class_apply_property_init_onready_missing",
+                moduleHelper.renderPropertyConstructionApplyHelperName(host, onreadyMissing));
+
+        // Annotation edits after the plan was captured cannot flip membership.
+        onreadySource.getAnnotations().remove("onready");
+        plainSource.getAnnotations().put("onready", "");
+        assertTrue(moduleHelper.checkOnreadyInitializer(host, onreadySource));
+        assertFalse(moduleHelper.checkOnreadyInitializer(host, plainSource));
+        assertEquals("ApplyHost_class_apply_property_default_onready_source",
+                moduleHelper.renderPropertyConstructionApplyHelperName(host, onreadySource));
+        assertEquals("ApplyHost_class_apply_property_init_plain_source",
+                moduleHelper.renderPropertyConstructionApplyHelperName(host, plainSource));
+    }
 }

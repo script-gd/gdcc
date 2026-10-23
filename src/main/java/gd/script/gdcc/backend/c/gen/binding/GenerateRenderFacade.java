@@ -15,6 +15,8 @@ import java.util.function.Function;
 public final class GenerateRenderFacade {
     private final @NotNull BiFunction<LirClassDef, LirFunctionDef, String> funcBodyRenderer;
     private final @NotNull BiFunction<LirClassDef, LirPropertyDef, String> propertyInitApplyBodyRenderer;
+    private final @NotNull BiFunction<LirClassDef, LirPropertyDef, String> propertyDefaultApplyBodyRenderer;
+    private final @NotNull BiFunction<LirClassDef, LirPropertyDef, String> onreadyApplyBodyRenderer;
     private final @NotNull Function<LirClassDef, String> staticDefaultsBodyRenderer;
     private final @NotNull Function<LirClassDef, String> staticInitializersBodyRenderer;
     private final @NotNull Function<LirClassDef, String> staticDeinitializeBodyRenderer;
@@ -23,17 +25,22 @@ public final class GenerateRenderFacade {
     public GenerateRenderFacade(
             @NotNull BiFunction<LirClassDef, LirFunctionDef, String> funcBodyRenderer,
             @NotNull BiFunction<LirClassDef, LirPropertyDef, String> propertyInitApplyBodyRenderer,
+            @NotNull BiFunction<LirClassDef, LirPropertyDef, String> propertyDefaultApplyBodyRenderer,
+            @NotNull BiFunction<LirClassDef, LirPropertyDef, String> onreadyApplyBodyRenderer,
             @NotNull Function<LirClassDef, String> staticDefaultsBodyRenderer,
             @NotNull Function<LirClassDef, String> staticInitializersBodyRenderer,
             @NotNull Function<LirClassDef, String> staticDeinitializeBodyRenderer
     ) {
-        this(funcBodyRenderer, propertyInitApplyBodyRenderer, staticDefaultsBodyRenderer,
-                staticInitializersBodyRenderer, staticDeinitializeBodyRenderer, GodotBindingUsageBuffer.noOp());
+        this(funcBodyRenderer, propertyInitApplyBodyRenderer, propertyDefaultApplyBodyRenderer,
+                onreadyApplyBodyRenderer, staticDefaultsBodyRenderer, staticInitializersBodyRenderer,
+                staticDeinitializeBodyRenderer, GodotBindingUsageBuffer.noOp());
     }
 
     public GenerateRenderFacade(
             @NotNull BiFunction<LirClassDef, LirFunctionDef, String> funcBodyRenderer,
             @NotNull BiFunction<LirClassDef, LirPropertyDef, String> propertyInitApplyBodyRenderer,
+            @NotNull BiFunction<LirClassDef, LirPropertyDef, String> propertyDefaultApplyBodyRenderer,
+            @NotNull BiFunction<LirClassDef, LirPropertyDef, String> onreadyApplyBodyRenderer,
             @NotNull Function<LirClassDef, String> staticDefaultsBodyRenderer,
             @NotNull Function<LirClassDef, String> staticInitializersBodyRenderer,
             @NotNull Function<LirClassDef, String> staticDeinitializeBodyRenderer,
@@ -41,6 +48,8 @@ public final class GenerateRenderFacade {
     ) {
         this.funcBodyRenderer = Objects.requireNonNull(funcBodyRenderer);
         this.propertyInitApplyBodyRenderer = Objects.requireNonNull(propertyInitApplyBodyRenderer);
+        this.propertyDefaultApplyBodyRenderer = Objects.requireNonNull(propertyDefaultApplyBodyRenderer);
+        this.onreadyApplyBodyRenderer = Objects.requireNonNull(onreadyApplyBodyRenderer);
         this.staticDefaultsBodyRenderer = Objects.requireNonNull(staticDefaultsBodyRenderer);
         this.staticInitializersBodyRenderer = Objects.requireNonNull(staticInitializersBodyRenderer);
         this.staticDeinitializeBodyRenderer = Objects.requireNonNull(staticDeinitializeBodyRenderer);
@@ -54,6 +63,18 @@ public final class GenerateRenderFacade {
     public @NotNull String generatePropertyInitApplyBody(@NotNull LirClassDef classDef,
                                                          @NotNull LirPropertyDef property) {
         return propertyInitApplyBodyRenderer.apply(classDef, property);
+    }
+
+    /// Construction-time apply body for a source-initializer onready property (type-default write).
+    public @NotNull String generatePropertyDefaultApplyBody(@NotNull LirClassDef classDef,
+                                                            @NotNull LirPropertyDef property) {
+        return propertyDefaultApplyBodyRenderer.apply(classDef, property);
+    }
+
+    /// Ready-time apply body for a source-initializer onready property (source-init overwrite).
+    public @NotNull String generateOnreadyApplyBody(@NotNull LirClassDef classDef,
+                                                    @NotNull LirPropertyDef property) {
+        return onreadyApplyBodyRenderer.apply(classDef, property);
     }
 
     /// Per-class static defaults section body (static var module lifecycle).

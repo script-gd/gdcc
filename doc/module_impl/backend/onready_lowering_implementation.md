@@ -5,8 +5,9 @@
 
 ## 文档状态
 
-- 状态：Step 1 Implemented / Verified / Reviewed；Step 2-10 待实施
-- 更新时间：2026-10-22
+- 状态：Step 1-3 Implemented / Verified / Reviewed；Step 4-10 待实施
+- 部分状态说明：Step 2-3 完成后 constructor / init_fields 已对 eligible 属性写入类型默认值，且 `<C>_class_apply_onready_init_<prop>` ready apply helper 已生成；但两类 ready 辅助路径尚未接入生命周期分发（链函数 / 适配器 / 组合 impl / prologue 属 Step 4-7），即 onready 真实 initializer 目前不会在运行期被调用，不得据此宣称 Godot 兼容语义已达成。
+- 更新时间：2026-10-23
 - 适用范围：
   - `src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java`
   - `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`
@@ -228,24 +229,43 @@
 ### Step 2：构造期默认值分流
 
 **改动**：
-- `CCodegen.java`：把 `CCodegen.java:192-212` 的类型默认值 switch 抽成共享私有方法；为「onready 且有源码 initializer」的 non-static property 合成 hidden 默认值 helper `_onready_field_default_<prop>`（签名与 `_field_init_` 相同）；新增 `generatePropertyDefaultApplyBody(...)`（first-write 语义）；
-- `entry.c.ftl`：`class_constructor`（`entry.c.ftl:498-503`）与 `class_init_fields`（`entry.c.ftl:436-442`）两处循环调同一判定 helper 分流：onready-with-source-init property 调 `<C>_class_apply_property_default_<prop>`，其余维持现状；
-- `validateFileScopeSymbolsDisjoint` 显式登记新 apply helper 符号。
+- [x] `CCodegen.java`：把 `CCodegen.java:192-212` 的类型默认值 switch 抽成共享私有方法；为「onready 且有源码 initializer」的 non-static property 合成 hidden 默认值 helper `_onready_field_default_<prop>`（签名与 `_field_init_` 相同）；新增 `generatePropertyDefaultApplyBody(...)`（first-write 语义）；
+- [x] `entry.c.ftl`：`class_constructor`（`entry.c.ftl:498-503`）与 `class_init_fields`（`entry.c.ftl:436-442`）两处循环调同一判定 helper 分流：onready-with-source-init property 调 `<C>_class_apply_property_default_<prop>`，其余维持现状；
+- [x] `validateFileScopeSymbolsDisjoint` 显式登记新 apply helper 符号。
+
+**实施记录**：
+- `CGenHelper` 新增 API（不含新缓存/索引/状态）：`checkOnreadyInitializer(clazz, property)` 仅查冻结计划 `onreadyInitializers` 列表成员（身份相等，不重读 live annotation / `initFunc`）；`renderOnreadyFieldDefaultFunctionName` → `_onready_field_default_<prop>`；`renderPropertyDefaultApplyHelperName` → `<C>_class_apply_property_default_<prop>`；`renderOnreadyApplyHelperName` → `<C>_class_apply_onready_init_<prop>`；`renderPropertyConstructionApplyHelperName` 统一分流（eligible→default apply，否则原 init apply），constructor 与 init_fields 同走此 chooser。
+- `CCodegen` 把原默认值 helper 构建体抽为 `createPropertyDefaultInitializer(clazz, property, name)`，类型默认值表保持单源（object→null、Variant/nil→nil、bool→false、int→0、float→0、String/StringName→空、typed Array/Dictionary 保留元素元数据、packed→`ConstructArrayInsn(null)`、其余 builtin→`ConstructBuiltinInsn`、compiler-only→fail）；普通 `initFunc == null` 回填维持原样调用并在 `addFunction` 后 `setBackendSynthesizedInitFunc`。
+- `generateDefaultGetterSetterInitialization` 的 onready 循环对每个 eligible 属性保证 `_onready_field_default_<prop>` 存在：缺失则经共享工厂合成并 `addFunction`；已有同名占用时经 `requireOnreadyFieldDefaultFunction` 解析（恰一个匹配，单引用+计数扫描）并复用共享 `validatePropertyInitFunctionReadyForCodegen(clazz, property, function)` 校验（hidden、coroutine/lambda/abstract/vararg/非空 captures、精确返回类型、非 static 单 owner-self 参数、真实 body、有效 entry——该守卫经 `validatePropertyInitFunctionSignature` 对所有 init 路由统一生效，普通 instance init helper 的 static 签名亦一并收紧拒绝）；复用/合成前另经 `requireOnreadyDefaultNameUnaliased` 拒绝任何属性 `initFunc` 指向保留名（self/sibling 别名），防止源码被构造期默认 helper 顶替求值；重名冲突、shell、错型、无效 entry 等一律 fail，不修复不顶替；合法占用即跨会话复用。源码 `initFunc` 不回指、不打合成标记。
+- `generatePropertyDefaultApplyBody(clazz, property, session)`（buffer 私有重载 + session 包级包装）：先校验冻结成员资格（ineligible 抛 `IllegalStateException`），再解析/校验 `_onready_field_default_` helper，经 `emitPropertyConstructionFirstWrite` 与原 init apply 共用 first-write 发射（fat-self 转换改用 `renderOwnerFatSelfFromWrapperPtr`，行为等价），不写 setter、不销毁旧值。
+- `GenerateRenderFacade` 新增 `generatePropertyDefaultApplyBody` / `generateOnreadyApplyBody` 回调（两个构造器同形扩参，无兼容重载残留）；`entry.c.ftl` 对 eligible property 改发 default apply（ordinary 分支不变），真实 `_field_init_<prop>` 函数仍由底部函数循环照常发射。
 
 **验收**：
-- codegen golden（新增 `CCodegenOnreadyTest` 或挂 `CCodegenTest`）：**只在 constructor / init_fields 函数体内**断言 onready-with-init property 调 default apply、不调 `<C>_class_apply_property_init_<prop>`；真实 `_field_init_<prop>` 函数仍正常发射（全文不禁出现该名字，ready apply 必须调用它）；非 onready property 生成不变；
-- `script/run-gradle-targeted-tests.sh --tests CCodegenTest,CBodyBuilderPhaseCTest` 通过（property-init 体系回归）。
+- [x] codegen golden（新增 `CCodegenOnreadyTest` 或挂 `CCodegenTest`）：**只在 constructor / init_fields 函数体内**断言 onready-with-init property 调 default apply、不调 `<C>_class_apply_property_init_<prop>`；真实 `_field_init_<prop>` 函数仍正常发射（全文不禁出现该名字，ready apply 必须调用它）；非 onready property 生成不变——`generateShouldRouteOnreadySourceInitThroughDefaultApplyAtConstruction`、prepare 后改 annotation 不翻转路由（`constructionRoutingShouldStayFrozenAcrossPostPrepareAnnotationMutation`）、跨会话 helper 复用与 body 逐字节一致（`repeatedSessionsShouldReuseOnreadyDefaultHelperAndEmitIdenticalApplyBodies`）、XML roundtrip 断言扩展；
+- [x] `script/run-gradle-targeted-tests.sh --tests CCodegenTest,CBodyBuilderPhaseCTest` 通过（property-init 体系回归）。
 
 ### Step 3：ready-time apply helper（overwrite 语义）
 
 **改动**：
-- `CCodegen.java`：新增 `generateOnreadyApplyBody(...)`，满足 §3.2-3 的三条不变量（`targetOfExpr` 构造 target、不进入 `__prepare__`、不用 first-write）；
-- `entry.c.ftl`：为每个 onready-with-source-init non-static property 生成 `static inline void <C>_class_apply_onready_init_<prop>(<C>* self)`；符号显式登记。
+- [x] `CCodegen.java`：新增 `generateOnreadyApplyBody(...)`，满足 §3.2-3 的三条不变量（`targetOfExpr` 构造 target、不进入 `__prepare__`、不用 first-write）；
+- [x] `entry.c.ftl`：为每个 onready-with-source-init non-static property 生成 `static inline void <C>_class_apply_onready_init_<prop>(<C>* self)`；符号显式登记。
+
+**实施记录**：
+- `generateOnreadyApplyBody(clazz, property, session)`（buffer 私有重载 + session 包级包装）：先经 `requireOnreadySourceInitFunction` 解析真实源码 init helper（冻结成员资格 + `initFunc` 非空且未打 backend 标记的 provenance 守卫 + 共享 readiness 校验，构造期回填/覆写前先于其它变更失败）；builder 上下文持 sourceInit 但**不** `beginBasicBlock`/`setCurrentPosition`——`__prepare__` 的销毁抑制依赖当前块位置，字段已在构造期 first-write，ready 期覆写必须销毁旧值；经 `targetOfExpr("self->"+name, type)` + `moveOwnedCallIntoSlot` 走 overwrite/move 语义：先物化调用结果、再 capture old、assign、按 refcount 状态 release/try-release（`NO` 不 release），不再 own 新值、不销毁 carrier；非 destroyable 类型走直接赋值。setter 同样被绕过（apply 直写字段）。
+- `entry.c.ftl` eligible 分支在同一段同时发射 default apply 与 ready apply 两个 `static inline` 定义；`validateFileScopeSymbolsDisjoint` 对 ready apply 符号按条件显式登记，与用户函数碰撞即报 file-scope 冲突。
+- 已知边界（记录待 Step 10 收口，不视为已达成 Godot 兼容）：constructor/init_fields 现已对 eligible 属性写默认值，但 ready apply helper 尚无调用方——`<C>_class_apply_onready_inits` 链函数、根适配器、wrapper flags、组合 impl/引擎分发、非引擎 prologue 属 Step 4-7；构造期/重建期旧 wording 中「onready 随构造赋值」语义待 Step 4+ 接通，source-of-truth 文档改写仍归 Step 10。
+
+**验证与 review**：
+- 编译：`./gradlew classes --no-daemon --info --console=plain` 通过（`tmp/onready-step23/compile.log`）。
+- 首轮 targeted gate：`script/run-gradle-targeted-tests.sh --tests CCodegenOnreadyTest,CCodegenTest,CBodyBuilderPhaseCTest,CCodegenEngineMethodUsageSessionTest,CGenHelperTest,GenerateRenderFacadeTest` 通过（348 tests，0 failures，0 skipped——CCodegenOnreadyTest 26、CCodegenTest 95、CBodyBuilderPhaseCTest 109、CCodegenEngineMethodUsageSessionTest 7、CGenHelperTest 109、GenerateRenderFacadeTest 2；日志 `tmp/onready-step23/tests.log`，结果 `tmp/onready-step23/results/`）。
+- review 处置：`review-expert-a` 初审 `REQUEST_CHANGES`（2 medium + 2 low），另附一处复核检查发现的保留名别名缺陷，均已整改确认——(1) 特殊函数形态守卫上移共享 `validatePropertyInitFunctionSignature`：coroutine/lambda/abstract/vararg/非空 captures 对所有 init 路由（实例普通/source-onready/default slot/静态 source）统一拒绝，分支特有 static 检查保留；(2) 新增 `requireOnreadySourceInitFunction`：冻结成员资格 + `initFunc` 非空且未被 backend 标记的 provenance 守卫，eligible 属性先于 `_field_init_` 回填校验，防止 initFunc 清空/标记污染被静默回填；(3) `generatePropertyInitApplyBody` 直接入口拒绝 eligible 属性绕过分流，并对普通 init 补 readiness 校验；(4) 跨会话 golden 扩充 constructor/init_fields/hidden default helper 函数体逐字节相等与 onready_missing 普通路由断言，malformed 用例补 wrong self type/name/arity 及「失败前无 `__prepare__`/`__finally__` 嫁接、shell 0 块」断言；(5) 保留名别名守卫 `requireOnreadyDefaultNameUnaliased`：复用前扫描类属性表，拒绝任何 `initFunc` 指向保留 `_onready_field_default_` 名（self/sibling 别名，防止源码在构造期被求值），占用解析改为单引用+计数。
+- 整改验证：`--tests CCodegenOnreadyTest,CCodegenTest,CCodegenEngineMethodUsageSessionTest` 通过（144 tests，0 failures，0 skipped——CCodegenOnreadyTest 42、CCodegenTest 95、CCodegenEngineMethodUsageSessionTest 7；日志 `tmp/onready-step23/rework-compile.log`、`rework-tests.log`，结果 `tmp/onready-step23/results-rework/`，整改 diff `tmp/onready-step23/rework.diff`）。
+- 复审结论：`review-expert-a` 增量复审 `APPROVE`：4 项初审发现与保留名别名守卫均确认修复，无遗留 medium/high/blocking/low/suggestion 问题。
 
 **验收**：
-- golden 断言三类形态：destroyable 值类型（String/Array/Dictionary/Variant）为 destroy-then-move；对象类型为「先物化调用结果→capture old→assign→release old」；非 destroyable 类型为直接赋值；body 中不出现 first-write 路径；
-- binding usage 登记无遗漏（`GodotBindingUsageBuffer` 会话与现有 apply body 一致）；
-- `script/run-gradle-targeted-tests.sh --tests CCodegenTest,CCodegenEngineMethodUsageSessionTest` 通过。
+- [x] golden 断言三类形态：destroyable 值类型（String/Array/Dictionary/Variant/packed）为 destroy-then-move；对象类型为「先物化调用结果→capture old→assign→release old」（`RefCounted`→`release_object`、`Object`→`try_release_object`、`Node`→无 release、不 own 不毁 carrier）；非 destroyable 类型为直接赋值；body 中不出现 first-write 路径——`readyApplyShouldDestroyThenMoveForDestroyableValueTypes`、`readyApplyShouldCaptureAssignReleaseObjectFieldsPerRefcountStatus`、routing 用例内标量直赋值断言；
+- [x] binding usage 登记无遗漏（`GodotBindingUsageBuffer` 会话与现有 apply body 一致）——`onreadyApplyRenderersShouldReuseSharedSessionWithoutInventingBindings`：真实源码 helper body 的 constructor/method 经 `generateFuncBody` 恰登记一次、wrapper 重复渲染不新增不丢失、失败路由不污染 session、`engine_method_binds.h` 含所需绑定；
+- [x] `script/run-gradle-targeted-tests.sh --tests CCodegenTest,CCodegenEngineMethodUsageSessionTest` 通过。
 
 ### Step 4：onready 链函数与根适配器（段首原型 + 定义）
 
@@ -359,7 +379,7 @@
 - [ ] re-ready 双形态：移除再入树不重放、`request_ready()` 重放且旧值（含 RefCounted/容器）正确释放；
 - [ ] 双入口一致性：引擎路径（组合 impl）与非引擎首调路径（prologue）各自只执行一次 onready，super 调用不触发第三次；
 - [ ] frontend LIR → XML → parse → C codegen 完整链路回归：onready 分流在序列化 roundtrip 后保持不变（annotation map 保真 + 分流判定来自计划快照）；
-- [ ] 双 codegen 会话回归：同一 `LirModule` 两次生成，onready 分流与默认 helper 合成结果一致（Step 1 已验证计划事实与既有默认 helper 幂等；C 分流及新增 default helper 的跨会话验收待 Step 2+）；
+- [x] 双 codegen 会话回归：同一 `LirModule` 两次生成，onready 分流与默认 helper 合成结果一致（Step 1 已验证计划事实与既有默认 helper 幂等；Step 2-3 已验证 C 分流与 `_onready_field_default_` helper 跨会话恰一份且 apply body 逐字节一致）；
 - [ ] 无 onready 链的类：不生成链函数/适配器/组合 impl，get_virtual/call_virtual 分发段 golden diff 为空（prologue 注入由本类或后代链事实单独控制，不纳入本条）；flags 位域迁移属全局统一变化，单独断言位运算形态与 destructed 语义不变；
 - [ ] 热重载 recreate 三 scenario（仅 recreate / recreate+手调 / recreate+request_ready）通过（`GodotEditorHotReloadIntegrationTest` 类内锚点）。
 
