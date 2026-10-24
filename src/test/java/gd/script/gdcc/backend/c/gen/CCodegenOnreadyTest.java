@@ -300,10 +300,19 @@ class CCodegenOnreadyTest {
                 .orElseThrow(() -> new AssertionError("Missing generated entry.c"));
     }
 
-    /// Extracts one generated function body by brace matching from its signature prefix.
+    /// Extracts a generated function definition body by signature prefix, skipping prototypes.
     private static String functionBodyByPrefix(String code, String signaturePrefix) {
-        var signatureIndex = code.indexOf(signaturePrefix);
-        assertTrue(signatureIndex >= 0, "Missing function prefix: " + signaturePrefix);
+        var fromIndex = 0;
+        var signatureIndex = -1;
+        while ((signatureIndex = code.indexOf(signaturePrefix, fromIndex)) >= 0) {
+            var openBraceIndex = code.indexOf('{', signatureIndex);
+            var semicolonIndex = code.indexOf(';', signatureIndex);
+            if (semicolonIndex < 0 || semicolonIndex > openBraceIndex) {
+                break;
+            }
+            fromIndex = semicolonIndex + 1;
+        }
+        assertTrue(signatureIndex >= 0, "Missing function definition: " + signaturePrefix);
         var openBraceIndex = code.indexOf('{', signatureIndex);
         assertTrue(openBraceIndex >= 0, "Missing opening brace for " + signaturePrefix);
         var depth = 0;
@@ -435,6 +444,9 @@ class CCodegenOnreadyTest {
         assertTrue(constructorBody.contains("OnreadyHost_class_apply_property_init_plain_source(self);"), constructorBody);
         assertFalse(constructorBody.contains("apply_property_init_onready_source"), constructorBody);
         assertFalse(constructorBody.contains("apply_property_default_plain_source"), constructorBody);
+        // The chain body keeps the frozen member even though the live annotation was removed.
+        var chainBody = functionBodyByPrefix(cCode, "static void OnreadyHost_class_apply_onready_inits");
+        assertTrue(chainBody.contains("OnreadyHost_class_apply_onready_init_onready_source(self);"), chainBody);
     }
 
     @Test
@@ -453,14 +465,16 @@ class CCodegenOnreadyTest {
         assertEquals(1, host.getFunctions().stream()
                 .filter(f -> f.getName().equals("_onready_field_default_onready_source")).count());
         assertSame(defaultHelper, functionNamed(host, "_onready_field_default_onready_source"));
-        // Constructor, init_fields, both apply wrappers and the hidden default helper body
-        // all stay byte-identical across sessions.
+        // Constructor, init_fields, both apply wrappers, the hidden default helper body and
+        // the chain/adapter definitions all stay byte-identical across sessions.
         for (var prefix : List.of(
                 "void OnreadyHost_class_constructor",
                 "void OnreadyHost_class_init_fields",
                 "static inline void OnreadyHost_class_apply_property_default_onready_source",
                 "static inline void OnreadyHost_class_apply_onready_init_onready_source",
-                "godot_int OnreadyHost__onready_field_default_onready_source(")) {
+                "godot_int OnreadyHost__onready_field_default_onready_source(",
+                "static void OnreadyHost_class_apply_onready_inits",
+                "static void OnreadyHost__gdcc_onready_apply_root")) {
             assertEquals(functionBodyByPrefix(firstC, prefix), functionBodyByPrefix(secondC, prefix), prefix);
         }
         // The ineligible sibling keeps the ordinary route in the second session too.
@@ -468,6 +482,14 @@ class CCodegenOnreadyTest {
         assertFalse(secondC.contains("OnreadyHost_class_apply_property_default_onready_missing"), secondC);
         assertFalse(secondC.contains("OnreadyHost_class_apply_onready_init_onready_missing"), secondC);
         assertFalse(secondC.contains("_onready_field_default_onready_missing"), secondC);
+        // Prototypes stay unique in the second session as well.
+        for (var proto : List.of(
+                "static void OnreadyHost_class_apply_onready_inits(OnreadyHost* self);",
+                "static inline void OnreadyHost_class_apply_onready_init_onready_source(OnreadyHost* self);",
+                "static void OnreadyHost__gdcc_onready_apply_root(OnreadyHost* root);",
+                "static void OnreadyHost__gdcc_onready_ready(OnreadyHost* self);")) {
+            assertEquals(1, countOccurrences(secondC, proto), proto);
+        }
         var onreadySource = propertyOf(host, "onready_source");
         assertEquals("_field_init_onready_source", onreadySource.getInitFunc());
         assertFalse(onreadySource.isInitializerSynthesizedByBackend());
@@ -705,6 +727,220 @@ class CCodegenOnreadyTest {
             assertTrue(body.contains("self->flag ="), body);
             assertFalse(body.contains("custom_flag_setter"), body);
         }
+    }
+
+    /// A -> B -> C chain fixture in derived-first module order: StepB is a pass-through
+    /// middle class; clean-parent leaf and standalone covers the no-chain classes.
+    private static LirModule newOnreadyChainModule() {
+        var a = new LirClassDef("StepA", "Node");
+        addEligibleIntProperty(a, "z_first", 1);
+        a.addProperty(new LirPropertyDef("plain", GdIntType.INT, false, null, null, null, Map.of()));
+        addEligibleIntProperty(a, "a_second", 2);
+        a.addProperty(new LirPropertyDef("onready_missing", GdIntType.INT, false, null, null, null, Map.of("onready", "")));
+        var b = new LirClassDef("StepB", "StepA");
+        b.addProperty(new LirPropertyDef("plain_b", GdIntType.INT, false, null, null, null, Map.of()));
+        var c = new LirClassDef("StepC", "StepB");
+        addEligibleIntProperty(c, "c_first", 3);
+        addEligibleIntProperty(c, "c_second", 4);
+        var cleanParent = new LirClassDef("CleanParent", "Node");
+        cleanParent.addProperty(new LirPropertyDef("cp_plain", GdIntType.INT, false, null, null, null, Map.of()));
+        var leafUnderClean = new LirClassDef("LeafUnderClean", "CleanParent");
+        addEligibleIntProperty(leafUnderClean, "luc", 5);
+        var standalone = new LirClassDef("StepStandalone", "Node");
+        standalone.addProperty(new LirPropertyDef("sflag", GdIntType.INT, true, null, null, null, Map.of()));
+        standalone.addProperty(new LirPropertyDef("sd", GdIntType.INT, false, null, null, null, Map.of()));
+        standalone.addProperty(new LirPropertyDef("sd_no", GdIntType.INT, false, null, null, null, Map.of("onready", "")));
+        return new LirModule("onready_chain_module",
+                List.of(c, b, a, leafUnderClean, cleanParent, standalone));
+    }
+
+    /// Adds `name` as a source-initializer onready INT property plus its hidden init helper.
+    private static void addEligibleIntProperty(LirClassDef owner, String name, int value) {
+        owner.addFunction(newHiddenIntInit(owner.getName(), "_field_init_" + name, value));
+        owner.addProperty(new LirPropertyDef(
+                name, GdIntType.INT, false, "_field_init_" + name, null, null, Map.of("onready", "")));
+    }
+
+    private static LirClassDef classNamed(LirModule module, String name) {
+        return module.getClassDefs().stream()
+                .filter(classDef -> classDef.getName().equals(name)).findFirst().orElseThrow();
+    }
+
+    @Test
+    @DisplayName("onready chain prototypes should be emitted once in module order before every definition")
+    void generateShouldEmitOnreadyChainPrototypesBeforeDefinitions() throws IOException {
+        var module = newOnreadyChainModule();
+        var codegen = newPreparedCodegen(module);
+        var cCode = generatedEntryC(codegen.generate());
+
+        var firstDefinition = cCode.indexOf("GDE_EXPORT");
+        assertTrue(firstDefinition > 0);
+        // Module order [StepC, StepB, StepA, LeafUnderClean]: the prototype pass follows it.
+        var expectedProtos = List.of(
+                "static void StepC_class_apply_onready_inits(StepC* self);",
+                "static inline void StepC_class_apply_onready_init_c_first(StepC* self);",
+                "static inline void StepC_class_apply_onready_init_c_second(StepC* self);",
+                "static void StepC__gdcc_onready_apply_root(StepA* root);",
+                "static void StepC__gdcc_onready_ready(StepC* self);",
+                "static void StepB_class_apply_onready_inits(StepB* self);",
+                "static void StepB__gdcc_onready_apply_root(StepA* root);",
+                "static void StepB__gdcc_onready_ready(StepB* self);",
+                "static void StepA_class_apply_onready_inits(StepA* self);",
+                "static inline void StepA_class_apply_onready_init_z_first(StepA* self);",
+                "static inline void StepA_class_apply_onready_init_a_second(StepA* self);",
+                "static void StepA__gdcc_onready_apply_root(StepA* root);",
+                "static void StepA__gdcc_onready_ready(StepA* self);",
+                "static void LeafUnderClean_class_apply_onready_inits(LeafUnderClean* self);",
+                "static inline void LeafUnderClean_class_apply_onready_init_luc(LeafUnderClean* self);",
+                "static void LeafUnderClean__gdcc_onready_apply_root(CleanParent* root);",
+                "static void LeafUnderClean__gdcc_onready_ready(LeafUnderClean* self);");
+        var previousIndex = -1;
+        for (var proto : expectedProtos) {
+            assertEquals(1, countOccurrences(cCode, proto), proto);
+            var index = cCode.indexOf(proto);
+            assertTrue(index >= 0 && index < firstDefinition, proto);
+            assertTrue(index > previousIndex, "module order violated at " + proto);
+            previousIndex = index;
+            // The signature without `;` occurs once in the prototype and once in the
+            // definition — the composite ready entry is declaration-only.
+            var signature = proto.substring(0, proto.length() - 1);
+            assertEquals(proto.contains("__gdcc_onready_ready") ? 1 : 2,
+                    countOccurrences(cCode, signature), signature);
+        }
+        // No prototypes for ineligible properties or classes without frozen chain members.
+        for (var absent : List.of(
+                "StepA_class_apply_onready_init_onready_missing",
+                "StepA_class_apply_onready_init_plain",
+                "StepB_class_apply_onready_init_",
+                "CleanParent_class_apply_onready_inits",
+                "CleanParent__gdcc_onready",
+                "StepStandalone_class_apply_onready_inits",
+                "StepStandalone__gdcc_onready")) {
+            assertFalse(cCode.contains(absent), absent);
+        }
+    }
+
+    @Test
+    @DisplayName("onready chain functions should apply GDCC ancestors first then own frozen list")
+    void generateShouldEmitOnreadyChainFunctionsInParentBeforeOwnOrder() throws IOException {
+        var module = newOnreadyChainModule();
+        var codegen = newPreparedCodegen(module);
+        var cCode = generatedEntryC(codegen.generate());
+
+        // Full statement equality pins each chain body to exactly its expected calls —
+        // parent-first ordering, declaration order, no flattened calls, nothing extra.
+        assertEquals(List.of(
+                        "StepA_class_apply_onready_init_z_first(self);",
+                        "StepA_class_apply_onready_init_a_second(self);"),
+                bodyStatements(functionBodyByPrefix(cCode, "static void StepA_class_apply_onready_inits")));
+        assertEquals(List.of(
+                        "StepA_class_apply_onready_inits(&self->_super);"),
+                bodyStatements(functionBodyByPrefix(cCode, "static void StepB_class_apply_onready_inits")));
+        assertEquals(List.of(
+                        "StepB_class_apply_onready_inits(&self->_super);",
+                        "StepC_class_apply_onready_init_c_first(self);",
+                        "StepC_class_apply_onready_init_c_second(self);"),
+                bodyStatements(functionBodyByPrefix(cCode, "static void StepC_class_apply_onready_inits")));
+        assertEquals(List.of(
+                        "LeafUnderClean_class_apply_onready_init_luc(self);"),
+                bodyStatements(functionBodyByPrefix(cCode,
+                        "static void LeafUnderClean_class_apply_onready_inits")));
+    }
+
+    /// Non-blank trimmed lines of an extracted function body, for exact statement equality.
+    private static List<String> bodyStatements(String body) {
+        return body.lines().map(String::strip).filter(line -> !line.isEmpty()).toList();
+    }
+
+    @Test
+    @DisplayName("onready root adapters should take the physical root type and offset-cast to the chain class")
+    void generateShouldEmitOnreadyRootAdapters() throws IOException {
+        var module = newOnreadyChainModule();
+        var codegen = newPreparedCodegen(module);
+        var cCode = generatedEntryC(codegen.generate());
+
+        for (var cls : List.of("StepA", "StepB", "StepC")) {
+            assertEquals(1,
+                    countOccurrences(cCode, cls + "__gdcc_onready_apply_root(StepA* root)\n{"), cls);
+            var body = functionBodyByPrefix(cCode, "static void " + cls + "__gdcc_onready_apply_root(StepA* root)");
+            assertTrue(body.contains(cls + "_class_apply_onready_inits((" + cls + "*)root);"), body);
+            assertFalse(body.contains("(*)("), body);
+        }
+        // The physical root under a clean GDCC parent is the parent itself, not the chain owner.
+        var leafBody = functionBodyByPrefix(cCode,
+                "static void LeafUnderClean__gdcc_onready_apply_root(CleanParent* root)");
+        assertTrue(leafBody.contains(
+                "LeafUnderClean_class_apply_onready_inits((LeafUnderClean*)root);"), leafBody);
+    }
+
+    @Test
+    @DisplayName("composite ready prototype should be declared per chain class without definition or dispatch")
+    void generateShouldDeclareCompositeReadyPrototypeOnly() throws IOException {
+        var module = newOnreadyChainModule();
+        // A user `_ready` on StepA: chain emission and composite declaration stay unaffected.
+        var ready = new LirFunctionDef("_ready");
+        ready.setReturnType(GdVoidType.VOID);
+        ready.addParameter(new LirParameterDef("self", new GdObjectType("StepA"), null, ready));
+        var readyEntry = new LirBasicBlock("entry");
+        readyEntry.setTerminator(new ReturnInsn(null));
+        ready.addBasicBlock(readyEntry);
+        ready.setEntryBlockId("entry");
+        classNamed(module, "StepA").addFunction(ready);
+        var codegen = newPreparedCodegen(module);
+        var cCode = generatedEntryC(codegen.generate());
+
+        for (var cls : List.of("StepA", "StepB", "StepC", "LeafUnderClean")) {
+            assertEquals(1,
+                    countOccurrences(cCode, "static void " + cls + "__gdcc_onready_ready(" + cls + "* self);"), cls);
+            assertFalse(cCode.contains(cls + "__gdcc_onready_ready(" + cls + "* self)\n{"), cls);
+        }
+        var withoutProtos = Pattern.compile("static void \\w+__gdcc_onready_ready\\(\\w+\\* self\\);")
+                .matcher(cCode).replaceAll("");
+        assertFalse(withoutProtos.contains("__gdcc_onready_ready("), withoutProtos);
+
+        // `_ready` resolution stays chain-based: StepC's owner is StepA, and no chain body
+        // invokes `_ready` itself.
+        assertEquals("StepA", codegen.onreadyPlan().classPlan("StepC").userReadyOwnerClassName());
+        var cBody = functionBodyByPrefix(cCode, "static void StepC_class_apply_onready_inits");
+        assertFalse(cBody.contains("_ready("), cBody);
+        assertNull(codegen.onreadyPlan().classPlan("CleanParent").userReadyFunction());
+    }
+
+    private static Stream<Arguments> onreadyChainCollidingFunctionNames() {
+        return Stream.of(
+                Arguments.of("class_apply_onready_inits"),
+                Arguments.of("_gdcc_onready_apply_root"),
+                Arguments.of("_gdcc_onready_ready")
+        );
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("onreadyChainCollidingFunctionNames")
+    @DisplayName("user functions colliding with onready chain symbols should fail file-scope validation")
+    void generateShouldRejectUserFunctionCollidingWithOnreadyChainSymbol(String funcName) throws IOException {
+        var module = newOnreadyChainModule();
+        classNamed(module, "StepA").addFunction(newHiddenIntInit("StepA", funcName, 9));
+        var codegen = newPreparedCodegen(module);
+
+        var exception = assertThrows(IllegalStateException.class, codegen::generate);
+        assertTrue(exception.getMessage().contains("file-scope symbol conflict"), exception.getMessage());
+        assertTrue(exception.getMessage().contains("StepA_" + funcName), exception.getMessage());
+    }
+
+    @Test
+    @DisplayName("onready chain symbol names stay available to user functions on classes without a chain")
+    void generateShouldAllowOnreadyChainNamesOnCleanClasses() throws IOException {
+        var host = new LirClassDef("CleanHost", "Node");
+        host.addFunction(newHiddenIntInit("CleanHost", "_gdcc_onready_ready", 7));
+        host.addFunction(newHiddenIntInit("CleanHost", "_gdcc_onready_apply_root", 8));
+        host.addFunction(newHiddenIntInit("CleanHost", "class_apply_onready_inits", 9));
+        host.addProperty(new LirPropertyDef("p", GdIntType.INT, false, null, null, null, Map.of()));
+        var codegen = newPreparedCodegen(new LirModule("clean_chain_names_module", List.of(host)));
+
+        var cCode = generatedEntryC(codegen.generate());
+        assertTrue(cCode.contains("CleanHost__gdcc_onready_ready("), cCode);
+        assertTrue(cCode.contains("CleanHost__gdcc_onready_apply_root("), cCode);
+        assertTrue(cCode.contains("CleanHost_class_apply_onready_inits("), cCode);
     }
 
     /// A contract-valid occupant of the `_onready_field_default_` slot whose `self` parameter

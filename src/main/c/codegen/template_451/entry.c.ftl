@@ -31,6 +31,18 @@ static void ${helper.renderStaticDefaultsSymbol(classDef.name)}(void);
 static void ${helper.renderStaticInitializersSymbol(classDef.name)}(void);
 </#list>
 
+<#-- Declare onready helpers before cross-class references. -->
+<#list module.classDefs as classDef>
+    <#if helper.onreadyPlan().classPlan(classDef.name).chainHasOnreadyInitializer()>
+static void ${helper.renderOnreadyChainApplyHelperName(classDef.name)}(${classDef.name}* self);
+        <#list helper.onreadyPlan().classPlan(classDef.name).onreadyInitializers() as onreadyProperty>
+static inline void ${helper.renderOnreadyApplyHelperName(classDef, onreadyProperty)}(${classDef.name}* self);
+        </#list>
+static void ${helper.renderOnreadyRootApplyHelperName(classDef.name)}(${helper.resolveGdccRootClassName(classDef.name)}* root);
+static void ${helper.renderOnreadyReadyHelperName(classDef.name)}(${classDef.name}* self);
+    </#if>
+</#list>
+
 <#-- Per-extension stable anchor token (derived from the module name only; only ever -->
 <#-- compared, never dereferenced) and the module-level Callable identity catalog. Identity -->
 <#-- structs are referenced both by the construct_lambda / construct_standalone_callable -->
@@ -407,6 +419,23 @@ static inline void ${helper.renderPropertyInitApplyHelperName(classDef, property
 </#if>
 </#if>
 </#list>
+
+<#if helper.onreadyPlan().classPlan(classDef.name).chainHasOnreadyInitializer()>
+<#-- Apply the parent chain before this class's frozen initializer list. -->
+static void ${helper.renderOnreadyChainApplyHelperName(classDef.name)}(${classDef.name}* self) {
+    <#if helper.checkGdccClassByName(classDef.superName) && helper.onreadyPlan().classPlan(classDef.superName).chainHasOnreadyInitializer()>
+    ${helper.renderOnreadyChainApplyHelperName(classDef.superName)}(&self->_super);
+    </#if>
+    <#list helper.onreadyPlan().classPlan(classDef.name).onreadyInitializers() as onreadyProperty>
+    ${helper.renderOnreadyApplyHelperName(classDef, onreadyProperty)}(self);
+    </#list>
+}
+
+<#-- The matching dynamic wrapper shares the root prefix at offset 0; no function-pointer cast is needed. -->
+static void ${helper.renderOnreadyRootApplyHelperName(classDef.name)}(${helper.resolveGdccRootClassName(classDef.name)}* root) {
+    ${helper.renderOnreadyChainApplyHelperName(classDef.name)}((${classDef.name}*)root);
+}
+</#if>
 
 GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize) {
     GDExtensionObjectPtr obj = godot_classdb_construct_object2(GD_STATIC_SN(u8"${helper.resolveNearestNativeAncestorName(classDef)}"));

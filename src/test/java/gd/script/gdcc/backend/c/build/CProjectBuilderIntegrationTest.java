@@ -110,6 +110,57 @@ public class CProjectBuilderIntegrationTest {
         assertFalse(result.artifacts().isEmpty());
     }
 
+    /// Real C compilation of derived-first onready chains with a pass-through middle class.
+    @Test
+    public void compileDerivedFirstOnreadyChainModuleWithRealZig() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+        var tempDir = Path.of("tmp/test/c_build_onready_chain");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo("onreadychainproj", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var codegen = new CCodegen();
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var ctx = new CodegenContext(projectInfo, new ClassRegistry(api));
+
+        var a = new LirClassDef("OnChainA", "Node");
+        addOnreadyIntField(a, "af", 1);
+        var b = new LirClassDef("OnChainB", "OnChainA");
+        var c = new LirClassDef("OnChainC", "OnChainB");
+        addOnreadyIntField(c, "cf", 2);
+        var sibling = new LirClassDef("OnChainSibling", "Node");
+        addOnreadyIntField(sibling, "sf", 3);
+
+        var module = new LirModule("onready_chain_module", List.of(c, b, a, sibling));
+        codegen.prepare(ctx, module);
+        var result = builder.buildProject(projectInfo, codegen);
+        IO.println(result.buildLog());
+
+        assertTrue(result.success(), "Derived-first onready chain module should compile with zig. Build log:\n" + result.buildLog());
+        assertFalse(result.artifacts().isEmpty());
+    }
+
+    /// Adds `name` as a source-initializer onready INT property plus its hidden init helper.
+    private static void addOnreadyIntField(LirClassDef owner, String name, int value) {
+        var initFunc = new LirFunctionDef("_field_init_" + name, "entry");
+        initFunc.setHidden(true);
+        initFunc.setReturnType(GdIntType.INT);
+        initFunc.addParameter(new LirParameterDef("self", new GdObjectType(owner.getName()), null, initFunc));
+        var tmpVar = initFunc.createAndAddTmpVariable(GdIntType.INT);
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new LiteralIntInsn(tmpVar.id(), value));
+        entry.appendInstruction(new ReturnInsn(tmpVar.id()));
+        initFunc.addBasicBlock(entry);
+        owner.addFunction(initFunc);
+        owner.addProperty(new LirPropertyDef(
+                name, GdIntType.INT, false, "_field_init_" + name, null, null, Map.of("onready", "")));
+    }
+
     @Test
     public void compileWithRealZigAndRunInGodot() throws IOException, InterruptedException {
         if (!hasZig()) {

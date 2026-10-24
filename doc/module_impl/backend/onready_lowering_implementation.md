@@ -5,8 +5,8 @@
 
 ## 文档状态
 
-- 状态：Step 1-3 Implemented / Verified / Reviewed；Step 4-10 待实施
-- 部分状态说明：Step 2-3 完成后 constructor / init_fields 已对 eligible 属性写入类型默认值，且 `<C>_class_apply_onready_init_<prop>` ready apply helper 已生成；但两类 ready 辅助路径尚未接入生命周期分发（链函数 / 适配器 / 组合 impl / prologue 属 Step 4-7），即 onready 真实 initializer 目前不会在运行期被调用，不得据此宣称 Godot 兼容语义已达成。
+- 状态：Step 1-4 Implemented / Verified / Reviewed；Step 5-10 待实施
+- 部分状态说明：Step 2-3 完成后 constructor / init_fields 已对 eligible 属性写入类型默认值，`<C>_class_apply_onready_init_<prop>` ready apply helper 已生成；Step 4 后链函数 `<C>_class_apply_onready_inits`、根适配器 `<C>__gdcc_onready_apply_root` 与组合 impl 原型 `<C>__gdcc_onready_ready` 已发射；但尚无生命周期调用方（wrapper 函数字段 / 引擎分发 / prologue 属 Step 5-7），即 onready 真实 initializer 目前不会在运行期被调用，不得据此宣称 Godot 兼容语义已达成。
 - 更新时间：2026-10-23
 - 适用范围：
   - `src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java`
@@ -253,7 +253,7 @@
 **实施记录**：
 - `generateOnreadyApplyBody(clazz, property, session)`（buffer 私有重载 + session 包级包装）：先经 `requireOnreadySourceInitFunction` 解析真实源码 init helper（冻结成员资格 + `initFunc` 非空且未打 backend 标记的 provenance 守卫 + 共享 readiness 校验，构造期回填/覆写前先于其它变更失败）；builder 上下文持 sourceInit 但**不** `beginBasicBlock`/`setCurrentPosition`——`__prepare__` 的销毁抑制依赖当前块位置，字段已在构造期 first-write，ready 期覆写必须销毁旧值；经 `targetOfExpr("self->"+name, type)` + `moveOwnedCallIntoSlot` 走 overwrite/move 语义：先物化调用结果、再 capture old、assign、按 refcount 状态 release/try-release（`NO` 不 release），不再 own 新值、不销毁 carrier；非 destroyable 类型走直接赋值。setter 同样被绕过（apply 直写字段）。
 - `entry.c.ftl` eligible 分支在同一段同时发射 default apply 与 ready apply 两个 `static inline` 定义；`validateFileScopeSymbolsDisjoint` 对 ready apply 符号按条件显式登记，与用户函数碰撞即报 file-scope 冲突。
-- 已知边界（记录待 Step 10 收口，不视为已达成 Godot 兼容）：constructor/init_fields 现已对 eligible 属性写默认值，但 ready apply helper 尚无调用方——`<C>_class_apply_onready_inits` 链函数、根适配器、wrapper flags、组合 impl/引擎分发、非引擎 prologue 属 Step 4-7；构造期/重建期旧 wording 中「onready 随构造赋值」语义待 Step 4+ 接通，source-of-truth 文档改写仍归 Step 10。
+- 已知边界（记录待 Step 10 收口，不视为已达成 Godot 兼容）：constructor/init_fields 现已对 eligible 属性写默认值；Step 4 的链函数已会调用 ready apply，但链函数 / 根适配器尚无法从生命周期入口到达（wrapper flags 与函数字段写入属 Step 5、组合 impl 定义 / 引擎分发属 Step 6、非引擎 prologue 属 Step 7），ready 分发仍未接通；构造期/重建期旧 wording 中「onready 随构造赋值」语义待 Step 5+ 接通，source-of-truth 文档改写仍归 Step 10。
 
 **验证与 review**：
 - 编译：`./gradlew classes --no-daemon --info --console=plain` 通过（`tmp/onready-step23/compile.log`）。
@@ -269,18 +269,29 @@
 
 ### Step 4：onready 链函数与根适配器（段首原型 + 定义）
 
-**改动**：
-- `entry.c.ftl`：段首统一发射 `static` 原型，清单：`<C>_class_apply_onready_inits`、`<C>_class_apply_onready_init_<prop>`、`<C>__gdcc_onready_apply_root`、`<C>__gdcc_onready_ready`；
-- 为链事实为真的类生成 `<C>_class_apply_onready_inits` 定义（父链事实为真时先递归 `<Parent>_class_apply_onready_inits(&self->_super)`，再按声明顺序调本类 ready apply）；
-- 为链事实为真的类生成根签名适配器 `<C>__gdcc_onready_apply_root(<Root>* root)`（内部 offset-0 转换后调本类链函数；**禁止**把链函数地址裸强转存入函数字段）；
-- `CGenHelper` 新增根类解析 helper（沿 superName 链走到 GDCC 根，带 visited set）供字段类型与适配器签名渲染；
-- 符号显式登记（链函数、适配器均登记）。
+**实现记录**：
+- [x] `entry.c.ftl` 段首按 module 顺序统一发射 `static` 原型（静态 lifecycle 前向声明之后、首个函数定义之前的 module-order 原型段）：`<C>_class_apply_onready_inits`、`<C>_class_apply_onready_init_<prop>`（仅本类 frozen `onreadyInitializers`）、`<C>__gdcc_onready_apply_root(<Root>* root)`、`<C>__gdcc_onready_ready`；四类原型仅在 `chainHasOnreadyInitializer` 为真时发射，组合 impl 只发原型，定义与转发归 Step 6；
+- [x] `entry.c.ftl` 在 property apply 定义之后、`class_create_instance` 之前生成 `<C>_class_apply_onready_inits` 链函数定义：`checkGdccClassByName(superName)`（`_super` 成员存在的同一条件）且父链事实为真时先 `<Parent>_class_apply_onready_inits(&self->_super)`，再按声明顺序调本类 ready apply；选择依据仅为 frozen plan，不读 live 注解 / `initFunc`，不展开摊平祖先；
+- [x] 根签名适配器 `<C>__gdcc_onready_apply_root(<Root>* root)`：体内仅将数据指针向下转换为 `(<C>*)root` 后调本类链函数——offset-0 嵌入前缀使该转换受控合法（与 vtable trampoline 同类的受控数据指针例外）；§3.2 函数指针强转禁令无例外，函数字段只允许存适配器地址；
+- [x] `CGenHelper` 新增 `renderOnreadyChainApplyHelperName` / `renderOnreadyRootApplyHelperName` / `renderOnreadyReadyHelperName`（模板与符号校验共用单一命名源）与 `resolveGdccRootClassName`：沿注册表 `superName` 走到最外层 GDCC wrapper——与根字段访问同一物理布局语义；visited set 检环报 `IllegalStateException`，未知起始类报 `IllegalArgumentException`，引擎 / 未注册 / 空 super 终止于当前类；解析物理布局，不查 module plan（注册的外部祖先仍算物理根，链事实独立止于模块边界）；无持久缓存；
+- [x] `validateFileScopeSymbolsDisjoint`：chainHas 为真的类显式登记链函数、根适配器与组合 impl 原型三个符号——原型既已发射即可能与用户函数冲突。
 
-**验收**：
-- golden 断言：段首原型清单完整；适配器签名与字段类型一致；基类→派生类递归顺序；类内声明顺序；**仅当本类及全部同模块 GDCC 祖先均无 onready initializer 时才不生成**链函数与适配器；本类无 initializer 但祖先有的中间类生成转发函数与适配器；
-- A→B→C 形态（A 有、B 无、C 有）同时验证中间转发、初始化顺序与组合 impl 所属类；
-- derived-first 模块输入（类在源文件中先子后父）下生成 C 通过 zig 编译 smoke（对照既有 `CVtableCodegenTest` derived-first 用例形态）；
-- `script/run-gradle-targeted-tests.sh --tests CCodegenTest` 通过。
+**验收**（已验证项打勾；其余为 Step 5-6 边界）：
+- [x] golden：段首原型完整、位于所有定义之前、按 module 顺序、每符号恰好一次；A→B→C（A 有 B 无 C 有）中 A 仅本类两字段按声明顺序、B 仅一行 `StepA_class_apply_onready_inits(&self->_super)`、C 先调 B 链再调自身两字段且无摊平的 A 调用；中间转发类同时生成适配器；
+- [x] golden：适配器签名取**物理根**类型（`LeafUnderClean` 用 `CleanParent* root`，非链属主），体内仅 offset-0 `(<C>*)root` 调用、无函数指针形态；本类与全部同模块 GDCC 祖先均无 onready initializer 时不生成任何原型/定义（含「仅后代有 onready 的祖先」）；no-init onready、普通、static 属性均无 per-property 原型；
+- [x] 用户 `_ready` 独立：StepA 声明 `_ready` 时链函数体不含 `_ready(` / constructor 调用，`StepC` 的 `userReadyOwnerClassName` 仍为 `StepA`；组合 impl 每链类一条原型、签名为本类 `<C>* self`、**无定义无调用点**（定义与 `_ready` 转发属 Step 6 验收）；
+- [x] 符号冲突：三个新符号名与同名用户函数（`class_apply_onready_inits` / `_gdcc_onready_apply_root` / `_gdcc_onready_ready`）同组时均报 file-scope conflict；无链类允许同名用户函数照常发射；
+- [x] 跨会话：复用测试扩展为链函数 / 适配器定义体逐字节相等与原型唯一；post-prepare 注解变更测试断言链体仍含 frozen 成员；
+- [x] zig smoke：`CProjectBuilderIntegrationTest.compileDerivedFirstOnreadyChainModuleWithRealZig` 实机 zig 编译通过（log `tmp/onready-step4/zig-test.log`，项目产物 `tmp/test/c_build_onready_chain/`）；
+- [x] 命令：`script/run-gradle-targeted-tests.sh --tests CCodegenOnreadyTest,CGenHelperTest,CCodegenTest,CVtableCodegenTest,CCodegenEngineMethodUsageSessionTest` → 275 tests / 0 failures / 0 skipped（`tmp/onready-step4/tests.log`，XML `tmp/onready-step4/results/`）。
+- 已知边界：链函数会调用 ready apply，但链函数 / 根适配器尚无法从生命周期入口到达——wrapper 函数字段写适配器地址属 Step 5（届时验证字段类型与 `Root*` 签名一致），引擎 `get_virtual`/`call_virtual` 分发与组合 impl 定义属 Step 6，prologue 属 Step 7。
+
+**验证与 review**：
+- 编译：`./gradlew classes --no-daemon --info --console=plain` 通过；整改后复跑同命令通过（`tmp/onready-step4/rework-compile.log`）。
+- 首轮 targeted gate：`--tests CCodegenOnreadyTest,CGenHelperTest,CCodegenTest,CVtableCodegenTest,CCodegenEngineMethodUsageSessionTest` → 275 tests / 0 failures / 0 skipped（`tmp/onready-step4/tests.log`，XML `tmp/onready-step4/results/`）；zig smoke `compileDerivedFirstOnreadyChainModuleWithRealZig` 实机通过（`tmp/onready-step4/zig-test.log`）。
+- review 处置：`review-expert-a` 初审 `APPROVE`，附 4 项 low 建议均已整改——FTL / Java 注释压缩为自足单行、`functionBodyByPrefix` 文档去重；链函数 golden 收紧为「非空 statement 行全等」（A/B/C/Leaf 各自精确调用序列，重复 / 摊平 / 多余调用均被排除）；原型用例新增「签名无 `;` 形态恰出现两次（原型+定义）」断言（组合 impl 保持恰一次）；文档注释与行号引用清理（方法 / 段落符号锚点、适配器例外性质改写、日期修正）。
+- 整改验证：`--tests CCodegenOnreadyTest` 通过（50 tests，0 failures，0 skipped；`tmp/onready-step4/rework-tests.log`，XML `tmp/onready-step4/results-rework/`，整改 diff `tmp/onready-step4/rework.diff`，全量 diff `tmp/onready-step4/step4-final.diff`）；生产侧仅注释变化，zig smoke 不重复执行。
+- 复审结论：`review-expert-a` 增量复审 `APPROVE`，四项初审建议逐项确认关闭，0 新发现，无遗留中高风险或阻塞问题。
 
 ### Step 5：wrapper flags 位域与 onready apply 函数字段
 

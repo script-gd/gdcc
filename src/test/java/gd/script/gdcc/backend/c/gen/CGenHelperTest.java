@@ -2090,4 +2090,74 @@ class CGenHelperTest {
         assertEquals("ApplyHost_class_apply_property_init_plain_source",
                 moduleHelper.renderPropertyConstructionApplyHelperName(host, plainSource));
     }
+
+    @Test
+    @DisplayName("onready chain/adapter/ready helper names should render the exact generated symbols")
+    void onreadyChainNamingShouldRenderExactSymbols() {
+        assertEquals("Host_class_apply_onready_inits", helper.renderOnreadyChainApplyHelperName("Host"));
+        assertEquals("Host__gdcc_onready_apply_root", helper.renderOnreadyRootApplyHelperName("Host"));
+        assertEquals("Host__gdcc_onready_ready", helper.renderOnreadyReadyHelperName("Host"));
+    }
+
+    @Test
+    @DisplayName("GDCC root resolution should follow the registered wrapper chain, not module order")
+    void resolveGdccRootClassNameShouldFollowRegisteredWrapperChain() {
+        // The shared fixture: MyChild -> MyBase -> RefCounted (engine); the inner class also
+        // hangs off MyBase. Root is the outermost GDCC wrapper ancestor.
+        assertEquals("MyBase", helper.resolveGdccRootClassName("MyChild"));
+        assertEquals("MyBase", helper.resolveGdccRootClassName("MyBase"));
+        assertEquals("MyBase", helper.resolveGdccRootClassName("RuntimeOuter__sub__Worker"));
+
+        var root = new LirClassDef("ChainRoot", "Node");
+        var mid = new LirClassDef("ChainMid", "ChainRoot");
+        var leaf = new LirClassDef("ChainLeaf", "ChainMid");
+        // Derived-first module order must not matter: resolution walks the registry.
+        var moduleHelper = newModuleHelper(List.of(leaf, mid, root));
+        assertEquals("ChainRoot", moduleHelper.resolveGdccRootClassName("ChainLeaf"));
+        assertEquals("ChainRoot", moduleHelper.resolveGdccRootClassName("ChainMid"));
+        assertEquals("ChainRoot", moduleHelper.resolveGdccRootClassName("ChainRoot"));
+
+        // A registered GDCC ancestor outside the module list is still the physical prefix
+        // owner, so the walk follows it regardless of module membership.
+        var externalRoot = new LirClassDef("ExternalRoot", "Node");
+        classRegistry.addGdccClass(externalRoot);
+        var underExternal = new LirClassDef("UnderExternal", "ExternalRoot");
+        var externalHelper = newModuleHelper(List.of(underExternal));
+        assertEquals("ExternalRoot", externalHelper.resolveGdccRootClassName("UnderExternal"));
+
+        // Unknown or blank supers terminate the walk at the current class.
+        var unknownParented = new LirClassDef("UnknownParented", "NotRegistered");
+        var blankParented = new LirClassDef("BlankParented", "");
+        var oddHelper = newModuleHelper(List.of(unknownParented, blankParented));
+        assertEquals("UnknownParented", oddHelper.resolveGdccRootClassName("UnknownParented"));
+        assertEquals("BlankParented", oddHelper.resolveGdccRootClassName("BlankParented"));
+
+        // An unregistered starting class is an argument error, not a state error.
+        assertThrows(IllegalArgumentException.class, () -> helper.resolveGdccRootClassName("Missing"));
+    }
+
+    @Test
+    @DisplayName("GDCC root resolution should detect cycles and never cache the root")
+    void resolveGdccRootClassNameShouldDetectCyclesAndAvoidCaching() {
+        var a = new LirClassDef("CycA", "CycB");
+        var b = new LirClassDef("CycB", "Node");
+        var cycleHelper = newModuleHelper(List.of(a, b));
+        // Constructed acyclic; mutate into a two-node cycle afterwards.
+        b.setSuperName("CycA");
+        assertThrows(IllegalStateException.class, () -> cycleHelper.resolveGdccRootClassName("CycA"));
+
+        var self = new LirClassDef("SelfCyc", "Node");
+        var selfHelper = newModuleHelper(List.of(self));
+        self.setSuperName("SelfCyc");
+        assertThrows(IllegalStateException.class, () -> selfHelper.resolveGdccRootClassName("SelfCyc"));
+
+        // No cached root: mutating the superclass changes the next call's result.
+        var oldRoot = new LirClassDef("OldRoot", "Node");
+        var newRoot = new LirClassDef("NewRoot", "Node");
+        var movable = new LirClassDef("Movable", "OldRoot");
+        var moveHelper = newModuleHelper(List.of(oldRoot, newRoot, movable));
+        assertEquals("OldRoot", moveHelper.resolveGdccRootClassName("Movable"));
+        movable.setSuperName("NewRoot");
+        assertEquals("NewRoot", moveHelper.resolveGdccRootClassName("Movable"));
+    }
 }

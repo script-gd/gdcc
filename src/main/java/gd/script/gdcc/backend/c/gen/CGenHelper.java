@@ -2393,6 +2393,46 @@ public final class CGenHelper {
                 : renderPropertyInitApplyHelperName(classDef, propertyDef);
     }
 
+    /// Per-class chain function applying ancestors' then own frozen onready initializers.
+    public @NotNull String renderOnreadyChainApplyHelperName(@NotNull String className) {
+        return className + "_class_apply_onready_inits";
+    }
+
+    /// Root-signature adapter reaching the chain function through the embedded prefix.
+    public @NotNull String renderOnreadyRootApplyHelperName(@NotNull String className) {
+        return className + "__gdcc_onready_apply_root";
+    }
+
+    /// The composite ready entry name.
+    public @NotNull String renderOnreadyReadyHelperName(@NotNull String className) {
+        return className + "__gdcc_onready_ready";
+    }
+
+    /// The outermost GDCC wrapper ancestor per the registry's physical embedding chain;
+    /// engine, unknown, or blank supers terminate the walk and onready module facts are
+    /// not consulted.
+    public @NotNull String resolveGdccRootClassName(@NotNull String className) {
+        var registry = context.classRegistry();
+        var visited = new HashSet<String>();
+        var current = className;
+        while (true) {
+            var currentDef = registry.findGdccClass(current);
+            if (currentDef == null) {
+                throw new IllegalArgumentException(
+                        "Unknown GDCC class '" + current + "' while resolving the GDCC root class of '" + className + "'");
+            }
+            var superName = currentDef.getSuperName();
+            if (!registry.isGdccClass(superName)) {
+                return currentDef.getName();
+            }
+            if (!visited.add(superName)) {
+                throw new IllegalStateException(
+                        "Detected GDCC inheritance cycle while resolving the GDCC root class of '" + className + "'");
+            }
+            current = superName;
+        }
+    }
+
     // ==== Static property storage symbols ====
     //
     // All static-var file-scope symbols are published from this single point; load/store gens,

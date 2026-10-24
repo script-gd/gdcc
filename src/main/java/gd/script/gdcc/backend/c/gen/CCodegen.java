@@ -1160,6 +1160,17 @@ public class CCodegen implements Codegen {
                 registerFileScopeSymbol(symbolSources, helper.renderStaticInitializersSymbol(className),
                         "static initializers entry of '" + className + "'");
             }
+            if (helper.onreadyPlan().classPlan(className).chainHasOnreadyInitializer()) {
+                registerFileScopeSymbol(symbolSources,
+                        helper.renderOnreadyChainApplyHelperName(className),
+                        "onready chain apply helper of '" + className + "'");
+                registerFileScopeSymbol(symbolSources,
+                        helper.renderOnreadyRootApplyHelperName(className),
+                        "onready root apply adapter of '" + className + "'");
+                registerFileScopeSymbol(symbolSources,
+                        helper.renderOnreadyReadyHelperName(className),
+                        "onready ready entry prototype of '" + className + "'");
+            }
         }
     }
 
