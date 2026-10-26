@@ -756,6 +756,11 @@ public class CCodegen implements Codegen {
         }
         var bodyBuilder = new CBodyBuilder(helper, clazz, func, usageBuffer, newCoroutineFrameContext(clazz, func));
         emitLambdaCapturePrologue(bodyBuilder, clazz, func);
+        // A user `_ready` body gets the entry initialization here; coroutine `_ready`
+        // entries funnel through the start thunk, which carries the same injection.
+        if ("_ready".equals(func.getName()) && !func.isCoroutine()) {
+            bodyBuilder.appendRaw(helper.renderOnreadyEntryInitialization(clazz, func));
+        }
         // generate blocks
         bodyBuilder.appendRaw("goto " + func.getEntryBlockId() + ";\n");
         for (var bb : func) {
@@ -1111,8 +1116,18 @@ public class CCodegen implements Codegen {
         registerFileScopeSymbol(symbolSources, "initialize", "module initialize callback (entry.c.ftl)");
         registerFileScopeSymbol(symbolSources, "deinitialize", "module deinitialize callback (entry.c.ftl)");
         registerFileScopeSymbol(symbolSources, "class_library", "class library storage (entry.h.ftl)");
+        // Lifecycle flag enumerators (anonymous enum in entry.h.ftl): enum constants live in
+        // the ordinary file-scope identifier namespace, so a user function/global with the
+        // same generated name must fail early — member/property names stay legal.
+        for (var flag : List.of("GDCC_FLAG_ONREADY_DONE", "GDCC_FLAG_CTOR_COMPLETE", "GDCC_FLAG_HAS_ONREADY")) {
+            registerFileScopeSymbol(symbolSources, flag, "lifecycle flag constant '" + flag + "' (entry.h.ftl)");
+        }
         for (var classDef : module.getClassDefs()) {
             var className = classDef.getName();
+            // The wrapper typedef is an ordinary file-scope identifier (`typedef struct X X`);
+            // registering it makes generated typedef/table/enumerator collisions report both
+            // sources instead of reaching the C compiler.
+            registerFileScopeSymbol(symbolSources, className, "wrapper typedef of '" + className + "'");
             for (var suffix : List.of(
                     "_class_bind_methods", "_class_create_instance", "_class_free_instance",
                     "_class_constructor", "_class_destructor", "_class_notification",
@@ -1169,8 +1184,22 @@ public class CCodegen implements Codegen {
                         "onready root apply adapter of '" + className + "'");
                 registerFileScopeSymbol(symbolSources,
                         helper.renderOnreadyReadyHelperName(className),
-                        "onready ready entry prototype of '" + className + "'");
+                        "onready composite ready helper of '" + className + "'");
+                registerFileScopeSymbol(symbolSources,
+                        helper.renderOnreadyClassNameGetterName(className),
+                        "onready class-name key getter of '" + className + "'");
             }
+        }
+        for (var rootPlan : helper.onreadyPlan().rootLookupPlans()) {
+            registerFileScopeSymbol(symbolSources,
+                    helper.renderOnreadyLookupEntryTypeName(rootPlan.rootClassName()),
+                    "onready lookup entry typedef of root '" + rootPlan.rootClassName() + "'");
+            registerFileScopeSymbol(symbolSources,
+                    helper.renderOnreadyLookupTableName(rootPlan.rootClassName()),
+                    "onready lookup table of root '" + rootPlan.rootClassName() + "'");
+            registerFileScopeSymbol(symbolSources,
+                    helper.renderOnreadyInitializeHelperName(rootPlan.rootClassName()),
+                    "onready entry-initialization helper of root '" + rootPlan.rootClassName() + "'");
         }
     }
 

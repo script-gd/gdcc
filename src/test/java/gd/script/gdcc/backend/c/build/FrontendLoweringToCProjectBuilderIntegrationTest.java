@@ -3157,6 +3157,607 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                 """;
     }
 
+    @Test
+    void lowerFrontendOnreadySyncLifecycleBuildsNativeLibraryAndRunsInGodot() throws Exception {
+        if (ZigUtil.findZig() == null || GodotGdextensionTestRunner.findGodotBinaryFromEnv() == null) {
+            Assumptions.abort("Zig or GODOT_BIN not found; skipping onready sync lifecycle integration test");
+            return;
+        }
+
+        var tempParent = Path.of("tmp/test");
+        Files.createDirectories(tempParent);
+        var tempDir = Files.createTempDirectory(tempParent, "onready_sync_runtime_");
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var runtimeDir = Files.createTempDirectory(tempParent, "onready_sync_project_");
+        Files.copy(Path.of("test_project/project.godot"), runtimeDir.resolve("project.godot"));
+        Files.copy(Path.of("test_project/root.gd"), runtimeDir.resolve("root.gd"));
+
+        // Derived classes are listed before their bases on purpose — module class order
+        // follows source order, forcing the backend's base-before-derived emission.
+        var syncChildSource = """
+                class_name OnreadySyncChild
+                extends OnreadySyncBase
+
+                @onready var value: int = 41
+
+                func sample() -> int:
+                    return value
+                """;
+        var syncBaseSource = """
+                class_name OnreadySyncBase
+                extends Node
+
+                var calls: int = 0
+                var observed: int = -1
+
+                func _ready() -> void:
+                    calls += 1
+                    observed = sample()
+
+                func sample() -> int:
+                    return 0
+
+                func manual() -> void:
+                    _ready()
+                """;
+        var noReadySource = """
+                class_name OnreadyNoReady
+                extends Node
+
+                @onready var value: int = 17
+                """;
+        var ctorChildSource = """
+                class_name OnreadyCtorChild
+                extends OnreadyCtorBase
+
+                @onready var text: String = "ready"
+                """;
+        var ctorBaseSource = """
+                class_name OnreadyCtorBase
+                extends Node
+
+                @onready var value: int = 11
+                var observed: int = -1
+                var calls: int = 0
+
+                func _init() -> void:
+                    _ready()
+                    notification(Node.NOTIFICATION_READY)
+
+                func _ready() -> void:
+                    observed = value
+                    calls += 1
+                """;
+        // Super scenario: both classes declare `_ready` and the child forwards via
+        // `super._ready()`, so one DONE flag must dedup the vtable and super entries.
+        var superChildSource = """
+                class_name OnreadySuperChild
+                extends OnreadySuperBase
+
+                var child_calls: int = 0
+
+                func _ready() -> void:
+                    child_calls += 1
+                    value += 10
+                    super._ready()
+                """;
+        var superBaseSource = """
+                class_name OnreadySuperBase
+                extends Node
+
+                @onready var value: int = 7
+                var base_calls: int = 0
+                var observed: int = 0
+
+                func _ready() -> void:
+                    base_calls += 1
+                    observed = value
+
+                func manual() -> void:
+                    _ready()
+                """;
+        var module = parseModule(
+                "onready_sync_runtime_module",
+                List.of(
+                        new SourceFileSpec(tempDir.resolve("onready_sync_child.gd"), syncChildSource),
+                        new SourceFileSpec(tempDir.resolve("onready_sync_base.gd"), syncBaseSource),
+                        new SourceFileSpec(tempDir.resolve("onready_no_ready.gd"), noReadySource),
+                        new SourceFileSpec(tempDir.resolve("onready_ctor_child.gd"), ctorChildSource),
+                        new SourceFileSpec(tempDir.resolve("onready_ctor_base.gd"), ctorBaseSource),
+                        new SourceFileSpec(tempDir.resolve("onready_super_child.gd"), superChildSource),
+                        new SourceFileSpec(tempDir.resolve("onready_super_base.gd"), superBaseSource)
+                ),
+                Map.of(
+                        "OnreadySyncChild", "RuntimeOnreadySyncChild",
+                        "OnreadySyncBase", "RuntimeOnreadySyncBase",
+                        "OnreadyNoReady", "RuntimeOnreadyNoReady",
+                        "OnreadyCtorChild", "RuntimeOnreadyCtorChild",
+                        "OnreadyCtorBase", "RuntimeOnreadyCtorBase",
+                        "OnreadySuperChild", "RuntimeOnreadySuperChild",
+                        "OnreadySuperBase", "RuntimeOnreadySuperBase"
+                )
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        // Pin the derived-first hazard setup the assertions below rely on.
+        assertEquals("RuntimeOnreadySyncChild", lowered.getClassDefs().getFirst().getName());
+
+        var projectInfo = new CProjectInfo(
+                "onready_sync_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+
+        GodotGdextensionTestRunner.GodotRunResult runResult;
+        try (var runner = new GodotGdextensionTestRunner(runtimeDir)) {
+            runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                    buildResult.artifacts(),
+                    List.of(),
+                    new GodotGdextensionTestRunner.TestScriptSpec(onreadySyncLifecycleTestScript())
+            ));
+            runResult = runner.run(true);
+        }
+        var combinedOutput = runResult.combinedOutput();
+        var godotLog = tempDir.resolve("godot.log");
+        Files.writeString(godotLog, combinedOutput);
+        IO.println("Godot combined output: " + godotLog.toAbsolutePath());
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("onready sync lifecycle scenario passed."),
+                () -> "Godot output should confirm the sync lifecycle scenario.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("SCRIPT ERROR"),
+                () -> "Godot output should not contain script errors.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("ERROR"),
+                () -> "Godot output should not contain errors.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    /// Sync scenario contract: constructor defaults; `manual()` calls `_ready()` through
+    /// the non-engine `_ready` entry initialization which applies the chain once and latches DONE; engine READY
+    /// replays the chain on each dispatch; `request_ready()` is the only re-arm path;
+    /// `_init`-time `_ready`/notification calls run the user body but skip onready apply.
+    private static @NotNull String onreadySyncLifecycleTestScript() {
+        return """
+                extends Node
+
+                func _ready() -> void:
+                    var child = RuntimeOnreadySyncChild.new()
+                    assert(child.value == 0, "SyncChild value should be type-default before lifecycle")
+                    assert(child.calls == 0, "SyncChild calls should start at 0")
+                    child.manual()
+                    assert(child.value == 41, "first manual call should apply the child onready chain")
+                    assert(child.observed == 41, "inherited _ready body should observe the applied value")
+                    assert(child.calls == 1, "user _ready should have run once")
+                    child.value = 99
+                    child.manual()
+                    assert(child.value == 99, "DONE must suppress replay on repeat manual calls")
+                    assert(child.observed == 99, "user _ready still observes the mutated value")
+                    assert(child.calls == 2, "user _ready still runs on repeat manual calls")
+                    add_child(child)
+                    assert(child.value == 41, "engine READY should replay the chain despite DONE")
+                    assert(child.observed == 41, "engine READY should re-observe the applied value")
+                    assert(child.calls == 3, "engine READY should forward the user _ready")
+                    child.value = 99
+                    remove_child(child)
+                    add_child(child)
+                    assert(child.value == 99, "re-entry without request_ready must not replay")
+                    assert(child.calls == 3, "re-entry without request_ready must not call _ready")
+                    remove_child(child)
+                    child.request_ready()
+                    add_child(child)
+                    assert(child.value == 41, "request_ready should re-arm and replay the chain")
+                    assert(child.calls == 4, "request_ready should forward the user _ready again")
+                    remove_child(child)
+                    child.free()
+
+                    var no_ready = RuntimeOnreadyNoReady.new()
+                    assert(no_ready.value == 0, "NoReady value should be type-default before tree entry")
+                    add_child(no_ready)
+                    assert(no_ready.value == 17, "engine READY should apply onready without user _ready")
+                    no_ready.value = 99
+                    remove_child(no_ready)
+                    no_ready.request_ready()
+                    add_child(no_ready)
+                    assert(no_ready.value == 17, "request_ready should replay onready without user _ready")
+                    remove_child(no_ready)
+                    no_ready.free()
+
+                    var ctor = RuntimeOnreadyCtorChild.new()
+                    assert(ctor.value == 0, "CtorChild value should stay default through constructor _ready")
+                    assert(ctor.observed == 0, "constructor _ready observes the first-written default")
+                    assert(ctor.calls == 2, "both constructor paths run the user body without applying")
+                    assert(ctor.text == "", "descendant slot must stay default during constructor _ready")
+                    add_child(ctor)
+                    assert(ctor.value == 11, "engine READY applies the base onready after construction")
+                    assert(ctor.text == "ready", "engine READY applies the descendant onready after construction")
+                    assert(ctor.observed == 11, "real _ready observes the applied base value")
+                    assert(ctor.calls == 3, "real _ready forwards the user body once")
+                    remove_child(ctor)
+                    ctor.free()
+
+                    var super_child = RuntimeOnreadySuperChild.new()
+                    assert(super_child.value == 0, "SuperChild value should be type-default before lifecycle")
+                    super_child.manual()
+                    assert(super_child.value == 17, "chain applies 7 then child body adds 10")
+                    assert(super_child.observed == 17, "super._ready must observe the mutated value, not a replay")
+                    assert(super_child.base_calls == 1, "super._ready forwards the base body once")
+                    assert(super_child.child_calls == 1, "vtable-ready runs the child body once")
+                    super_child.manual()
+                    assert(super_child.value == 27, "DONE must suppress the chain in both entries")
+                    assert(super_child.observed == 27, "base body still observes the accumulated value")
+                    assert(super_child.base_calls == 2, "repeat manual call still runs the base body")
+                    assert(super_child.child_calls == 2, "repeat manual call still runs the child body")
+                    add_child(super_child)
+                    assert(super_child.value == 17, "engine replay resets 7 then child adds 10")
+                    assert(super_child.observed == 17, "super._ready must not reset value a second time")
+                    assert(super_child.base_calls == 3, "engine replay forwards the base body once")
+                    assert(super_child.child_calls == 3, "engine replay forwards the child body once")
+                    remove_child(super_child)
+                    super_child.request_ready()
+                    add_child(super_child)
+                    assert(super_child.value == 17, "request_ready replay resets 7 then adds 10")
+                    assert(super_child.observed == 17)
+                    assert(super_child.base_calls == 4)
+                    assert(super_child.child_calls == 4)
+                    remove_child(super_child)
+                    super_child.free()
+
+                    print("onready sync lifecycle scenario passed.")
+                """;
+    }
+
+    @Test
+    void lowerFrontendOnreadyCoroutineLifecycleBuildsNativeLibraryAndRunsInGodot() throws Exception {
+        if (ZigUtil.findZig() == null || GodotGdextensionTestRunner.findGodotBinaryFromEnv() == null) {
+            Assumptions.abort("Zig or GODOT_BIN not found; skipping onready coroutine lifecycle integration test");
+            return;
+        }
+
+        var tempParent = Path.of("tmp/test");
+        Files.createDirectories(tempParent);
+        var tempDir = Files.createTempDirectory(tempParent, "onready_coro_runtime_");
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var runtimeDir = Files.createTempDirectory(tempParent, "onready_coro_project_");
+        Files.copy(Path.of("test_project/project.godot"), runtimeDir.resolve("project.godot"));
+        Files.copy(Path.of("test_project/root.gd"), runtimeDir.resolve("root.gd"));
+
+        // Derived class first: `_ready` lives only on the base as a coroutine, so the
+        // child exercises both the thunk entry initialization and the composite→shell→thunk path.
+        var coroChildSource = """
+                class_name OnreadyCoroChild
+                extends OnreadyCoroBase
+
+                @onready var value: int = 41
+
+                func sample() -> int:
+                    return value
+                """;
+        var coroBaseSource = """
+                class_name OnreadyCoroBase
+                extends Node
+
+                signal proceed
+
+                var calls: int = 0
+                var observed: int = -1
+                var completed: int = 0
+
+                func _ready() -> void:
+                    calls += 1
+                    observed = sample()
+                    await proceed
+                    completed += 1
+
+                func sample() -> int:
+                    return 0
+
+                func manual() -> void:
+                    _ready()
+                """;
+        var module = parseModule(
+                "onready_coro_runtime_module",
+                List.of(
+                        new SourceFileSpec(tempDir.resolve("onready_coro_child.gd"), coroChildSource),
+                        new SourceFileSpec(tempDir.resolve("onready_coro_base.gd"), coroBaseSource)
+                ),
+                Map.of(
+                        "OnreadyCoroChild", "RuntimeOnreadyCoroChild",
+                        "OnreadyCoroBase", "RuntimeOnreadyCoroBase"
+                )
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals("RuntimeOnreadyCoroChild", lowered.getClassDefs().getFirst().getName());
+
+        var projectInfo = new CProjectInfo(
+                "onready_coro_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+
+        GodotGdextensionTestRunner.GodotRunResult runResult;
+        try (var runner = new GodotGdextensionTestRunner(runtimeDir)) {
+            runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                    buildResult.artifacts(),
+                    List.of(),
+                    new GodotGdextensionTestRunner.TestScriptSpec(onreadyCoroutineLifecycleTestScript())
+            ));
+            runResult = runner.run(true);
+        }
+        var combinedOutput = runResult.combinedOutput();
+        var godotLog = tempDir.resolve("godot.log");
+        Files.writeString(godotLog, combinedOutput);
+        IO.println("Godot combined output: " + godotLog.toAbsolutePath());
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("onready coroutine lifecycle scenario passed."),
+                () -> "Godot output should confirm the coroutine lifecycle scenario.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("SCRIPT ERROR"),
+                () -> "Godot output should not contain script errors.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("ERROR"),
+                () -> "Godot output should not contain errors.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    /// Coroutine scenario contract: `manual()` runs the detached `_ready` coroutine through
+    /// the start-thunk entry initialization (chain applied once, DONE latched); the engine READY path
+    /// goes composite impl → synchronous shell → thunk and replays the chain; each run
+    /// suspends at `await proceed` and completes on the next emit.
+    private static @NotNull String onreadyCoroutineLifecycleTestScript() {
+        return """
+                extends Node
+
+                func _ready() -> void:
+                    var coro = RuntimeOnreadyCoroChild.new()
+                    assert(coro.value == 0, "CoroChild value should be type-default before lifecycle")
+                    coro.manual()
+                    assert(coro.value == 41, "thunk entry initialization should apply the child chain")
+                    assert(coro.observed == 41, "coroutine _ready observes the applied value")
+                    assert(coro.calls == 1, "coroutine _ready ran once")
+                    assert(coro.completed == 0, "coroutine must suspend at await proceed")
+                    coro.proceed.emit()
+                    assert(coro.completed == 1, "signal resumption should complete the first run")
+                    coro.value = 99
+                    coro.manual()
+                    assert(coro.value == 99, "DONE must suppress replay on repeat manual calls")
+                    assert(coro.observed == 99, "user coroutine still observes the mutated value")
+                    assert(coro.calls == 2, "user coroutine still runs on repeat manual calls")
+                    coro.proceed.emit()
+                    assert(coro.completed == 2, "second detached run completes on emit")
+                    add_child(coro)
+                    assert(coro.value == 41, "engine READY should replay the chain despite DONE")
+                    assert(coro.observed == 41, "engine READY should re-observe the applied value")
+                    assert(coro.calls == 3, "engine READY should forward the user coroutine")
+                    assert(coro.completed == 2, "the engine-driven run still suspends")
+                    coro.proceed.emit()
+                    assert(coro.completed == 3, "the engine-driven run completes on emit")
+                    coro.value = 99
+                    remove_child(coro)
+                    coro.request_ready()
+                    add_child(coro)
+                    assert(coro.value == 41, "request_ready should re-arm and replay the chain")
+                    assert(coro.observed == 41, "request_ready should re-observe the applied value")
+                    assert(coro.calls == 4, "request_ready should forward the user coroutine again")
+                    coro.proceed.emit()
+                    assert(coro.completed == 4, "the re-armed run completes on emit")
+                    remove_child(coro)
+                    coro.free()
+
+                    print("onready coroutine lifecycle scenario passed.")
+                """;
+    }
+
+    @Test
+    void lowerFrontendOnreadyMixedScriptSuperUsesGdccRuntimeClassName() throws Exception {
+        if (ZigUtil.findZig() == null || GodotGdextensionTestRunner.findGodotBinaryFromEnv() == null) {
+            Assumptions.abort("Zig or GODOT_BIN not found; skipping mixed onready class-name integration test");
+            return;
+        }
+
+        var tempParent = Path.of("tmp/test");
+        Files.createDirectories(tempParent);
+        var tempDir = Files.createTempDirectory(tempParent, "onready_mixed_runtime_");
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var runtimeDir = Files.createTempDirectory(tempParent, "onready_mixed_project_");
+        Files.copy(Path.of("test_project/project.godot"), runtimeDir.resolve("project.godot"));
+        Files.copy(Path.of("test_project/root.gd"), runtimeDir.resolve("root.gd"));
+
+        var mixedChildSource = """
+                class_name OnreadyMixedChild
+                extends OnreadyMixedBase
+
+                @onready var value: int = 41
+
+                func sample() -> int:
+                    return value
+                """;
+        var mixedBaseSource = """
+                class_name OnreadyMixedBase
+                extends Node
+
+                var calls: int = 0
+                var observed: int = -1
+
+                func _ready() -> void:
+                    calls += 1
+                    observed = sample()
+
+                func sample() -> int:
+                    return 0
+                """;
+        var module = parseModule(
+                "onready_mixed_runtime_module",
+                List.of(
+                        new SourceFileSpec(tempDir.resolve("onready_mixed_child.gd"), mixedChildSource),
+                        new SourceFileSpec(tempDir.resolve("onready_mixed_base.gd"), mixedBaseSource)
+                ),
+                Map.of(
+                        "OnreadyMixedChild", "RuntimeOnreadyMixedChild",
+                        "OnreadyMixedBase", "RuntimeOnreadyMixedBase"
+                )
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals("RuntimeOnreadyMixedChild", lowered.getClassDefs().getFirst().getName());
+
+        var projectInfo = new CProjectInfo(
+                "onready_mixed_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+
+        GodotGdextensionTestRunner.GodotRunResult runResult;
+        try (var runner = new GodotGdextensionTestRunner(runtimeDir)) {
+            runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                    buildResult.artifacts(),
+                    List.of(),
+                    List.of(new ScriptResourceSpec("res://onready_mixed_child.gd", onreadyMixedInterpretedChildSource())),
+                    new GodotGdextensionTestRunner.TestScriptSpec(onreadyMixedRuntimeTestScript()),
+                    COptimizationLevel.DEBUG
+            ));
+            runResult = runner.run(true);
+        }
+        var combinedOutput = runResult.combinedOutput();
+        var godotLog = tempDir.resolve("godot.log");
+        Files.writeString(godotLog, combinedOutput);
+        IO.println("Godot combined output: " + godotLog.toAbsolutePath());
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("onready mixed GDScript super scenario passed."),
+                () -> "Godot output should confirm the mixed class-name scenario.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("SCRIPT ERROR"),
+                () -> "Godot output should not contain script errors.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("ERROR"),
+                () -> "Godot output should not contain errors.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    private static @NotNull String onreadyMixedInterpretedChildSource() {
+        return """
+                class_name OnreadyInterpretedDescendant
+                extends RuntimeOnreadyMixedChild
+
+                var script_calls: int = 0
+
+                @warning_ignore("native_method_override")
+                func _ready() -> void:
+                    script_calls += 1
+                    super._ready()
+
+                func manual_super() -> void:
+                    super._ready()
+                """;
+    }
+
+    private static @NotNull String onreadyMixedRuntimeTestScript() {
+        return """
+                extends Node
+
+                func _ready() -> void:
+                    var interpreted_script = load("res://onready_mixed_child.gd")
+                    assert(interpreted_script != null, "mixed interpreted child script should load")
+
+                    var manual = interpreted_script.new()
+                    assert(manual.value == 0, "mixed onready value should start at its type default")
+                    manual.manual_super()
+                    assert(manual.value == 41, "first GDScript super call should initialize the GDCC child")
+                    assert(manual.observed == 41, "base _ready should observe the initialized virtual sample")
+                    assert(manual.calls == 1, "first GDScript super call should run the GDCC base body once")
+                    manual.value = 99
+                    manual.manual_super()
+                    assert(manual.value == 99, "DONE should suppress a repeated GDScript super initialization")
+                    assert(manual.observed == 99, "repeated super call should observe the preserved value")
+                    assert(manual.calls == 2, "repeated super call should still run the GDCC base body")
+
+                    add_child(manual)
+                    assert(manual.value == 99, "late script READY super should not replay onready")
+                    assert(manual.observed == 99, "late script READY super should observe the preserved value")
+                    assert(manual.calls == 3, "script READY should run the GDCC base body once")
+                    assert(manual.script_calls == 1, "first engine READY should run the interpreted override")
+                    remove_child(manual)
+                    manual.request_ready()
+                    add_child(manual)
+                    assert(manual.value == 99, "request_ready through script super should remain DONE-gated")
+                    assert(manual.observed == 99, "request_ready super should observe the preserved value")
+                    assert(manual.calls == 4, "request_ready should run the GDCC base body once more")
+                    assert(manual.script_calls == 2, "request_ready should run the interpreted override again")
+                    remove_child(manual)
+                    manual.free()
+
+                    var direct = interpreted_script.new()
+                    assert(direct.value == 0, "fresh mixed instance should start at its type default")
+                    add_child(direct)
+                    assert(direct.value == 41, "first engine READY super should initialize a fresh GDCC child")
+                    assert(direct.observed == 41, "fresh base _ready should observe the initialized value")
+                    assert(direct.calls == 1, "fresh engine READY should run the GDCC base body once")
+                    assert(direct.script_calls == 1, "fresh engine READY should run the interpreted override")
+                    remove_child(direct)
+                    direct.free()
+
+                    print("onready mixed GDScript super scenario passed.")
+                """;
+    }
+
     private record SourceFileSpec(@NotNull Path sourcePath, @NotNull String source) {
     }
 }

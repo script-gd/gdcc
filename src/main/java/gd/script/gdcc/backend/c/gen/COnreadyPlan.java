@@ -1,21 +1,23 @@
 package gd.script.gdcc.backend.c.gen;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdObjectType;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
-
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
 
 /// Immutable `@onready` session plan for the module's classes, frozen before default-value
 /// synthesis backfills `initFunc` (a source initializer requires a non-null, unmarked
@@ -54,15 +56,32 @@ public final class COnreadyPlan {
         }
     }
 
+    /// One physical root's class-lookup rows: every same-module class whose frozen chain
+    /// fact is true and that shares the wrapper-embedding root.
+    ///
+    /// @param rootClassName canonical name of the physical GDCC wrapper root
+    /// @param classNames canonical names of the member rows in module order
+    public record RootLookupPlan(@NotNull String rootClassName, @NotNull List<String> classNames) {
+        public RootLookupPlan {
+            Objects.requireNonNull(rootClassName, "rootClassName");
+            classNames = List.copyOf(Objects.requireNonNull(classNames, "classNames"));
+        }
+    }
+
     private static final ClassPlan EMPTY_CLASS_PLAN =
             new ClassPlan(List.of(), false, false, null, null);
 
     private final @NotNull Map<String, ClassPlan> planByClassName;
+    private final @NotNull List<RootLookupPlan> rootLookupPlans;
 
-    /// The factory transfers its privately built map; no mutable alias escapes, so an
-    /// unmodifiable wrapper is sufficient without copying.
-    private COnreadyPlan(@NotNull Map<String, ClassPlan> planByClassName) {
+    /// The factory transfers its privately built collections; no mutable alias escapes, so
+    /// unmodifiable wrappers are sufficient without copying.
+    private COnreadyPlan(
+            @NotNull Map<String, ClassPlan> planByClassName,
+            @NotNull List<RootLookupPlan> rootLookupPlans
+    ) {
         this.planByClassName = Collections.unmodifiableMap(planByClassName);
+        this.rootLookupPlans = rootLookupPlans;
     }
 
     /// Per-class facts keyed by canonical class name; unknown names get the immutable empty
@@ -72,8 +91,15 @@ public final class COnreadyPlan {
         return plan == null ? EMPTY_CLASS_PLAN : plan;
     }
 
-    /// Builds the frozen plan for one helper session. `plans` is the only name-keyed table;
-    /// all traversal runs directly over the authoritative module class list and the registry.
+    /// Lookup rows per physical root in first-seen module order; empty when no class in the
+    /// module carries a true chain fact.
+    public @NotNull List<RootLookupPlan> rootLookupPlans() {
+        return rootLookupPlans;
+    }
+
+    /// Builds the frozen plan for one helper session: the name-keyed fact table plus the
+    /// physical-root lookup rows, all resolved directly over the authoritative module
+    /// class list and the registry.
     static @NotNull COnreadyPlan create(
             @NotNull CGenHelper helper,
             @NotNull List<? extends ClassDef> moduleClassDefs
@@ -130,7 +156,24 @@ public final class COnreadyPlan {
                 plan.userReadyOwnerClassName(),
                 plan.userReadyFunction()
         ));
-        return new COnreadyPlan(plans);
+
+        // Pass 3: physical-root lookup plans. Module classes with a true chain fact are
+        // grouped by their wrapper-embedding root (object-start walk, so a module class
+        // that is not itself registered still resolves); rows stay in module order.
+        var rowsByRoot = new LinkedHashMap<String, List<String>>();
+        for (var classDef : moduleClassDefs) {
+            if (!(classDef instanceof LirClassDef lirClassDef)
+                    || !plans.get(lirClassDef.getName()).chainHasOnreadyInitializer()) {
+                continue;
+            }
+            rowsByRoot.computeIfAbsent(
+                    helper.resolveGdccRootClassName(lirClassDef), key -> new ArrayList<>()
+            ).add(lirClassDef.getName());
+        }
+        var rootLookupPlans = rowsByRoot.entrySet().stream()
+                .map(entry -> new RootLookupPlan(entry.getKey(), entry.getValue()))
+                .toList();
+        return new COnreadyPlan(plans, rootLookupPlans);
     }
 
     /// Same-module ancestry leaf-to-root, starting with `classDef` itself; the walk stops

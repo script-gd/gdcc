@@ -2161,23 +2161,72 @@ public final class CGenHelper {
     /// (`self->_super._super._vtable`). Walks the WRAPPER chain via the registry — mirroring
     /// the struct-embedding decision in entry.h.ftl — so pass-through ancestors are never skipped.
     public @NotNull String renderVtableFieldAccessExpr(@NotNull String className) {
-        return renderRootWrapperFieldAccessExpr(className, "_vtable");
+        return renderRootWrapperFieldAccessExpr(className, "_vtable", "self");
     }
 
-    /// Expression reaching the root `_gdcc_destructed` guard flag from a `<C>* self` — same
-    /// wrapper `_super` chain walk as the vtable field (the flag lives only in the root
-    /// segment, shared by every derived wrapper through offset-0 embedding).
+    /// Read expression for the destructed bit of the root `_gdcc_flags` byte:
+    /// `(<flags access> & 1)` from a `<C>* self`. READ-only — lifecycle initialization
+    /// assigns the whole byte (`renderGdccFlagsAccessExpr`), while the destructor guard
+    /// itself only sets bit0 (`|= 1`) so sibling onready bits survive.
     public @NotNull String renderDestructedFlagAccessExpr(@NotNull String className) {
-        return renderRootWrapperFieldAccessExpr(className, "_gdcc_destructed");
+        return "(" + renderGdccFlagsAccessExpr(className) + " & 1)";
     }
 
-    /// Shared root-segment field access: `self-><field>` for root classes, otherwise one
-    /// `_super` hop per GDCC wrapper ancestor (`self->_super._super.<field>`).
-    private @NotNull String renderRootWrapperFieldAccessExpr(@NotNull String className, @NotNull String fieldName) {
+    /// Lvalue reaching the root `_gdcc_flags` byte from a `<C>* self`: shared storage for
+    /// the destructed guard (bit0, literal `1`), `GDCC_FLAG_ONREADY_DONE` (bit1),
+    /// `GDCC_FLAG_CTOR_COMPLETE` (bit2) and `GDCC_FLAG_HAS_ONREADY` (bit3). Lives only in
+    /// the root segment; derived wrappers reach it through the same `_super` chain walk
+    /// as the vtable field.
+    public @NotNull String renderGdccFlagsAccessExpr(@NotNull String className) {
+        return renderGdccFlagsAccessExpr(className, "self");
+    }
+
+    /// `wrapperPtrExpr` variant for code that already materialized a wrapper pointer
+    /// (e.g. the onready entry-initialization block's `<Root>*` variable): `expr-><field>` from a root
+    /// class name, `expr->_super.<field>` from a derived one.
+    public @NotNull String renderGdccFlagsAccessExpr(@NotNull String className, @NotNull String wrapperPtrExpr) {
+        return renderRootWrapperFieldAccessExpr(className, "_gdcc_flags", wrapperPtrExpr);
+    }
+
+    /// The non-engine `_ready` entry-initialization block, emitted at the top of a user `_ready` body or
+    /// its coroutine start thunk, so internal `self._ready()` / super / vtable calls run
+    /// the dynamic class's full onready chain once. The snippet only materializes the
+    /// physical root wrapper (offset-0 embedding); the per-root `<Root>__gdcc_onready_initialize_if_needed`
+    /// helper centralizes the DONE / CTOR_COMPLETE / HAS_ONREADY gates and the
+    /// class-name lookup — sync bodies and coroutine start thunks share this one renderer.
+    /// Returns "" unless `func` is a valid user `_ready` on a class whose own or descendant
+    /// chain holds initializers.
+    public @NotNull String renderOnreadyEntryInitialization(@NotNull LirClassDef clazz, @NotNull LirFunctionDef func) {
+        if (!"_ready".equals(func.getName())
+                || func.isStatic()
+                || func.isHidden()
+                || func.isLambda()
+                || !checkVirtualMethod(clazz, func)
+                || !checkClassOrDescendantHasOnreadyInitializer(clazz)) {
+            return "";
+        }
+        var rootName = resolveGdccRootClassName(clazz);
+        return """
+                {
+                %s* __gdcc_onready_root = (%s*)$self.ptr;
+                %s(__gdcc_onready_root);
+                }
+                """.formatted(rootName, rootName, renderOnreadyInitializeHelperName(rootName));
+    }
+
+    /// Shared root-segment field access from an arbitrary wrapper-pointer start
+    /// expression: `<start>-><field>` for root classes, otherwise one `_super` hop per
+    /// GDCC wrapper ancestor (`<start>->_super._super.<field>`).
+    private @NotNull String renderRootWrapperFieldAccessExpr(
+            @NotNull String className,
+            @NotNull String fieldName,
+            @NotNull String startExpr
+    ) {
         var registry = context.classRegistry();
-        var chain = new StringBuilder("self");
+        var chain = new StringBuilder(startExpr);
         var visited = new HashSet<String>();
         var current = className;
+        var firstHop = true;
         while (true) {
             var currentDef = registry.findGdccClass(current);
             if (currentDef == null) {
@@ -2192,10 +2241,11 @@ public final class CGenHelper {
                 throw new IllegalStateException(
                         "Detected GDCC inheritance cycle while rendering the root field access of '" + className + "'");
             }
-            chain.append(chain.length() == "self".length() ? "->_super" : "._super");
+            chain.append(firstHop ? "->_super" : "._super");
+            firstHop = false;
             current = superName;
         }
-        chain.append(chain.length() == "self".length() ? "->" : ".").append(fieldName);
+        chain.append(firstHop ? "->" : ".").append(fieldName);
         return chain.toString();
     }
 
@@ -2408,28 +2458,66 @@ public final class CGenHelper {
         return className + "__gdcc_onready_ready";
     }
 
+    /// Per-class getter returning that class's canonical StringName key for its root's
+    /// onready lookup table: `<C>__gdcc_onready_class_name`.
+    public @NotNull String renderOnreadyClassNameGetterName(@NotNull String className) {
+        return className + "__gdcc_onready_class_name";
+    }
+
+    /// Lookup-table row typedef shared by one physical root: `gdcc_<R>_onready_lookup_entry`.
+    public @NotNull String renderOnreadyLookupEntryTypeName(@NotNull String rootClassName) {
+        return "gdcc_" + rootClassName + "_onready_lookup_entry";
+    }
+
+    /// One physical root's static lookup table: `gdcc_<R>_onready_lookup_table`.
+    public @NotNull String renderOnreadyLookupTableName(@NotNull String rootClassName) {
+        return "gdcc_" + rootClassName + "_onready_lookup_table";
+    }
+
+    /// Per-root non-engine `_ready` entry-initialization helper resolving the instance's
+    /// exact class row and applying its chain: `<R>__gdcc_onready_initialize_if_needed`.
+    public @NotNull String renderOnreadyInitializeHelperName(@NotNull String rootClassName) {
+        return rootClassName + "__gdcc_onready_initialize_if_needed";
+    }
+
     /// The outermost GDCC wrapper ancestor per the registry's physical embedding chain;
     /// engine, unknown, or blank supers terminate the walk and onready module facts are
-    /// not consulted.
+    /// not consulted. Unknown start names still fail fast here — the object-start
+    /// overload is the one that tolerates unregistered module classes.
     public @NotNull String resolveGdccRootClassName(@NotNull String className) {
+        var classDef = context.classRegistry().findGdccClass(className);
+        if (classDef == null) {
+            throw new IllegalArgumentException(
+                    "Unknown GDCC class '" + className + "' while resolving the GDCC root class of '" + className + "'");
+        }
+        return resolveGdccRootClassName(classDef);
+    }
+
+    /// Object-start variant of the physical-root walk: the start def is already known, so
+    /// an unregistered module class is a legal start — the walk then advances only across
+    /// registered GDCC parent edges, truncating on the first engine, blank, or unregistered
+    /// parent. Mirrors the `_super` embedding condition in `entry.h.ftl`.
+    public @NotNull String resolveGdccRootClassName(@NotNull ClassDef classDef) {
         var registry = context.classRegistry();
         var visited = new HashSet<String>();
-        var current = className;
+        visited.add(classDef.getName());
+        var current = classDef;
         while (true) {
-            var currentDef = registry.findGdccClass(current);
-            if (currentDef == null) {
-                throw new IllegalArgumentException(
-                        "Unknown GDCC class '" + current + "' while resolving the GDCC root class of '" + className + "'");
-            }
-            var superName = currentDef.getSuperName();
-            if (!registry.isGdccClass(superName)) {
-                return currentDef.getName();
+            var superName = current.getSuperName();
+            if (superName.isEmpty() || !registry.isGdccClass(superName)) {
+                return current.getName();
             }
             if (!visited.add(superName)) {
                 throw new IllegalStateException(
-                        "Detected GDCC inheritance cycle while resolving the GDCC root class of '" + className + "'");
+                        "Detected GDCC inheritance cycle while resolving the GDCC root class of '" + classDef.getName() + "'");
             }
-            current = superName;
+            var parentDef = registry.findGdccClass(superName);
+            if (parentDef == null) {
+                throw new IllegalStateException(
+                        "Registered GDCC class '" + superName + "' has no definition while resolving the GDCC root class of '"
+                                + classDef.getName() + "'");
+            }
+            current = parentDef;
         }
     }
 

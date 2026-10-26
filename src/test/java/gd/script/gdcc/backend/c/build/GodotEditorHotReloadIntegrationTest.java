@@ -20,7 +20,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -89,6 +91,30 @@ public class GodotEditorHotReloadIntegrationTest {
 
             assertEditorRunClean(session);
         }
+    }
+
+    /// An initializer-only change is deferred until the surviving node receives a new engine READY.
+    @Test
+    void onreadyInitializerChangePreservesStorageUntilEngineReplay() throws Exception {
+        runOnreadyReloadScenario(OnreadyReloadCase.INITIALIZER_CHANGE);
+    }
+
+    /// Marking an existing plain field onready must not mutate restored storage until READY replay.
+    @Test
+    void onreadyAddedDuringReloadWaitsForEngineReplay() throws Exception {
+        runOnreadyReloadScenario(OnreadyReloadCase.ADDED);
+    }
+
+    /// Removing the last onready initializer leaves restored storage untouched through READY replay.
+    @Test
+    void onreadyRemovedDuringReloadDoesNotReplayOldInitializer() throws Exception {
+        runOnreadyReloadScenario(OnreadyReloadCase.REMOVED);
+    }
+
+    /// Removing a leaf initializer still replays the surviving ancestor's new initializer.
+    @Test
+    void onreadyOwnRemovalKeepsAncestorReplay() throws Exception {
+        runOnreadyReloadScenario(OnreadyReloadCase.ANCESTOR);
     }
 
     /// Inheritance and polymorphism: an override-only class and a pass-through class keep
@@ -625,6 +651,305 @@ public class GodotEditorHotReloadIntegrationTest {
         assertFalse(
                 combinedOutput.contains("SCRIPT ERROR"),
                 () -> "Driver script error detected. Output:\n" + combinedOutput
+        );
+    }
+
+    private static void runOnreadyReloadScenario(@NotNull OnreadyReloadCase scenarioCase) throws Exception {
+        requireToolingOrAbort();
+        var scenario = "onready_" + scenarioCase.scenarioName() + "_" + UUID.randomUUID().toString().replace("-", "");
+        var projectDir = prepareScenarioProjectDir(scenario);
+        var buildDir = requireScenarioBuildDir(scenario);
+        var moduleName = "hr_e2_onready_" + scenarioCase.name().toLowerCase(Locale.ROOT);
+        var nameMap = scenarioCase.hasAncestor()
+                ? Map.of(
+                        "HrOnreadyReloadBase", "RuntimeHrOnreadyReloadBase",
+                        "HrOnreadyReloadLeaf", "RuntimeHrOnreadyReloadLeaf"
+                )
+                : Map.of("HrOnreadyReload", "RuntimeHrOnreadyReload");
+
+        var v1 = buildModule(moduleName, onreadyReloadSources(scenario, scenarioCase, 1), nameMap, buildDir);
+        var session = new GodotEditorHotReloadTestSession(projectDir);
+        try (session) {
+            session.prepareProject(requireSharedLibrary(v1), onreadyReloadDriver(scenarioCase));
+            session.start();
+            session.awaitMarker(GodotEditorHotReloadTestSession.PHASE1_MARKER);
+
+            var v2 = buildModule(moduleName, onreadyReloadSources(scenario, scenarioCase, 2), nameMap, buildDir);
+            session.swapLibrary(requireSharedLibrary(v2));
+            session.awaitMarker(GodotEditorHotReloadTestSession.PHASE2_MARKER);
+
+            assertOnreadyReloadRunClean(session);
+        } finally {
+            // Persist the editor console regardless of outcome: scenario evidence must not
+            // depend on whether the assertions above passed.
+            var logPath = projectDir.resolve("godot.log");
+            Files.writeString(logPath, session.combinedOutput());
+            IO.println("godot.log: " + logPath.toAbsolutePath());
+        }
+    }
+
+    private static void assertOnreadyReloadRunClean(@NotNull GodotEditorHotReloadTestSession session)
+            throws IOException, InterruptedException {
+        assertEditorRunClean(session);
+        var combinedOutput = session.combinedOutput();
+        assertFalse(
+                combinedOutput.lines().map(line -> line.toLowerCase(Locale.ROOT))
+                        .anyMatch(line -> line.contains("error:") && line.contains("onready")),
+                () -> "Godot reported an onready runtime error. Output:\n" + combinedOutput
+        );
+        var outputLowercase = combinedOutput.toLowerCase(Locale.ROOT);
+        assertFalse(
+                List.of(
+                        "invalid address",
+                        "invalid pointer",
+                        "dangling pointer",
+                        "freed instance",
+                        "use after free",
+                        "segmentation fault",
+                        "segfault"
+                ).stream().anyMatch(outputLowercase::contains),
+                () -> "Godot reported a stale-address or crash symptom. Output:\n" + combinedOutput
+        );
+    }
+
+    private static @NotNull List<SourceFileSpec> onreadyReloadSources(
+            @NotNull String scenario,
+            @NotNull OnreadyReloadCase scenarioCase,
+            int version
+    ) {
+        if (!scenarioCase.hasAncestor()) {
+            return List.of(new SourceFileSpec(
+                    sourceLabel(scenario, "hr_onready_reload.gd"),
+                    onreadyReloadClassSource(scenarioCase, version)
+            ));
+        }
+        return List.of(
+                new SourceFileSpec(sourceLabel(scenario, "hr_onready_reload_base.gd"), onreadyReloadBaseSource(version)),
+                new SourceFileSpec(
+                        sourceLabel(scenario, "hr_onready_reload_leaf.gd"),
+                        onreadyReloadLeafSource(scenarioCase, version)
+                )
+        );
+    }
+
+    private static @NotNull String onreadyReloadClassSource(@NotNull OnreadyReloadCase scenarioCase, int version) {
+        return """
+                class_name HrOnreadyReload
+                extends Node
+
+                %s
+                var ready_calls: int = 0
+
+                func generation() -> String:
+                    return "generation-v%d"
+
+                func _ready() -> void:
+                    ready_calls += 1
+
+                func manual() -> void:
+                    _ready()
+                """.formatted(onreadyReloadValueDeclaration(scenarioCase, version), version);
+    }
+
+    private static @NotNull String onreadyReloadBaseSource(int version) {
+        return """
+                class_name HrOnreadyReloadBase
+                extends Node
+
+                @onready var base_value: String = "base-v%d"
+                var ready_calls: int = 0
+
+                func _ready() -> void:
+                    ready_calls += 1
+
+                func manual() -> void:
+                    _ready()
+                """.formatted(version);
+    }
+
+    private static @NotNull String onreadyReloadLeafSource(@NotNull OnreadyReloadCase scenarioCase, int version) {
+        return """
+                class_name HrOnreadyReloadLeaf
+                extends HrOnreadyReloadBase
+
+                %s
+
+                func generation() -> String:
+                    return "generation-v%d"
+                """.formatted(onreadyReloadValueDeclaration(scenarioCase, version), version);
+    }
+
+    private static @NotNull String onreadyReloadValueDeclaration(@NotNull OnreadyReloadCase scenarioCase, int version) {
+        return switch (scenarioCase) {
+            case INITIALIZER_CHANGE -> "@onready var value: String = \"ready-v%d\"".formatted(version);
+            case ADDED -> version == 1
+                    ? "var value: String = \"plain-v1\""
+                    : "@onready var value: String = \"ready-v2\"";
+            case REMOVED, ANCESTOR -> version == 1
+                    ? "@onready var value: String = \"ready-v1\""
+                    : "var value: String";
+        };
+    }
+
+    private static @NotNull String onreadyReloadDriver(@NotNull OnreadyReloadCase scenarioCase) {
+        var className = scenarioCase.hasAncestor() ? "RuntimeHrOnreadyReloadLeaf" : "RuntimeHrOnreadyReload";
+        var initialValue = switch (scenarioCase) {
+            case INITIALIZER_CHANGE, REMOVED, ANCESTOR -> "ready-v1";
+            case ADDED -> "plain-v1";
+        };
+        var replayValue = switch (scenarioCase) {
+            case INITIALIZER_CHANGE, ADDED -> "ready-v2";
+            case REMOVED, ANCESTOR -> "kept-value";
+        };
+        var initialBaseValue = scenarioCase.hasAncestor() ? "base-v1" : "";
+        var replayBaseValue = scenarioCase.hasAncestor() ? "base-v2" : "";
+
+        return """
+                extends SceneTree
+
+                const FLAG_PATH := "res://hr_swap.flag"
+                const EXT_PATH := "res://HotReloadTest.gdextension"
+                const WAIT_TIMEOUT_MS := 280000
+                const CLASS_NAME := "%s"
+                const INITIAL_VALUE := "%s"
+                const REPLAY_VALUE := "%s"
+                const HAS_ANCESTOR := %s
+                const INITIAL_BASE_VALUE := "%s"
+                const REPLAY_BASE_VALUE := "%s"
+
+                var frames := 0
+                var stage := 0
+                var wait_start_ms := 0
+                var settle_frame := 0
+                var inst = null
+                var original_instance_id := 0
+                var ready_calls_before_reload := 0
+
+                func _process(_delta: float) -> bool:
+                    frames += 1
+                    if stage == 0 and frames >= 5:
+                        stage = 1
+                        _run_phase1()
+                    elif stage == 1:
+                        if FileAccess.file_exists(FLAG_PATH):
+                            DirAccess.remove_absolute(ProjectSettings.globalize_path(FLAG_PATH))
+                            stage = 2
+                            _run_phase2()
+                        elif Time.get_ticks_msec() - wait_start_ms > WAIT_TIMEOUT_MS:
+                            _fail("timeout waiting for swap flag")
+                    elif stage == 3 and frames - settle_frame >= 180:
+                        print("HR_PHASE2_OK")
+                        quit(0)
+                    return false
+
+                func _run_phase1() -> void:
+                    inst = ClassDB.instantiate(CLASS_NAME)
+                    if inst == null:
+                        _fail("instantiate(" + CLASS_NAME + ") returned null")
+                        return
+                    root.add_child(inst)
+                    if inst.get("value") != INITIAL_VALUE:
+                        _fail("phase1 value mismatch: " + str(inst.get("value")))
+                        return
+                    if inst.get("ready_calls") != 1:
+                        _fail("phase1 _ready count mismatch: " + str(inst.get("ready_calls")))
+                        return
+                    if inst.call("generation") != "generation-v1":
+                        _fail("phase1 generation method did not return v1")
+                        return
+                    if HAS_ANCESTOR and inst.get("base_value") != INITIAL_BASE_VALUE:
+                        _fail("phase1 base onready mismatch: " + str(inst.get("base_value")))
+                        return
+                    original_instance_id = inst.get_instance_id()
+                    ready_calls_before_reload = inst.get("ready_calls")
+                    inst.set("value", "kept-value")
+                    if HAS_ANCESTOR:
+                        inst.set("base_value", "kept-base")
+                    wait_start_ms = Time.get_ticks_msec()
+                    print("HR_PHASE1_OK")
+
+                func _run_phase2() -> void:
+                    var status: int = GDExtensionManager.reload_extension(EXT_PATH)
+                    if status != OK:
+                        _fail("reload_extension returned " + str(status))
+                        return
+                    if not is_instance_valid(inst):
+                        _fail("instance invalid after reload")
+                        return
+                    if inst.get_instance_id() != original_instance_id:
+                        _fail("Godot instance identity changed across reload")
+                        return
+                    if inst.call("generation") != "generation-v2":
+                        _fail("phase2 generation method did not return v2")
+                        return
+                    if inst.get("value") != "kept-value":
+                        _fail("value not restored without onready replay: " + str(inst.get("value")))
+                        return
+                    if inst.get("ready_calls") != ready_calls_before_reload:
+                        _fail("reload unexpectedly ran _ready: " + str(inst.get("ready_calls")))
+                        return
+                    if HAS_ANCESTOR and inst.get("base_value") != "kept-base":
+                        _fail("ancestor storage not restored: " + str(inst.get("base_value")))
+                        return
+
+                    inst.call("manual")
+                    if inst.get("value") != "kept-value":
+                        _fail("manual _ready overwrote restored value: " + str(inst.get("value")))
+                        return
+                    if inst.get("ready_calls") != ready_calls_before_reload + 1:
+                        _fail("manual _ready call count mismatch: " + str(inst.get("ready_calls")))
+                        return
+                    if HAS_ANCESTOR and inst.get("base_value") != "kept-base":
+                        _fail("manual _ready overwrote restored ancestor value: " + str(inst.get("base_value")))
+                        return
+
+                    root.remove_child(inst)
+                    inst.request_ready()
+                    root.add_child(inst)
+                    if inst.get("value") != REPLAY_VALUE:
+                        _fail("engine READY value mismatch: " + str(inst.get("value")))
+                        return
+                    if inst.get("ready_calls") != ready_calls_before_reload + 2:
+                        _fail("engine READY call count mismatch: " + str(inst.get("ready_calls")))
+                        return
+                    if HAS_ANCESTOR and inst.get("base_value") != REPLAY_BASE_VALUE:
+                        _fail("ancestor engine READY value mismatch: " + str(inst.get("base_value")))
+                        return
+
+                    inst.set("value", "post-replay-value")
+                    if HAS_ANCESTOR:
+                        inst.set("base_value", "post-replay-base")
+                    inst.call("manual")
+                    if inst.get("value") != "post-replay-value":
+                        _fail("manual _ready overwrote the post-replay value: " + str(inst.get("value")))
+                        return
+                    if inst.get("ready_calls") != ready_calls_before_reload + 3:
+                        _fail("post-replay manual _ready count mismatch: " + str(inst.get("ready_calls")))
+                        return
+                    if HAS_ANCESTOR and inst.get("base_value") != "post-replay-base":
+                        _fail("manual _ready overwrote the post-replay ancestor value: " + str(inst.get("base_value")))
+                        return
+
+                    root.remove_child(inst)
+                    inst.free()
+                    inst = null
+                    _settle_before_quit()
+
+                func _settle_before_quit() -> void:
+                    # Let deferred editor work drain while the extension remains loaded.
+                    stage = 3
+                    settle_frame = frames
+
+                func _fail(msg: String) -> void:
+                    print("HR_FAIL: ", msg)
+                    quit(1)
+                """.formatted(
+                className,
+                initialValue,
+                replayValue,
+                scenarioCase.hasAncestor(),
+                initialBaseValue,
+                replayBaseValue
         );
     }
 
@@ -2318,6 +2643,29 @@ public class GodotEditorHotReloadIntegrationTest {
                     print("HR_FAIL: ", msg)
                     quit(1)
                 """;
+    }
+
+    private enum OnreadyReloadCase {
+        INITIALIZER_CHANGE("initializer_change", false),
+        ADDED("added", false),
+        REMOVED("removed", false),
+        ANCESTOR("own_removal_ancestor", true);
+
+        private final String scenarioName;
+        private final boolean hasAncestor;
+
+        OnreadyReloadCase(String scenarioName, boolean hasAncestor) {
+            this.scenarioName = scenarioName;
+            this.hasAncestor = hasAncestor;
+        }
+
+        private String scenarioName() {
+            return scenarioName;
+        }
+
+        private boolean hasAncestor() {
+            return hasAncestor;
+        }
     }
 
     private record SourceFileSpec(@NotNull Path sourcePath, @NotNull String source) {

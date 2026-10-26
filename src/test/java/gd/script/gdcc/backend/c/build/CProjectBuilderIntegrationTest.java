@@ -145,6 +145,117 @@ public class CProjectBuilderIntegrationTest {
         assertFalse(result.artifacts().isEmpty());
     }
 
+    /// Real C compilation of the class-lookup onready path: two physical roots, a
+    /// vtable-introducing chain with pass-through/override classes, and slotless
+    /// classes — the generated lookup tables and helpers must build under real zig.
+    @Test
+    public void compileOnreadyLookupModuleWithRealZig() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+        var tempDir = Path.of("tmp/test/c_build_onready_lookup");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo("onreadylookupproj", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var codegen = new CCodegen();
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var ctx = new CodegenContext(projectInfo, new ClassRegistry(api));
+
+        // Root 1 carries a vtable (probe introduced here, overridden in both children);
+        // the middle class is a chain-fact row with no own initializer.
+        var vtRoot = new LirClassDef("LuRoot", "Node");
+        addOnreadyIntField(vtRoot, "rf", 1);
+        vtRoot.addFunction(newVoidInstanceMethod("LuRoot", "probe"));
+        var vtMid = new LirClassDef("LuMid", "LuRoot");
+        vtMid.addFunction(newVoidInstanceMethod("LuMid", "probe"));
+        var vtLeaf = new LirClassDef("LuLeaf", "LuMid");
+        addOnreadyIntField(vtLeaf, "lf", 2);
+        vtLeaf.addFunction(newVoidInstanceMethod("LuLeaf", "probe"));
+        var vtPass = new LirClassDef("LuPass", "LuMid");
+        addOnreadyIntField(vtPass, "pf", 4);
+        // Root 2 is slotless; LuClean inherits its chain fact without own initializers,
+        // and LuFree never emits lookup machinery.
+        var slotlessRoot = new LirClassDef("LuSlotless", "Node");
+        addOnreadyIntField(slotlessRoot, "sf", 3);
+        var clean = new LirClassDef("LuClean", "LuSlotless");
+        var free = new LirClassDef("LuFree", "Node");
+
+        var module = new LirModule("onready_lookup_module",
+                List.of(vtPass, vtLeaf, vtMid, vtRoot, clean, slotlessRoot, free));
+        codegen.prepare(ctx, module);
+        var result = builder.buildProject(projectInfo, codegen);
+        IO.println(result.buildLog());
+
+        assertTrue(result.success(), "Onready lookup module should compile with zig. Build log:\n" + result.buildLog());
+        assertFalse(result.artifacts().isEmpty());
+
+        // Pass-through pinning: LuPass introduces no vtable of its own, so its create
+        // binds the nearest non-pass-through ancestor's instance — while its lookup row
+        // still selects LuPass's own adapter.
+        var entryC = Files.readString(tempDir.resolve("entry.c"));
+        var createIdx = entryC.indexOf("GDExtensionObjectPtr LuPass_class_create_instance(");
+        assertTrue(createIdx >= 0, "no LuPass create emitted");
+        var passCreate = entryC.substring(createIdx, entryC.indexOf("return obj;", createIdx));
+        assertTrue(passCreate.contains("&gdcc_LuMid_vtable_inst"), passCreate);
+        assertTrue(entryC.contains(
+                "{ &LuPass__gdcc_onready_class_name, &LuPass__gdcc_onready_apply_root },"), entryC);
+    }
+
+    /// Instance properties named exactly like the lifecycle flag constants must compile:
+    /// the constants are enum members (member names are a per-struct namespace), not
+    /// textual macros — a `#define` here would rewrite the member declarations.
+    @Test
+    public void compilePlainModuleWithOnreadyFlagNamedProperties() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+        var tempDir = Path.of("tmp/test/c_build_flag_named_props");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo("flagpropsproj", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var codegen = new CCodegen();
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var ctx = new CodegenContext(projectInfo, new ClassRegistry(api));
+
+        var plain = new LirClassDef("PlainFlagProps", "Node");
+        for (var name : List.of("GDCC_FLAG_ONREADY_DONE", "GDCC_FLAG_CTOR_COMPLETE", "GDCC_FLAG_HAS_ONREADY")) {
+            plain.addProperty(new LirPropertyDef(name, GdIntType.INT, false, null, null, null, Map.of()));
+        }
+        var module = new LirModule("plain_flag_props_module", List.of(plain));
+        codegen.prepare(ctx, module);
+        var result = builder.buildProject(projectInfo, codegen);
+        IO.println(result.buildLog());
+
+        assertTrue(result.success(), "Plain module with flag-named properties should compile with zig. Build log:\n" + result.buildLog());
+
+        var entryH = Files.readString(tempDir.resolve("entry.h"));
+        for (var name : List.of("GDCC_FLAG_ONREADY_DONE", "GDCC_FLAG_CTOR_COMPLETE", "GDCC_FLAG_HAS_ONREADY")) {
+            assertTrue(entryH.contains("godot_int " + name + ";"), entryH);
+        }
+        var entryC = Files.readString(tempDir.resolve("entry.c"));
+        assertFalse(entryC.contains("_onready_lookup"), entryC);
+        assertFalse(entryC.contains("__gdcc_onready_initialize_if_needed"), entryC);
+    }
+
+    /// Minimal void instance method used to give a class pair a polymorphic override.
+    private static LirFunctionDef newVoidInstanceMethod(String ownerClassName, String name) {
+        var func = new LirFunctionDef(name, "entry");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("self", new GdObjectType(ownerClassName), null, func));
+        var entry = new LirBasicBlock("entry");
+        entry.setTerminator(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        return func;
+    }
+
     /// Adds `name` as a source-initializer onready INT property plus its hidden init helper.
     private static void addOnreadyIntField(LirClassDef owner, String name, int value) {
         var initFunc = new LirFunctionDef("_field_init_" + name, "entry");

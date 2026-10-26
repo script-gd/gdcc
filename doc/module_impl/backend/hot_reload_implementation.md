@@ -170,7 +170,7 @@ C 层细节见 `gdcc_runtime_lib.md` §Static String/StringName Registry。本�
 每个可创建用户类生成 `<C>_class_recreate_instance`：
 
 - **必须** `return self`（wrapper）。禁止 `return p_object`。
-- 做：`godot_mem_alloc` → `_set_object_ptr` → 写本代 `_vtable`（与 create 共用 `renderVtableFieldInitExpr`）→ `_gdcc_destructed = false` → `godot_object_set_instance_binding`（与 create 相同的 library/callbacks）→ `<C>_class_init_fields(self)`（base-first 重放非 static 属性 initializer）。
+- 做：`godot_mem_alloc` → `_set_object_ptr` → 写本代 `_vtable`（与 create 共用 `renderVtableFieldInitExpr`）→ `_gdcc_flags = GDCC_FLAG_CTOR_COMPLETE | GDCC_FLAG_ONREADY_DONE`（链事实为真时加 `GDCC_FLAG_HAS_ONREADY`；DONE 继承前代「ready 已发生」防止手调 `_ready` 覆盖恢复的 storage 值；不查询类名、不执行 onready 初始化器）→ `godot_object_set_instance_binding`（与 create 相同的 library/callbacks）→ `<C>_class_init_fields(self)`（base-first：非 onready 属性重放真实 initializer，onready-with-init 属性只重放类型默认值——真实 initializer 留到 READY 实际进入组合 impl 的路径，见 `onready_lowering_implementation.md`）。
 - 不做：不构造新 Godot 对象、不调 `godot_object_set_instance`、不发 POSTINITIALIZE、不做 RefCounted 初始化、不调 constructor / `_init`。
 - OOM 或 `p_object == NULL` 返回 NULL，引擎按 recreate 失败处理。
 - 属性恢复由引擎随后经 setter 完成。
@@ -179,13 +179,13 @@ C 层细节见 `gdcc_runtime_lib.md` §Static String/StringName Registry。本�
 
 ### 5.2 析构 exactly-once
 
-根 wrapper（与 `_object` / `_vtable` 同级）持有 `_gdcc_destructed`。只存在于根段，经 `_super` 链访问。
+根 wrapper（与 `_object` / `_vtable` 同级）持有 `_gdcc_flags` 位域；析构守卫占 bit0（字面 `1`，读 `& 1`、写 `|= 1`），bit1/bit2/bit3 为 `GDCC_FLAG_ONREADY_DONE` / `GDCC_FLAG_CTOR_COMPLETE` / `GDCC_FLAG_HAS_ONREADY`。只存在于根段，经 `_super` 链访问。
 
 - `<C>_class_destruct_fields(self)`：无守卫；析构本类字段后递归父段。
 - `<C>_class_destructor(self)`：唯一带守卫入口；已析构则返回。
 - 普通类只在 `free_instance` 调守卫入口，正常删除和 reload 均覆盖。PREDELETE 必须保留字段：Node 的 `_exit_tree` 随后才运行，不能读取已经析构的状态。
 - 守卫禁止放在链式函数入口，否则派生类置位后父类字段泄漏。
-- `godot_mem_alloc` 不置零，create / recreate 必须显式置 `false`。
+- `godot_mem_alloc` 不置零，create / recreate 必须显式初始化 `_gdcc_flags`——两点写入值不同：create 写 `GDCC_FLAG_HAS_ONREADY`（链事实为真）或 `0`（构造尚未完成），recreate 写 `GDCC_FLAG_CTOR_COMPLETE | GDCC_FLAG_ONREADY_DONE`（+HAS；构造视为完成且继承前代 ready 事实），不得互换。
 - 协程状态类不接入该标志：PREDELETE 只 cancel，字段清理由 `free_instance` 唯一承担。
 
 ### 5.3 vtable
@@ -369,7 +369,7 @@ property initializer 与 parameter default 中的 lambda 不进入 `FrontendLamb
 
 - reload 仅 editor build 可用；导出包走 direct 路径，与现状观察等价。
 - 存活实例：带 `PROPERTY_USAGE_STORAGE` 的已注册实例属性由引擎保存并恢复（过滤规则见 §3.1）。仅在 `_init` 中赋值、之后未再改动的字段保持 initializer 值（`_init` 不重新执行）。
-- 属性 initializer 在 recreate 时对每个存活实例重新执行，随后引擎 setter 覆盖保存值。用户代码不得依赖 initializer 的 exactly-once 副作用。
+- 属性 initializer 在 recreate 时对每个存活实例重新执行，随后引擎 setter 覆盖保存值。onready-with-init 属性例外：recreate 只重放类型默认值，真实 initializer 留到 READY 实际进入组合 impl 的路径（混合 super 路径不重放，见 `onready_lowering_implementation.md` §7.1）。用户代码不得依赖 initializer 的 exactly-once 副作用。
 - static var 重置为初始值。
 - 进行中的协程被静默取消：`completed` 不发射，等待方同样被取消。
 - 编辑器内 lambda / standalone Callable：兼容连接执行新代码；失配或上下文变化则优雅失效（信号静默跳过；脚本 `call()` 走引擎标准错误）。thunk 路径下 `to_string` 显示 `<CallableCustom>`。

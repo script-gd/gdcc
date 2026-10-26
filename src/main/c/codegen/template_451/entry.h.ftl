@@ -31,6 +31,11 @@ typedef struct ${classDef.name} ${classDef.name};
 
 #include "object_fat_ptr_types.h"
 
+<#-- Root wrapper `_gdcc_flags` bit assignments: bit0 stays the exactly-once -->
+<#-- destruction guard (kept as literal 1 at its read/write sites); the onready -->
+<#-- bits are named so composite impl / `_ready` entry-initialization code never re-spells the numbers. -->
+enum { GDCC_FLAG_ONREADY_DONE = 2, GDCC_FLAG_CTOR_COMPLETE = 4, GDCC_FLAG_HAS_ONREADY = 8 };
+
 <#-- Vtable typedefs in base-before-derived order: a child table embeds its nearest -->
 <#-- slot-introducing ancestor's table BY VALUE as `_super` (the vtable `_super` chain, which -->
 <#-- skips pass-through/override-only classes — never to be confused with the wrapper `_super` -->
@@ -74,11 +79,11 @@ struct ${classDef.name} {
         <#if helper.requiresVtableField(classDef.name)>
         const void* _vtable;
         </#if>
-        <#-- Exactly-once destruction guard: lives ONLY in the root segment; derived wrappers -->
-        <#-- reach it through the `_super` chain (renderDestructedFlagAccessExpr). Set by -->
-        <#-- `<C>_class_destructor`, cleared by create/recreate; `free_instance_func` destroys -->
-        <#-- fields after exit notifications on normal deletion, and also handles reload. -->
-        GDExtensionBool _gdcc_destructed;
+        <#-- Shared lifecycle flag byte: lives ONLY in the root segment; derived wrappers -->
+        <#-- reach it through the `_super` chain (CGenHelper root-field helpers). bit0 -->
+        <#-- keeps the exactly-once destruction guard contract; bit1/bit2/bit3 are the -->
+        <#-- GDCC_FLAG_ONREADY_DONE / GDCC_FLAG_CTOR_COMPLETE / GDCC_FLAG_HAS_ONREADY state. -->
+        uint8_t _gdcc_flags;
     </#if>
     <#list classDef.properties as property>
         <#if !property.static>

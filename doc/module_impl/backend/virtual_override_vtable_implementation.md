@@ -56,7 +56,7 @@
 - **根类 `_vtable` 字段**：仅当层级含至少一个 slot 时，根类结构体在 `GDExtensionObjectPtr _object;` 之后插入 `const void* _vtable;`；物理上只存在于根段，子类经 wrapper 偏移 0 嵌入共享。`const void*` 回避空 struct 可移植性与 typedef 顺序问题。
 - **accessor**：每 introducer 类一个 `static inline const gdcc_<C>_vtable* <C>_class_vtable(<C>* self)`，沿 **wrapper 链**直达根字段（跳数 = 到根的 wrapper `_super` 层数），**不递归父 accessor**（父可能是 pass-through 而无 accessor）、不走 vtable `_super` 链。安全性：动态类型无论是 introducer / 仅覆写 / pass-through，`_vtable` 指向的对象其类型都是某 introducer typedef，目标前缀子对象真实存在且地址相同（C17 §6.7.2.1 初始成员指针互转，可递归应用于嵌套首成员）；对齐满足（派生表对齐 ≥ 前缀）。
 - **vtable 实例**：条目 = final overrider，C99 嵌套指定初始化器逐层填。`introducesSlot(C)` → 自有类型实例 `gdcc_<C>_vtable_inst`；仅覆写不引入 → 以最近 introducer 祖先 typedef 为类型的实例（**无 typedef/accessor**，避免纯别名类型）；pass-through → 不生成实例，`_vtable` 共享最近非 pass-through 祖先的同一表值。final overrider 即 introducer 自身 → 直填 `<C>_<m>`；否则填 trampoline；abstract 引入的 slot 在 abstract 类表内填 `NULL`。
-- **trampoline**：每（覆写类 D × 非引入 slot m）一对 `static` 函数 `gdcc_<D>_vslot_<m>`，签名取 slot 签名，体内以复合字面量把 introducer fat self 下行转换为 D 的 fat self 后直调 `<D>_<m>`。该下行转换是"禁止裸 C cast 表达 GDCC 上下行"合同（`explicit_c_inheritance_layout_contract.md`）的**唯一例外**（经 D 的 vtable 到达时动态类型必为 D 或其后代，偏移 0 嵌入使转换无指针调整）；上行仍禁止裸 cast。
+- **trampoline**：每（覆写类 D × 非引入 slot m）一对 `static` 函数 `gdcc_<D>_vslot_<m>`，签名取 slot 签名，体内以复合字面量把 introducer fat self 下行转换为 D 的 fat self 后直调 `<D>_<m>`。该下行转换是 vtable 侧对"禁止裸 C cast 表达 GDCC 上下行"合同（`explicit_c_inheritance_layout_contract.md`）的受控例外（经 D 的 vtable 到达时动态类型必为 D 或其后代，偏移 0 嵌入使转换无指针调整；onready 另有根适配器 / `_ready` 入口按需初始化 / 组合 impl 三处受控数据指针转换，见 `onready_lowering_implementation.md` 与 `explicit_c_inheritance_layout_contract.md`）；上行仍禁止裸 cast。
 - **coroutine slot**：slot 存 coroutine **start thunk**（`godot_Object*` 返回）而非 impl 本体；trampoline 同理适配；链上 coroutine 标记一致性由签名兼容检查强制。
 - **发射顺序**：trampoline 与实例段按 `inheritanceOrderedClassDefs`（base-before-derived）发射——子类实例会取**祖先** trampoline 的地址（祖先仍是继承 slot 的 final overrider 时），而 static trampoline 无头文件原型，必须定义先于使用；同类内 trampoline 先于本类实例。
 
@@ -81,11 +81,11 @@
 
 GDCC 侧合同（`entry.c.ftl`）：
 
-- `<C>_class_get_virtual_with_data` 尾部：本类覆写按名匹配（现状不变）之后，父类是 GDCC 类时 `return <P>_class_get_virtual_with_data(...)`；父类是 engine 类时保持 `return NULL;`。
-- `<C>_class_call_virtual_with_data` 尾部：全部本类 userdata 分支之后，父类是 GDCC 类时追加 `<P>_class_call_virtual_with_data(p_instance, ...)` 逐级 fall-through。
+- `<C>_class_get_virtual_with_data` 尾部：本类覆写按名匹配（现状不变）之后，父类是 GDCC 类时 `return <P>_class_get_virtual_with_data(...)`；父类是 engine 类时保持 `return NULL;`。例外：onready 链事实为真的类在 own-function 循环**之前**插入 `_ready` 特判，返回 `&<C>__gdcc_onready_ready` 组合 impl 真实地址——合成 impl 地址仍属既有 impl 地址类 userdata，不新增种类；engine 包装 ABI（get_virtual 返回 userdata、call_virtual 凭 userdata 分发）不变，内部 vtable 机制不变（见 `onready_lowering_implementation.md` §3.2-6）。
+- `<C>_class_call_virtual_with_data` 尾部：全部本类 userdata 分支之后，父类是 GDCC 类时追加 `<P>_class_call_virtual_with_data(p_instance, ...)` 逐级 fall-through。onready 链事实为真的类在 own-function 分支**之前**插入组合 impl 匹配分支，命中后以 dispatcher 直调 `<C>__gdcc_onready_ready((<C>*)p_instance)` 收尾 `return`（不走 ptrcall——组合 impl 签名收 wrapper 指针而非 ptrcall wrapper 期望的 fat 函数指针）。
 - 正确性：engine 固定调用最派生实例的回调，父类 userdata 会回到子类的 dispatch，必须逐级转发；`(Parent*)p_instance` 经偏移 0 嵌入合法。`_process`/`_physics_process` 非 tool 类的 `gdcc_is_editor_hint()` 抑制门留在**本类命中分支内**（转发发生在所有本类分支之后，父类命中后执行父类的门）。
-- userdata 协议跨类一致：userdata 地址即方法身份（默认参数覆写用 per-method 独占 userdata 实例，否则用 impl 地址），ClassDB 注册与 virtual 分派共享同一协议。
-- **双通道一致性**：engine virtual 的 GDCC↔GDCC 覆写链上，engine 通道（本节，不经 vtable）与内部调用通道（§6，经 vtable slot）对同一实例解析到同一最派生实现。editor 门只存在于 engine 通道——内部显式 `self._process(delta)` 不经门（与 GDScript 显式调用语义一致：门抑制的是引擎帧回调，不是方法本体）。engine virtual 覆写签名精确性由前端 fail-closed 保证，链上覆写必然签名一致，不会触发 D1。
+- userdata 协议跨类一致：userdata 地址即方法身份（默认参数覆写用 per-method 独占 userdata 实例，否则用 impl 地址——onready 组合 impl 返回的也是 impl 地址，属同一协议类），ClassDB 注册与 virtual 分派共享同一协议。
+- **双通道一致性**：engine virtual 的 GDCC↔GDCC 覆写链上，engine 通道（本节，不经 vtable）与内部调用通道（§6，经 vtable slot）对同一实例解析到同一最派生实现。onready 链类上两通道都含「onready 链 + 用户 `_ready`」语义：引擎通道经组合 impl 每次分发重放链，内部通道经 `_ready` 入口按需初始化由 `GDCC_FLAG_ONREADY_DONE` 守卫只执行一次（见 `onready_lowering_implementation.md` §3.3 顺序对照）。editor 门只存在于 engine 通道——内部显式 `self._process(delta)` 不经门（与 GDScript 显式调用语义一致：门抑制的是引擎帧回调，不是方法本体）。engine virtual 覆写签名精确性由前端 fail-closed 保证，链上覆写必然签名一致，不会触发 D1。
 
 ## 6. `CALL_METHOD` 多态分发合同
 

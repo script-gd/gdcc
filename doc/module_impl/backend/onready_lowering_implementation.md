@@ -5,15 +5,16 @@
 
 ## 文档状态
 
-- 状态：Step 1-4 Implemented / Verified / Reviewed；Step 5-10 待实施
-- 部分状态说明：Step 2-3 完成后 constructor / init_fields 已对 eligible 属性写入类型默认值，`<C>_class_apply_onready_init_<prop>` ready apply helper 已生成；Step 4 后链函数 `<C>_class_apply_onready_inits`、根适配器 `<C>__gdcc_onready_apply_root` 与组合 impl 原型 `<C>__gdcc_onready_ready` 已发射；但尚无生命周期调用方（wrapper 函数字段 / 引擎分发 / prologue 属 Step 5-7），即 onready 真实 initializer 目前不会在运行期被调用，不得据此宣称 Godot 兼容语义已达成。
-- 更新时间：2026-10-23
+- 状态：Step 1-7 Implemented / Verified / Reviewed；Step 8-10 待实施
+- 更新时间：2026-10-24
 - 适用范围：
   - `src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java`
   - `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`
   - `src/main/java/gd/script/gdcc/backend/c/gen/CBodyBuilder.java`
   - `src/main/c/codegen/template_451/entry.c.ftl`
-  - `src/main/c/codegen/template_451/entry.h.ftl`（wrapper flags 位域与 onready apply 函数字段声明）
+  - `src/main/c/codegen/template_451/entry.h.ftl`（wrapper flags 位域）
+  - `src/main/c/codegen/template_451/onready_lookup.ftl`（类级查询表与根初始化 helper）
+  - `src/main/java/gd/script/gdcc/backend/c/gen/COnreadyPlan.java`（冻结计划与 RootLookupPlan）
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendAnnotationUsageAnalyzer.java`
   - `src/main/java/gd/script/gdcc/frontend/sema/FrontendSyntheticPropertyHelperSupport.java`
 - 关联文档：
@@ -32,7 +33,9 @@
 
 ## 1. 背景与问题
 
-### 1.1 现状链路（问题现场）
+### 1.1 现状链路（问题现场，实施前历史——§3 方案已落地）
+
+
 
 `@onready` 目前的完整处理链路为：
 
@@ -77,9 +80,9 @@
 - `super._ready()` 不重放 onready 赋值；
 - `request_ready()` 驱动的再次 ready 重放 onready 赋值，旧值按 ownership 规则释放（overwrite 语义），不泄漏、不 double-free；
 - 非引擎分发路径（gdcc 内部 vtable/`call_method`、super 调用、外部 `call("_ready")`、coroutine thunk 入口）对 `_ready` 的**首次**调用，按**实例实际最派生 GDCC 类**的完整链补执行一次 onready 赋值（flag 守卫）；
-- 构造期内（`_init` 链完成前）的 `_ready` 触发（手动/虚调用经 prologue、READY 通知经组合 impl）**fail-closed 跳过** onready 赋值，杜绝销毁未初始化字段槽的 UB（见 §3.2-6/§3.2-7）；
+- 构造期内（`_init` 链完成前）的 `_ready` 触发（手动/虚调用经 `_ready` 入口按需初始化、READY 通知经组合 impl）**fail-closed 跳过** onready 赋值，杜绝销毁未初始化字段槽的 UB（见 §3.2-6/§3.2-7）；
 - 热重载 recreate 路径行为与构造期一致（只回放默认值，不回放 ready 初始化器）；
-- 无 onready 链的类不生成链函数、组合 impl 等 onready 专属分发代码（flags 位域迁移是全局统一变化，见 §3.2-5）；prologue 注入由「本类或后代链事实」单独控制（`_ready` 可能被有 onready 的后代继承，见 §3.2-7），「无 onready 链不生成」的验收只约束链函数/组合 impl/get_virtual/call_virtual 段，不约束用户 `_ready` 函数体。
+- 无 onready 链的类不生成链函数、组合 impl 等 onready 专属分发代码（flags 位域迁移是全局统一变化，见 §3.2-5）；入口按需初始化注入由「本类或后代链事实」单独控制（`_ready` 可能被有 onready 的后代继承，见 §3.2-7），「无 onready 链不生成」的验收只约束链函数/组合 impl/get_virtual/call_virtual 段，不约束用户 `_ready` 函数体。
 
 ### 2.2 非目标（本方案明确不做）
 
@@ -89,7 +92,7 @@
 - 构造期内手动 `_ready()` 不执行 onready（fail-closed，与 Godot 两阶段构造下的行为差异见 §7.1）；
 - 混合 GDCC/GDScript 继承中 GDScript 子类不调 `super._ready()` 的情形不闭合（架构级保留项，见 §7.1/§7.3）；
 - 不改变 `@onready` 既有 placement 校验与 `sema.annotation_usage` owner 归属；
-- 不改变 vtable planner / vtable 布局（onready 的实例类型分发走 wrapper 根段函数字段，见 §3.2-6）；
+- 不改变 vtable planner / vtable 布局（onready 的实例类型分发走根级静态查询表 + `object_get_class_name` 精确匹配，见 §3.2-7）；
 - 不引入新的 LIR 指令、不改变 LIR 序列化格式；允许在 `LirPropertyDef` 上增加 transient 非序列化 provenance 标记（§3.2-1）；`"onready"` 注解继续由既有 `annotations` map 承载。
 
 ---
@@ -103,19 +106,20 @@
 | 路线 | 结论 | 原因 |
 | --- | --- | --- |
 | A. 构造期初始化（现状沿用） | 否决 | 与 Godot ready-time 语义根本冲突，`_init` 可见性相反 |
-| B. 裸 `_ready` 函数体 prologue（无守卫） | 否决 | `super._ready()` 会重放父类 onready，违反 Godot「super 调用不重放」语义 |
-| C. LIR 层向 `_ready` 注入 prologue block | 否决 | direct backing-field write 是 backend 所有权边界，LIR `store_property` 会走 setter，语义不等价 |
+| B. 裸 `_ready` 函数体入口按需初始化（无守卫） | 否决 | `super._ready()` 会重放父类 onready，违反 Godot「super 调用不重放」语义 |
+| C. LIR 层向 `_ready` 注入入口按需初始化 block | 否决 | direct backing-field write 是 backend 所有权边界，LIR `store_property` 会走 setter，语义不等价 |
 | D. 纯 `_ready` 引擎分发桥接（bridge token） | 否决 | 引入第三种 userdata 种类；非引擎路径完全不执行 onready，与 Godot `callp` 差异过大 |
-| B+flag 无实例类型分发的 prologue | 否决 | vtable slot 只指向 final overrider 的函数，声明类 prologue 只能跑声明类链，派生类 onready 在继承 `_ready` 场景下漏执行；且构造期虚调用会销毁未初始化槽 |
-| **E. 组合 impl（引擎入口）+ wrapper 函数字段分发 + flag/构造守卫 prologue（非引擎入口）** | **采纳** | 引擎路径保持「ready 时、用户体之前」的精确时点与 request_ready 重放；非引擎路径经 wrapper 根段函数字段按**实例实际类型**分发完整链，flag 守卫首调、构造完成守卫防 UB；super 路径被 flag 拦截不重放；`get_virtual_with_data` 返回真实函数指针，不新增 userdata 种类；不改 vtable 布局 |
+| B+flag 无实例类型分发的入口按需初始化 | 否决 | vtable slot 只指向 final overrider 的函数，声明类入口按需初始化只能跑声明类链，派生类 onready 在继承 `_ready` 场景下漏执行；且构造期虚调用会销毁未初始化槽 |
+| **E. 组合 impl（引擎入口）+ wrapper 函数字段分发 + flag/构造守卫入口按需初始化（非引擎入口）** | 历史方案，由 E2 替代 | 引擎路径保持「ready 时、用户体之前」的精确时点与 request_ready 重放；非引擎路径经 wrapper 根段函数字段按**实例实际类型**分发完整链，flag 守卫首调、构造完成守卫防 UB；super 路径被 flag 拦截不重放；`get_virtual_with_data` 返回真实函数指针，不新增 userdata 种类；不改 vtable 布局 |
+| **E2. 组合 impl（引擎入口）+ 类级查询表 + `_ready` 入口按需初始化（非引擎入口）** | 采纳 | 不新增实例指针/类标签/查询缓存；`GDCC_FLAG_HAS_ONREADY` 类型事实短路零查询；每物理根一张 `static const` 类型化查询表，`object_get_class_name` 精确匹配选根签名适配器；细节见 `onready_class_lookup_design.md` 与 §3.2-5/7 |
 
-### 3.2 设计要点（路线 E）
+### 3.2 设计要点（现行路线 E2；实例函数字段机制仅存于下方标明版本的历史 Step 记录）
 
 1. **onready 事实判定与计划快照**：
    - backend 以 `propertyDef.getAnnotations().containsKey("onready")` 为唯一事实源；
    - **「源码 initializer 是否存在」必须在默认值合成之前快照**：`CCodegen.generate()` 现阶段先调 `generateDefaultGetterSetterInitialization()`（`CCodegen.java:937`），它会为无 initializer 的 property 回填 `initFunc`（`CCodegen.java:182-186`），之后 `initFunc != null` 不再能区分「源码有 initializer」与「backend 合成默认值」。因此在 `CCodegen.prepare(...)`（`CCodegen.java:1044`）阶段形成不可变 onready 计划（每类：有序 onready-with-source-initializer property 列表、链事实、用户 `_ready` 解析结果）；快照落点在 prepare 内 `CGenHelper` 构造（`CCodegen.java:1054` 附近）**之后**（`_ready` 解析依赖 `checkVirtualMethod`）；计划由 `CGenHelper` 唯一持有，`CCodegen.prepare` 仅强制构建、包级 `onreadyPlan()` 仅委托访问，时点不变。后续默认值合成、constructor/init_fields 分流、ready apply、链函数与组合 impl 判定统一消费该计划，模板渲染时不得反向依赖 `initFunc != null` 做语义判断；
    - **快照必须对 re-prepare / 模块复用鲁棒**：同一 `LirModule` 可能被第二个 codegen 会话再次 prepare（`CClassMetadataSupport.java:68-73` 明确要求 re-prepare 幂等；`CCodegenEngineMethodBindHeaderTest.java:237-247` 已有同模块双 codegen 用法），此时 `initFunc` 已被上一次 backend 合成回填，会话内快照读到的是污染后事实。因此规定：`generateDefaultGetterSetterInitialization` 在回填 `initFunc` 时必须**在变更当场留下持久 provenance 标记**（已落地为 `LirPropertyDef.initializerSynthesizedByBackend` transient 非序列化标记；不以 annotations map 承载，该 map 是用户面向且参与序列化 roundtrip），onready 计划只从「frontend 写入的 initFunc + 该标记」推导源码 initializer 事实，任何会话（含第二次 prepare）读到一致结果；
-   - `CGenHelper` 新增判定 helper（命名遵循 `checkXxx` 约定）：`checkOnreadyProperty(LirPropertyDef)`（只读 property annotations，不需要 class 参数）、`checkClassChainHasOnreadyInitializer(LirClassDef)`（沿 `context.classRegistry()` 解析同模块 GDCC superName 链，**带 visited set 防御环**，遇 engine/未知父类终止）、`checkClassOrDescendantHasOnreadyInitializer(LirClassDef)`（本类或任意同模块**后代**类链事实为真；用于 prologue 注入条件——后代可能继承本类声明的 `_ready`，见 §3.2-7）、`resolveChainUserReadyFunctionOrNull(LirClassDef)`（返回链上最派生且通过 `checkVirtualMethod` 的 `_ready` 函数本体；无则 `null`；声明 owner 类名存于计划 `ClassPlan.userReadyOwnerClassName`）。
+   - `CGenHelper` 新增判定 helper（命名遵循 `checkXxx` 约定）：`checkOnreadyProperty(LirPropertyDef)`（只读 property annotations，不需要 class 参数）、`checkClassChainHasOnreadyInitializer(LirClassDef)`（沿 `context.classRegistry()` 解析同模块 GDCC superName 链，**带 visited set 防御环**，遇 engine/未知父类终止）、`checkClassOrDescendantHasOnreadyInitializer(LirClassDef)`（本类或任意同模块**后代**类链事实为真；用于入口按需初始化注入条件——后代可能继承本类声明的 `_ready`，见 §3.2-7）、`resolveChainUserReadyFunctionOrNull(LirClassDef)`（返回链上最派生且通过 `checkVirtualMethod` 的 `_ready` 函数本体；无则 `null`；声明 owner 类名存于计划 `ClassPlan.userReadyOwnerClassName`）。
 2. **构造期分流**（`entry.c.ftl` `class_constructor` 与 `class_init_fields` 两处 property 循环共用同一判定 helper）：
    - 非 onready property：维持现状（first-write apply 真实 initializer 或默认值）；
    - onready **无**源码 initializer property：维持现状（`initFunc == null` 时 backend 合成的默认值 `_field_init_<prop>` 恰为 Godot 构造期默认值语义，无需改动）；
@@ -125,22 +129,24 @@
    - target 固定经既有 `targetOfExpr("self->" + propertyName, propertyType)`（`CBodyBuilder.java:413-414`）构造，不为字段新增第二套 slot-write 逻辑；
    - 承载 body 的 `CBodyBuilder` 照 `generateStaticInitializersBody` 的模式起独立空 builder（`CCodegen.java:749-764`），只借用 init helper 函数上下文，**不得**经 `beginBasicBlock` / `setCurrentPosition` 进入 `__prepare__`——`checkInPrepareBlock()` 必须为 false（新建 builder 初始 `currentBlock == null` 即满足），否则 `__prepare__` 抑制 destroy/release（`CBodyBuilder.java:1493`），吃掉 overwrite 语义；
    - 不得滑回 `applyPropertyInitializerFirstWrite`：ready 路径执行时字段必已完成构造期 first-write（由 §3.2-6 构造守卫保证），first-write 会泄漏可析构默认值。
-4. **onready 链函数与发射顺序**：为每个「链事实为真」的类生成 `<C>_class_apply_onready_inits(<C>* self)`：先递归调用同模块 GDCC 父类的链函数（父链事实为真时），再按声明顺序调本类各 `<C>_class_apply_onready_init_<prop>`。「链事实为真」包含**本类无 initializer 但祖先有**的中间类——此类也必须生成转发函数，否则最派生实例的链无法覆盖祖先赋值。链函数保持单一职责（只做字段 init，**不含** `_ready` 转发），供组合 impl 与 prologue 两个入口共用。发射顺序采用**段首统一 `static` 原型**（在 entry.c 前部发射前置声明），原型清单至少包括：`<C>_class_apply_onready_inits`、`<C>_class_apply_onready_init_<prop>`、`<C>__gdcc_onready_apply_root`（§3.2-5 根适配器）、`<C>__gdcc_onready_ready`（§3.2-6 组合 impl）——这些符号被跨类或跨段引用（子类链递归 / create_instance 初始化 / `get_virtual` 取地址），`module.classDefs` 源文件序允许 derived-first（正确性坑先例见 `virtual_override_vtable_implementation.md:141`），原型先行可同时满足「声明先于使用」与定义位置自由。
-5. **wrapper 根段状态位与 onready apply 函数字段**（`entry.h.ftl` 根 wrapper struct + `CGenHelper` 访问 helper）：
-   - `_gdcc_destructed` 改造为 `uint8_t _gdcc_flags` 位域（`GDExtensionBool` 本就是 `uint8_t`，尺寸不变）：bit0 保持 destructed 守卫语义，新增 bit1 `GDCC_FLAG_ONREADY_DONE`、bit2 `GDCC_FLAG_CTOR_COMPLETE`。destructed 的全部读写必须改为位操作（现 `entry.c.ftl:549` 的 `= true`、`:485`/`:546` 的整字节真值判断若原样保留会吃掉新增位）；
-   - 根 wrapper 新增函数指针字段 `void (*_gdcc_onready_apply)(<Root>*)`（`<Root>` 为本继承树的 GDCC 根类，需新增 `CGenHelper` 根类解析 helper：沿 superName 链走到 GDCC 根，带 visited set）：prologue 经它按**实例实际最派生 GDCC 类**分发完整链（vtable slot 只指向 final overrider 的用户 `_ready` 函数，无法承担「实例类型分发」职责；本字段以 wrapper 布局扩展替代 vtable planner 变更，**不改 vtable**）；
-   - **ABI 适配合同**：字段存的是**根签名适配器**而非链函数本体——链函数签名是 `void (<C>* self)`，与字段类型在非根类上不兼容，**禁止裸函数指针强转**（强转消除诊断但保留不兼容间接调用 UB）。为每个链事实为真的类生成 `static void <C>__gdcc_onready_apply_root(<Root>* root) { <C>_class_apply_onready_inits((<C>*)root); }`（offset-0 受控转换，与 vtable trampoline 同一豁免先例），create/recreate 写入适配器地址；适配器进段首原型清单与符号登记；
-   - 初始化点：`create_instance` 写 `_gdcc_flags = 0`、`_gdcc_onready_apply = <链事实为真时本类根适配器地址，否则 NULL>`；`class_notification` 在 POSTINITIALIZE 的 constructor 调用**之后**置位 `GDCC_FLAG_CTOR_COMPLETE`（notification 回调只被引擎调到最派生类，故置位恰好在完整构造链结束后）；`recreate_instance` 写 `_gdcc_flags = GDCC_FLAG_CTOR_COMPLETE | GDCC_FLAG_ONREADY_DONE`（字段已含有效默认值/恢复值，构造视为完成；DONE 置位表示继承前代「ready 已发生」的事实，防止 reload 后手调覆盖引擎恢复的 storage 值），`_gdcc_onready_apply` 按链事实重写（为真写本代根适配器地址，否则 NULL——避免 `dlclose` 后旧代函数指针悬空残留）；
-   - **字段顺序冻结**：根段字段顺序为 `_object`、`_vtable`（若有）、`uint8_t _gdcc_flags`、`void (*_gdcc_onready_apply)(<Root>*)`——不得插入 `_object` 与 `_vtable` 之间（`_vtable` 紧跟 `_object` 是已冻结布局，`virtual_override_vtable_implementation.md:56`）；
-   - 所有字段访问经 `CGenHelper` helper 收口（现状 `renderDestructedFlagAccessExpr` 已收口 destructed，新增 flags/函数字段访问 helper；派生类拼写必须走根段路径——`self->_super....`，禁止直接 `$self.ptr->_gdcc_flags`；**组合 impl 与 prologue 内同样必须经 helper 渲染根段访问，禁止字面 `self->_gdcc_flags`**）；
-   - **DONE 的语义是「已尝试执行」而非「成功完成」**：先置位是重入去重策略，initializer 失败不清位、普通手调不重试；DONE 不阻止组合 impl 的重放 apply（引擎路径重放不受 DONE 影响，但受 CTOR_COMPLETE 影响，见 §3.2-6）。
+4. **onready 链函数与发射顺序**：为每个「链事实为真」的类生成 `<C>_class_apply_onready_inits(<C>* self)`：先递归调用同模块 GDCC 父类的链函数（父链事实为真时），再按声明顺序调本类各 `<C>_class_apply_onready_init_<prop>`。「链事实为真」包含**本类无 initializer 但祖先有**的中间类——此类也必须生成转发函数，否则最派生实例的链无法覆盖祖先赋值。链函数保持单一职责（只做字段 init，**不含** `_ready` 转发），供组合 impl 与入口按需初始化 两个入口共用。发射顺序采用**段首统一 `static` 原型**（在 entry.c 前部发射前置声明），原型清单至少包括：`<C>_class_apply_onready_inits`、`<C>_class_apply_onready_init_<prop>`、`<C>__gdcc_onready_apply_root`（§3.2-5 根适配器）、`<C>__gdcc_onready_ready`（§3.2-6 组合 impl）——这些符号被跨类或跨段引用（子类链递归 / create_instance 初始化 / `get_virtual` 取地址），`module.classDefs` 源文件序允许 derived-first（正确性坑先例见 `virtual_override_vtable_implementation.md:141`），原型先行可同时满足「声明先于使用」与定义位置自由。
+5. **wrapper 根段状态位与根级 onready 查询表**（`entry.h.ftl` 根 wrapper struct + `COnreadyPlan.rootLookupPlans` + `onready_lookup.ftl`）：
+   - `_gdcc_destructed` 改造为 `uint8_t _gdcc_flags` 位域：bit0 保持 destructed 守卫语义（字面 `1`，`& 1` / `|= 1`），bit1 `GDCC_FLAG_ONREADY_DONE`、bit2 `GDCC_FLAG_CTOR_COMPLETE`、bit3 `GDCC_FLAG_HAS_ONREADY`（本类冻结链事实的类型标记，为 0 时入口 helper 零查询短路）。三个 flag 以匿名 enum 常量发射（**不是** `#define`——宏会文本改写同名成员/类标识符）；枚举名占普通文件作用域，已注册进 §3.2-8 冲突校验，用户成员同名仍合法、文件级同名 fail-fast。**不保存**任何 per-instance onready 函数字段、类标签或查询缓存；
+   - **RootLookupPlan**：`COnreadyPlan` 在类事实冻结后按物理根分组——每物理根一行 `(rootClassName, classNames)`，行内保 module 顺序、行保首见顺序；只收「冻结链事实为真」的 module `LirClassDef`（含 inherited-only/abstract 中间类），clean/no-init 类、engine 类、coroutine 状态类与 module 外类不产生行；空 module/树不产生空 C 数组。物理根经 `CGenHelper.resolveGdccRootClassName(ClassDef)` 已知对象重载解析：从已知类对象出发只沿**已注册** GDCC 父边走（`isGdccClass` 判定），visited set 检环 fail-fast；未注册起始类容错（父边已注册则继续），未注册父边截断，物理根可落在注册表中的 module 外祖先（仅描述布局，表成员/链事实仍限 module）；字符串重载对未知起始类名的抛错合同保留；
+   - **表结构**（同一 entry TU，`onready_lookup.ftl`，位于根适配器原型之后、`gdextension_entry` 之前）：每物理根发射 `gdcc_<R>_onready_lookup_entry` typedef——恰两个成员 `const godot_StringName* (*class_name)(void)` 与 `void (*apply)(<R>* root)`——与 `static const gdcc_<R>_onready_lookup_entry gdcc_<R>_onready_lookup_table[]`；key getter `<C>__gdcc_onready_class_name` 各持固定 `GD_STATIC_SN(u8"<canonical name>")`（每 getter 独立宏展开点，禁止共享/循环内展开——同一展开点会让多行共用一个缓存 StringName）；`apply` 列直接填既有 `<C>__gdcc_onready_apply_root` 适配器地址（签名本就是 `(<R>*)`，typed 指针零强转；「禁止裸函数指针强转」合同不变）；
+   - **ABI 适配合同**：`<C>__gdcc_onready_apply_root(<Root>* root)` 仍是各链事实类的根签名适配器（offset-0 受控转换，与 vtable trampoline 同一豁免先例），表行引用它完成实例类型分发——链函数本体签名 `void (<C>* self)` 永远不经表调用；
+   - **根 helper** `<R>__gdcc_onready_initialize_if_needed(<R>* root)` 集中全部判优算法（顺序固定）：DONE→return；!CTOR→return；!HAS→return；置 DONE；raw 为 NULL→诊断返回；`godot_object_get_class_name` 恰一次（false→诊断返回，未发布输出不销毁）；逐行 `godot_StringName_op_equal_StringName` 精确比对、命中即停；命中则**先销毁 actual_name 再** `apply(root)`；无匹配则销毁一次+诊断；无祖先回退、无重试、DONE 永不自动清除。key 是借用指针永不销毁；查询临时名成功路径恰销毁一次；
+   - 初始化点：`create_instance` 写 `_gdcc_flags = GDCC_FLAG_HAS_ONREADY`（本类链事实为真）否则 `0`（先于 binding/POSTINITIALIZE）；`class_notification` 在 POSTINITIALIZE 的 constructor 调用**之后**置位 `GDCC_FLAG_CTOR_COMPLETE`（notification 回调只被引擎调到最派生类，故置位恰好在完整构造链结束后）；`recreate_instance` 写 `CTOR_COMPLETE | ONREADY_DONE`（+本类链事实为真时 HAS——字段已含有效默认值/恢复值，构造视为完成；DONE 继承前代「ready 已发生」防止 reload 后手调覆盖恢复值；**不做类名查询、不执行初始化器**）；
+   - **字段顺序冻结**：根段字段顺序为 `_object`、`_vtable`（若有）、`uint8_t _gdcc_flags`——不得插入 `_object` 与 `_vtable` 之间（`_vtable` 紧跟 `_object` 是已冻结布局，`virtual_override_vtable_implementation.md:56`）；
+   - 所有字段访问经 `CGenHelper` helper 收口（`renderDestructedFlagAccessExpr` / `renderGdccFlagsAccessExpr`，起始表达式参数化；派生类拼写必须走根段路径——`self->_super....`，禁止直接 `$self.ptr->_gdcc_flags`；**组合 impl 与根 helper 同样必须经 helper 渲染根段访问，禁止字面 `self->_gdcc_flags`**）；
+   - **DONE 的语义是「已尝试执行」而非「成功完成」**：先置位是重入去重策略，initializer 失败/查询失败/无匹配不清位、普通手调不重试；DONE 不阻止组合 impl 的重放 apply（引擎路径重放不受 DONE 影响，但受 CTOR_COMPLETE 影响，见 §3.2-6）。
 6. **组合 impl `<C>__gdcc_onready_ready`（引擎分发入口）**：
    - 生成条件：链事实为真；形态 `static void <C>__gdcc_onready_ready(<C>* self)`；`static` 且只被本类 `get_virtual` / `call_virtual` 段引用（同类段内、段首原型覆盖），无跨类 static 引用问题；
    - 函数体固定形态（构造守卫 + 三段式）：
 
      ```c
      static void <C>__gdcc_onready_ready(<C>* self) {
-         // 构造守卫：构造期 READY 通知可绕过 prologue 直达本入口（`_init` 内
+         // 构造守卫：构造期 READY 通知可绕过入口按需初始化直达本入口（`_init` 内
          // `notification(NOTIFICATION_READY)` 或 add_child 进已在树上的父节点均可同步触发），
          // 此时派生字段槽尚未 first-write，无条件 overwrite 会销毁垃圾值（UB）。
          // 守卫失败时不置 DONE、不 apply，但用户 `_ready` 仍转发（与普通调用语义一致）。
@@ -148,7 +154,7 @@
              <转发用户 _ready（若有）>;
              return;
          }
-         <helper 渲染的根段 flags 访问> |= GDCC_FLAG_ONREADY_DONE;  // 先置位：防 initializer 重入 + prologue 去重
+         <helper 渲染的根段 flags 访问> |= GDCC_FLAG_ONREADY_DONE;  // 先置位：防 initializer 重入 +入口按需初始化去重
          <C>_class_apply_onready_inits(self);                      // 不看 DONE：保证 request_ready() 重放
          <转发用户 _ready（若有）>;
      }
@@ -158,26 +164,24 @@
    - `get_virtual_with_data`：链事实为真时，`_ready` 特判在 own-function 循环**之前**返回 `(void*)&<C>__gdcc_onready_ready`——返回**真实函数指针**，仍属既有 userdata 协议的 impl 地址类，不新增种类（`virtual_override_vtable_implementation.md:87` 只需一句澄清而非例外条款）；
    - `call_virtual_with_data`：own-function 分支**之前**匹配 `&<C>__gdcc_onready_ready`，**dispatcher 直接调用**：`<C>__gdcc_onready_ready((<C>*)p_instance); (void)p_args; (void)r_ret; return;`（`p_instance` 本就是 wrapper 指针、偏移 0 转换合法，先例 `entry.c.ftl:614`；`_ready` 为 void+无参，ptrcall 层对其无实际工作；**不走 ptrcall**——ptrcall wrapper 会把 userdata 当 fat 函数指针调用（`entry.h.ftl:796`），与组合 impl 的 wrapper 签名 ABI 不符）；
    - 命名挂 `_gdcc_` 保留前缀（`FrontendSyntheticPropertyHelperSupport` 已拒用户 `_gdcc_*` 成员），无用户撞名路径；符号仍显式登记（见 §3.2-8）。
-7. **非引擎入口 prologue（flag + 构造守卫 + 实例类型分发）**：对「声明了用户 `_ready`（普通或 coroutine）且 `checkClassOrDescendantHasOnreadyInitializer` 为真」的每个类（含抽象类——其 `_ready` 可经 super 到达），在其 `_ready` 入口注入：
+7. **非引擎 `_ready` 入口按需初始化（flag + 构造守卫 + 实例类型分发）**：对「声明了用户 `_ready`（普通或 coroutine）且 `checkClassOrDescendantHasOnreadyInitializer` 为真」的每个类（含抽象类——其 `_ready` 可经 super 到达），在其 `_ready` 入口注入：
 
    ```c
-   // 伪代码（拼写以实施时 trampoline/helper 实际形态为准）
-   <Root>* __w = <root wrapper from $self>;          // 物化 wrapper：与 vtable trampoline 同一拼写；
-                                                     // 用户方法的 C 参数是按值 fat `$self`，没有现成 wrapper 变量
-   if (!(__w->_gdcc_flags & GDCC_FLAG_ONREADY_DONE)
-           && (__w->_gdcc_flags & GDCC_FLAG_CTOR_COMPLETE)
-           && __w->_gdcc_onready_apply != NULL) {
-       __w->_gdcc_flags |= GDCC_FLAG_ONREADY_DONE;
-       __w->_gdcc_onready_apply(__w);                // 按实例实际最派生 GDCC 类的完整链
+   {
+       <Root>* __gdcc_onready_root = (<Root>*)$self.ptr;   // 物化 wrapper：offset-0 受控转换；
+                                                         // 用户方法的 C 参数是按值 fat `$self`，没有现成 wrapper 变量
+       <R>__gdcc_onready_initialize_if_needed(__gdcc_onready_root);
    }
    ```
 
+   完整门控/查询/apply 算法只存在于根 helper（§3.2-5），入口侧只剩物化 + 调用——DONE/CTOR/HAS 短路、类名查询、行匹配与诊断不分摊到每个 `_ready` 入口。
+
    - **构造守卫**：`CTOR_COMPLETE` 未置位（`_init` 链完成前）时跳过且**不置位 DONE**——构造顺序是「父 constructor（含父 `_init`）→ 本类 property apply → 本类 `_init`」（`entry.c.ftl:491-509`），vtable 又是最派生表（`entry.c.ftl:408-411`），父 `_init` 里的虚调用 `_ready` 会带着未 first-write 的派生字段槽进入 overwrite，销毁 `godot_mem_alloc` 的垃圾值（UB）并让后续构造 first-write 泄漏。fail-closed 跳过同时保证引擎路径之后仍能正常执行（DONE 未置位）；
-   - **实例类型分发**：链函数经 wrapper 函数字段（存根签名适配器地址，见 §3.2-5）调用，覆盖「`_ready` 只在祖先声明、派生类新增 onready」场景——内部 `self._ready()` / 外部 `call("_ready")` / 混合 super 调用进入的是祖先的 `_ready` 函数，但应用的是实例最派生类的完整链；这与 Godot `callp` 的 implicit ready 覆盖全链一致；
+   - **实例类型分发**：根 helper 经类级查询表按 `object_get_class_name` 精确类名匹配行（`HAS` 为 0 时零查询短路），覆盖「`_ready` 只在祖先声明、派生类新增 onready」场景——内部 `self._ready()` / 外部 `call("_ready")` / 混合 super 调用进入的是祖先的 `_ready` 函数，但应用的是实例最派生类的完整链；这与 Godot `callp` 的 implicit ready 覆盖全链一致；
    - **普通函数注入点**：`CCodegen.generateFuncBody` 在 `goto entry` 前注入（先例 `emitLambdaCapturePrologue`，`CCodegen.java:222-262`、`:594-614`；该位置在 `__prepare__` 之前、builder 未设 currentBlock，无销毁抑制问题），注入条件必须排除 `func.isCoroutine()`（`generateFuncBody` 与 `__coro_body` 共用）；
    - **coroutine `_ready` 注入点**：**start thunk 的同步前段、首次 `mco_resume` 之前**（`entry.c.ftl:822-863` 段）——内部 direct/vtable/super 调用全部直进 start thunk（`CallMethodInsnGen.java:211-220`、`CallSuperMethodInsnGen.java:52-62`、vtable 协程槽指向 `__coro_start`），同步 shell 只是 thunk 的调用者之一，只注 shell 会漏掉全部内部路径；thunk 内同样先物化 wrapper（从 `$self` fat）再按上式执行；
-   - prologue 只做 flag 检查与函数指针调用，以 appendRaw 形态发射，不经 CBodyBuilder 的 slot-write 体系。**helper 落点**：wrapper 一旦物化为 `<Root>* __w`，根段字段访问就是该指针上的直接字段访问（如上式）；现有 `renderRootWrapperFieldAccessExpr` 从字面 `self` 起步下钻 `_super`，对本形态不适用——实施时新写「从给定起始表达式渲染根段访问」的 helper（起始表达式参数化），不得复用只认识 `self` 的现有函数，也不得把伪代码中的字面 `__w->_gdcc_flags` 与 §3.2-5 的 helper 收口要求读成矛盾（物化后的直接访问即为收口形态）。
-8. **符号登记与保留前缀**：所有新增文件级符号都必须在 `validateFileScopeSymbolsDisjoint`（`CCodegen.java:858-910`）中**显式登记**——该检查只自动登记 LIR 函数（`:883-885`），模板侧 helper 均为手工登记（先例 `:899-903`）。需新增登记：`<C>_class_apply_property_default_<prop>`、`<C>_class_apply_onready_init_<prop>`、`<C>_class_apply_onready_inits`、`<C>__gdcc_onready_apply_root`、`<C>__gdcc_onready_ready`；`_onready_field_default_<prop>` 是 LIR 函数会随 `className + "_" + function.getName()` 自动登记。保留前缀落点是 `FrontendSyntheticPropertyHelperSupport`（`:14-39` 的 `RESERVED_PREFIXES` 与 `:54-95` 的诊断文案分支），新增 `_onready_field_default_` 常量并补诊断文案分支（default 分支只列举 `_field_init_/_field_getter_/_field_setter_`，不加分支会报出错误说明）。
+   - `_ready` 入口按需初始化只做根物化与 helper 调用，以 appendRaw 形态发射，不经 CBodyBuilder 的 slot-write 体系；全部 flag/查询/apply 判优只在 `onready_lookup.ftl` 的根 helper 内实现。根段字段访问经 `renderGdccFlagsAccessExpr(rootName, startExpr)` 参数化 helper 收口（起始表达式即 `root`——不得复用只认识字面 `self` 的渲染器，也不得在模板直接拼写 `root->_gdcc_flags`）。
+8. **符号登记与保留前缀**：所有新增文件级符号都必须在 `validateFileScopeSymbolsDisjoint`（`CCodegen.java:858-910`）中**显式登记**——该检查只自动登记 LIR 函数（`:883-885`），模板侧 helper 均为手工登记（先例 `:899-903`）。需新增登记：`<C>_class_apply_property_default_<prop>`、`<C>_class_apply_onready_init_<prop>`、`<C>_class_apply_onready_inits`、`<C>__gdcc_onready_apply_root`、`<C>__gdcc_onready_ready`，以及查询表四族——key getter `<C>__gdcc_onready_class_name`（每链事实类）、`gdcc_<R>_onready_lookup_entry` typedef / `gdcc_<R>_onready_lookup_table` / `<R>__gdcc_onready_initialize_if_needed`（每非空物理根计划）；`_onready_field_default_<prop>` 是 LIR 函数会随 `className + "_" + function.getName()` 自动登记。保留前缀落点是 `FrontendSyntheticPropertyHelperSupport`（`:14-39` 的 `RESERVED_PREFIXES` 与 `:54-95` 的诊断文案分支），新增 `_onready_field_default_` 常量并补诊断文案分支（default 分支只列举 `_field_init_/_field_getter_/_field_setter_`，不加分支会报出错误说明）。
 9. **前端补充诊断**（`FrontendAnnotationUsageAnalyzer`，owner 仍为 `sema.annotation_usage`）：同一 property 重复 `@onready` 报错，对齐 Godot「can only be used once per variable」。实现必须遍历该 property 上的全部同名注解，不能再 `findFirst`；skeleton 侧目前重复注解 last-wins（`FrontendClassSkeletonBuilder.java:809-819`），诊断先行即可，无需改 skeleton。
 
 ### 3.3 与 Godot 的顺序对照
@@ -186,14 +190,14 @@
 | --- | --- | --- |
 | 对象创建 | typed 字段填类型默认值；非 onready 字段按声明序初始化 | constructor：非 onready 走现状 apply；onready-with-init 走默认值 apply（在各自声明位置，因 gdcc MVP 禁止 initializer 访问同类实例成员，顺序不可观测）；constructor 链结束后由 notification 置位 `CTOR_COMPLETE` |
 | `_init()` | 观察到 onready 字段默认值 | 一致 |
-| 构造期内手动/虚调用 `_ready()`，或 `_init` 内显式 `notification(NOTIFICATION_READY)` | 两阶段构造下字段已有类型默认值，implicit ready 安全执行 | **fail-closed 跳过** onready 赋值（prologue 与组合 impl 双入口均受 CTOR_COMPLETE 守卫；DONE 不置位）。这两条路径不修改引擎 `ready_first`，之后真正入树时引擎仍会发 READY，届时正常 apply。用户 `_ready` 体仍执行（差异见 §7.1） |
+| 构造期内手动/虚调用 `_ready()`，或 `_init` 内显式 `notification(NOTIFICATION_READY)` | 两阶段构造下字段已有类型默认值，implicit ready 安全执行 | **fail-closed 跳过** onready 赋值（入口按需初始化与组合 impl 双入口均受 CTOR_COMPLETE 守卫；DONE 不置位）。这两条路径不修改引擎 `ready_first`，之后真正入树时引擎仍会发 READY，届时正常 apply。用户 `_ready` 体仍执行（差异见 §7.1） |
 | 构造期内 `add_child` 进已在树上且已 ready 的父节点 | 同上 | 这条路径经 `_propagate_ready` 同步发 READY 且**先清 `ready_first`**——它是唯一一次自然 READY，构造完成后引擎不会自动补发。守卫仍必须跳过 apply（派生槽未 first-write）；接受的差异：onready 保持构造期默认值，直到 `request_ready()` 后再次入树（差异见 §7.1） |
-| ready 通知 | 基类→派生类 `@implicit_ready`，再最派生用户 `_ready` | 组合 impl：CTOR_COMPLETE 检查通过 → 置位 DONE → `<C>_class_apply_onready_inits`（基类→派生类、类内声明序，不看 DONE）→ 转发用户 `_ready`（声明类符号直调；其 prologue 被 DONE 拦截跳过） |
+| ready 通知 | 基类→派生类 `@implicit_ready`，再最派生用户 `_ready` | 组合 impl：CTOR_COMPLETE 检查通过 → 置位 DONE → `<C>_class_apply_onready_inits`（基类→派生类、类内声明序，不看 DONE）→ 转发用户 `_ready`（声明类符号直调；其入口按需初始化被 DONE 拦截跳过） |
 | 无用户 `_ready` | `@implicit_ready` 仍执行 | 组合 impl 仍返回并执行链函数（省略转发） |
-| `super._ready()` | 不重放 onready | super 直调父类 `_ready` 入口 → prologue 被 DONE 拦截（引擎路径组合 impl 已置位），不重放 |
+| `super._ready()` | 不重放 onready | super 直调父类 `_ready` 入口 → `_ready` 入口按需初始化被 DONE 拦截（引擎路径组合 impl 已置位），不重放 |
 | 移除再入树（无 `request_ready()`） | 不重放 | 一致（引擎不再分发 `_ready`） |
 | `request_ready()` 后再 ready | 重放 onready | READY 实际进入组合 impl 的路径：引擎再次虚分发 → 组合 impl 不看 DONE 重放 overwrite，旧值被销毁（混合继承 super 路径除外，见 §7.1） |
-| 构造完成后脚本内手动 `node._ready()` | 经 `callp` 重放 onready | 首次调用经 prologue 按实例实际类型执行一次；重复调用被 DONE 拦截（差异见 §7.1） |
+| 构造完成后脚本内手动 `node._ready()` | 经 `callp` 重放 onready | 首次调用经 `_ready` 入口按需初始化，按实例实际类型执行一次；重复调用被 DONE 拦截（差异见 §7.1） |
 | 热重载 recreate | 引擎回放持久化状态 | `class_init_fields` 对 onready 且有源码 initializer 的属性只回放类型默认值（真实 initializer 仍推迟到 ready）；非 onready 属性维持现状回放；随后引擎经 setter 恢复 storage 属性；flags 置 `CTOR_COMPLETE|ONREADY_DONE`，手调不再补执行，`request_ready()` 仍重放（新代码，限 READY 实际进入组合 impl 的路径） |
 
 ---
@@ -253,7 +257,7 @@
 **实施记录**：
 - `generateOnreadyApplyBody(clazz, property, session)`（buffer 私有重载 + session 包级包装）：先经 `requireOnreadySourceInitFunction` 解析真实源码 init helper（冻结成员资格 + `initFunc` 非空且未打 backend 标记的 provenance 守卫 + 共享 readiness 校验，构造期回填/覆写前先于其它变更失败）；builder 上下文持 sourceInit 但**不** `beginBasicBlock`/`setCurrentPosition`——`__prepare__` 的销毁抑制依赖当前块位置，字段已在构造期 first-write，ready 期覆写必须销毁旧值；经 `targetOfExpr("self->"+name, type)` + `moveOwnedCallIntoSlot` 走 overwrite/move 语义：先物化调用结果、再 capture old、assign、按 refcount 状态 release/try-release（`NO` 不 release），不再 own 新值、不销毁 carrier；非 destroyable 类型走直接赋值。setter 同样被绕过（apply 直写字段）。
 - `entry.c.ftl` eligible 分支在同一段同时发射 default apply 与 ready apply 两个 `static inline` 定义；`validateFileScopeSymbolsDisjoint` 对 ready apply 符号按条件显式登记，与用户函数碰撞即报 file-scope 冲突。
-- 已知边界（记录待 Step 10 收口，不视为已达成 Godot 兼容）：constructor/init_fields 现已对 eligible 属性写默认值；Step 4 的链函数已会调用 ready apply，但链函数 / 根适配器尚无法从生命周期入口到达（wrapper flags 与函数字段写入属 Step 5、组合 impl 定义 / 引擎分发属 Step 6、非引擎 prologue 属 Step 7），ready 分发仍未接通；构造期/重建期旧 wording 中「onready 随构造赋值」语义待 Step 5+ 接通，source-of-truth 文档改写仍归 Step 10。
+- 已知边界（当时阶段边界，已由 Step 5-7 接通；保留作历史记录）：constructor/init_fields 已对 eligible 属性写默认值；Step 4 的链函数会调用 ready apply，但当时链函数 / 根适配器尚无法从生命周期入口到达（wrapper flags 与实例分发写入属 Step 5、组合 impl 定义 / 引擎分发属 Step 6、非引擎入口按需初始化 属 Step 7）；构造期/重建期旧 wording 中「onready 随构造赋值」语义已由 Step 5+ 覆盖，source-of-truth 文档改写仍归 Step 10。
 
 **验证与 review**：
 - 编译：`./gradlew classes --no-daemon --info --console=plain` 通过（`tmp/onready-step23/compile.log`）。
@@ -279,12 +283,12 @@
 **验收**（已验证项打勾；其余为 Step 5-6 边界）：
 - [x] golden：段首原型完整、位于所有定义之前、按 module 顺序、每符号恰好一次；A→B→C（A 有 B 无 C 有）中 A 仅本类两字段按声明顺序、B 仅一行 `StepA_class_apply_onready_inits(&self->_super)`、C 先调 B 链再调自身两字段且无摊平的 A 调用；中间转发类同时生成适配器；
 - [x] golden：适配器签名取**物理根**类型（`LeafUnderClean` 用 `CleanParent* root`，非链属主），体内仅 offset-0 `(<C>*)root` 调用、无函数指针形态；本类与全部同模块 GDCC 祖先均无 onready initializer 时不生成任何原型/定义（含「仅后代有 onready 的祖先」）；no-init onready、普通、static 属性均无 per-property 原型；
-- [x] 用户 `_ready` 独立：StepA 声明 `_ready` 时链函数体不含 `_ready(` / constructor 调用，`StepC` 的 `userReadyOwnerClassName` 仍为 `StepA`；组合 impl 每链类一条原型、签名为本类 `<C>* self`、**无定义无调用点**（定义与 `_ready` 转发属 Step 6 验收）；
+- [x] 用户 `_ready` 独立：StepA 声明 `_ready` 时链函数体不含 `_ready(` / constructor 调用，`StepC` 的 `userReadyOwnerClassName` 仍为 `StepA`；组合 impl 每链类一条原型、签名为本类 `<C>* self`、**无定义无调用点**（当时阶段边界——定义与 `_ready` 转发已由 Step 6 接通）；
 - [x] 符号冲突：三个新符号名与同名用户函数（`class_apply_onready_inits` / `_gdcc_onready_apply_root` / `_gdcc_onready_ready`）同组时均报 file-scope conflict；无链类允许同名用户函数照常发射；
 - [x] 跨会话：复用测试扩展为链函数 / 适配器定义体逐字节相等与原型唯一；post-prepare 注解变更测试断言链体仍含 frozen 成员；
 - [x] zig smoke：`CProjectBuilderIntegrationTest.compileDerivedFirstOnreadyChainModuleWithRealZig` 实机 zig 编译通过（log `tmp/onready-step4/zig-test.log`，项目产物 `tmp/test/c_build_onready_chain/`）；
 - [x] 命令：`script/run-gradle-targeted-tests.sh --tests CCodegenOnreadyTest,CGenHelperTest,CCodegenTest,CVtableCodegenTest,CCodegenEngineMethodUsageSessionTest` → 275 tests / 0 failures / 0 skipped（`tmp/onready-step4/tests.log`，XML `tmp/onready-step4/results/`）。
-- 已知边界：链函数会调用 ready apply，但链函数 / 根适配器尚无法从生命周期入口到达——wrapper 函数字段写适配器地址属 Step 5（届时验证字段类型与 `Root*` 签名一致），引擎 `get_virtual`/`call_virtual` 分发与组合 impl 定义属 Step 6，prologue 属 Step 7。
+- 已知边界（当时阶段边界，已由 Step 5-7 接通）：链函数会调用 ready apply，但当时链函数 / 根适配器尚无法从生命周期入口到达——wrapper 函数字段写适配器地址已由 Step 5 接通（字段类型与 `Root*` 签名一致），引擎 `get_virtual`/`call_virtual` 分发与组合 impl 定义已由 Step 6 接通，入口按需初始化已由 Step 7 接通。
 
 **验证与 review**：
 - 编译：`./gradlew classes --no-daemon --info --console=plain` 通过；整改后复跑同命令通过（`tmp/onready-step4/rework-compile.log`）。
@@ -293,37 +297,46 @@
 - 整改验证：`--tests CCodegenOnreadyTest` 通过（50 tests，0 failures，0 skipped；`tmp/onready-step4/rework-tests.log`，XML `tmp/onready-step4/results-rework/`，整改 diff `tmp/onready-step4/rework.diff`，全量 diff `tmp/onready-step4/step4-final.diff`）；生产侧仅注释变化，zig smoke 不重复执行。
 - 复审结论：`review-expert-a` 增量复审 `APPROVE`，四项初审建议逐项确认关闭，0 新发现，无遗留中高风险或阻塞问题。
 
-### Step 5：wrapper flags 位域与 onready apply 函数字段
+### Step 5：wrapper flags 位域与 onready 实例分发（历史：路线 E 验收记录）
+
+> 本节清单描述已下线的实例函数字段方案；现行合同见 §3.2-5（HAS 位 + 根级查询表）。
 
 **改动**：
-- `entry.h.ftl` 根 wrapper struct：字段顺序固定为 `_object`、`_vtable`（若有）、`uint8_t _gdcc_flags`、`void (*_gdcc_onready_apply)(<Root>*)`——不得插入 `_object` 与 `_vtable` 之间（冻结布局 `virtual_override_vtable_implementation.md:56`）；`_gdcc_destructed` 并入 `_gdcc_flags` bit0；新增 `GDCC_FLAG_ONREADY_DONE` / `GDCC_FLAG_CTOR_COMPLETE` 常量；
-- `CGenHelper`：`renderDestructedFlagAccessExpr` 改为位操作拼写，新增 flags / 函数字段访问 helper 与根类解析 helper（根段路径，派生类经 `_super` 链）；
-- `entry.c.ftl`：`create_instance` 写 `_gdcc_flags = 0` 与函数字段（链事实为真取本类**根适配器**地址，否则 NULL——段首原型保证可见）；`class_notification` 在 constructor 调用之后置位 `CTOR_COMPLETE`；`recreate_instance`（`entry.c.ftl:472` 附近）写 `_gdcc_flags = CTOR_COMPLETE | ONREADY_DONE` 并按链事实重写函数字段（为真写本代根适配器，否则 NULL）；destructor 路径（`:485`、`:546-549`）全部改为位操作。
+- [x] `entry.h.ftl` 根 wrapper struct：字段顺序固定为 `_object`、`_vtable`（若有）、`uint8_t _gdcc_flags`、`void (*_gdcc_onready_apply)(<Root>*)`——不得插入 `_object` 与 `_vtable` 之间（冻结布局 `virtual_override_vtable_implementation.md:56`）；`_gdcc_destructed` 并入 `_gdcc_flags` bit0；新增 `GDCC_FLAG_ONREADY_DONE` / `GDCC_FLAG_CTOR_COMPLETE` 常量；
+- [x] `CGenHelper`：`renderDestructedFlagAccessExpr` 改为位操作拼写 `(<flags 访问> & 1)`（只读——写入不得经它），新增 `renderGdccFlagsAccessExpr` / `renderOnreadyApplyFieldAccessExpr`（默认 `self` 与显式 `wrapperPtrExpr` 两个重载），私有 `renderRootWrapperFieldAccessExpr` 参数化起始表达式并以显式 first-hop 布尔取代 `self` 长度启发式（vtable 输出零变化）；根类解析沿用既有 `resolveGdccRootClassName`；
+- [x] `entry.c.ftl`：`create_instance` 在 set_instance/binding/notification 之前写 `_gdcc_flags = 0` 与函数字段（链事实为真取本类**根适配器**地址，否则 NULL——段首原型保证可见）；`class_notification` 在 constructor 调用之后置位 `CTOR_COMPLETE`；`recreate_instance` 写 `_gdcc_flags = CTOR_COMPLETE | ONREADY_DONE` 并按链事实重写函数字段（为真写本代根适配器，否则 NULL），位于 binding/init_fields 之前；destructor 读 `& 1` 写 `|= 1`，free 只读不扰动其他位。
 
-**验收**：
-- golden 断言：字段顺序（`_vtable` 仍紧跟 `_object`）、位域声明、destructed 读写的位操作形态（置位 `|= 1`、测试 `& 1`）、三个初始化点、函数字段写适配器地址而非链函数地址；
-- 既有析构 guard 相关测试与 `script/run-gradle-targeted-tests.sh --tests CCodegenTest,CGenHelperTest` 通过（destructed 行为零变化）。
+**验收**（已验证项打勾）：
+- [x] golden 断言：字段顺序（`_vtable` 仍紧跟 `_object`）、位域声明、destructed 读写的位操作形态（置位 `|= 1`、测试 `& 1`）、三个初始化点、函数字段写适配器地址而非链函数地址——`CCodegenOnreadyTest.generateShouldEmitRootLifecycleLayoutAndWrites` 覆盖带/不带 `_vtable` 的根段布局、root-only 存储、create/recreate/notification 写入顺序、链事实中间类绑定自身适配器、无链类写 NULL；`CGenHelperTest.rootLifecycleFieldAccess*` 四例覆盖根类、三级继承、任意起始表达式、环/未知类 fail-fast；
+- [x] `CCodegenTest` 析构 guard 断言已改写为 flags 位操作形态（非放宽断言）：`script/run-gradle-targeted-tests.sh --tests CCodegenOnreadyTest,CGenHelperTest,CCodegenTest` 通过（262 tests, 0 failures），日志与 XML 存 `tmp/onready-step567/stage5-tests.log` 与 `tmp/onready-step567/stage5/`；
+- 已知边界（当时阶段边界，已由 Step 6-7 接通）：组合 impl 定义与引擎分发已由 Step 6 接通，非引擎入口按需初始化已由 Step 7 接通——apply 字段已有调用方。
 
 ### Step 6：组合 impl 与引擎分发接入
 
 **改动**：
-- `entry.c.ftl`：为链事实为真的类生成 `static void <C>__gdcc_onready_ready(<C>* self)`（体严格按 §3.2-6 三段式：置位 DONE → 无条件链函数 → 转发）；符号显式登记；
-- `get_virtual_with_data`：链事实为真时插入 `_ready` 特判分支（own-function 循环之前），返回 `(void*)&<C>__gdcc_onready_ready`；
-- `call_virtual_with_data`：插入匹配分支（own-function 分支之前），按 §3.2-6 的直接调用形态发射（含 `(void)p_args; (void)r_ret;` 与 `return` 收尾；转发目标为父类声明时先 `(Decl*)` 转换再渲染 fat self）；coroutine `_ready` 转发到同步引擎入口 shell。
+- [x] `entry.c.ftl`：为链事实为真的类生成 `static void <C>__gdcc_onready_ready(<C>* self)`（体严格按 §3.2-6：CTOR_COMPLETE 守卫内仅转发并 return；正常路径置位 DONE → 无条件链函数 → 转发），定义位于链函数/根适配器之后、`create_instance` 之前；转发经 `onreadyForwardUserReady` macro 从冻结 `ClassPlan.userReadyOwnerClassName`/`userReadyFunction` 渲染，owner 不同类时先 `(<Decl>*)self` 再 `renderOwnerFatSelfFromWrapperPtr`；符号登记沿用 Step 4（无重复登记）；
+- [x] `get_virtual_with_data`：链事实为真时插入 `_ready` 特判分支（own-function 循环之前），返回 `(void*)&<C>__gdcc_onready_ready`；
+- [x] `call_virtual_with_data`：插入匹配分支（own-function 分支之前），dispatcher 直接调用 `<C>__gdcc_onready_ready((<C>*)p_instance)` + `(void)p_args; (void)r_ret; return;`，不走 ptrcall。
 
-**验收**：
-- golden 断言：无 onready 链的类 get_virtual/call_virtual 分发段 diff 为空（prologue 由后代事实单独控制，不约束用户函数体）；组合 impl 体内顺序为「CTOR_COMPLETE 检查 → 置位 DONE → apply → 转发」；CTOR_COMPLETE 未置位时不置 DONE、不 apply、仅转发用户 `_ready` 并 return（无用户 `_ready` 时两个分支均省略转发调用）；flags 访问经根段 helper 渲染而非字面 `self->_gdcc_flags`；`get_virtual` 返回组合 impl 真实函数指针；`call_virtual` 分支 `return` 收尾且不走 ptrcall；转发目标为**声明类**符号（`_ready` 仅在父类定义的场景专项覆盖，含 `(Decl*)` 转换）；coroutine `_ready` 转发到 shell 而非 thunk；
-- `script/run-gradle-targeted-tests.sh --tests CVtableCodegenTest,CCodegenTest` 通过（virtual/vtable 回归）。
+**验收**（已验证项打勾）：
+- [x] golden 断言：组合 impl 体内顺序「CTOR_COMPLETE 检查 → 置位 DONE → apply → 转发」与守卫路径「仅转发 + return、不置 DONE、不 apply」（`generateShouldEmitCompositeReadyImplAndDispatch`：StepC 三级 owner cast、StepA own-most-derived 无 cast）；无用户 `_ready` 时两分支均省略转发（`generateShouldEmitCompositeReadyImplWithoutUserReady`）；`get_virtual`/`call_virtual` 特判先于 own-function 循环与父类 fallthrough，clean 类零 diff、继承 fallthrough 不变（`generateShouldEmitCompositeReadyVirtualDispatch`）；coroutine `_ready` 转发 shell `StepA__ready` 而非 thunk/body（`generateShouldForwardCoroutineReadyToShell`）；flags 访问全部经根段 helper 渲染；原型测试已改写为「原型 + 定义各一」并保留链函数/用户 `_ready` 分离断言；
+- [x] `script/run-gradle-targeted-tests.sh --tests CCodegenOnreadyTest,CVtableCodegenTest,CCodegenTest` 通过（160 tests, 0 failures），日志与 XML 存 `tmp/onready-step567/stage6-tests.log` 与 `tmp/onready-step567/stage6/`；`CVtableCodegenTest` pass-through NULL 断言收紧为 `_vtable = NULL`（同一意图，与 recreate 侧既有限定一致）；
+- 已知边界（当时阶段边界，已由 Step 7 接通）：非引擎入口（内部直调/vtable/super）当时尚无 onready 覆盖——入口按需初始化已由 Step 7 接通。
 
-### Step 7：非引擎入口 prologue 注入
+### Step 7：非引擎 `_ready` 入口按需初始化注入（历史：路线 E 验收记录）
+
+> 本节清单中「函数字段非空」等表述属旧机制验收；现行入口注入物化根 wrapper 并直调 `<R>__gdcc_onready_initialize_if_needed`（§3.2-5）。
 
 **改动**：
-- `CCodegen.generateFuncBody`：对「声明普通 `_ready` 且 `checkClassOrDescendantHasOnreadyInitializer` 为真」的函数，在 `goto entry` 前按 §3.2-7 伪代码注入 prologue（排除 `func.isCoroutine()`）；
-- `entry.c.ftl`：对「声明 coroutine `_ready` 且后代/本类链事实为真」的类，在 start thunk 同步前段、首次 `mco_resume` 之前注入同构 prologue（`entry.c.ftl:822-863` 段）。
+- [x] `CGenHelper.renderOnreadyEntryInitialization(LirClassDef, LirFunctionDef)`：判定与片段渲染统一收口——`_ready` 名 + 实例 + 非 hidden/非 lambda + `checkVirtualMethod` + 冻结 `classOrDescendantHas` 事实全部满足才发射；根 wrapper 物化经 `(<Root>*)$self.ptr`（offset-0 嵌入，与 vtable trampoline 同类受控转换），flags/apply 字段访问全部经根段 helper 渲染；sync 与 coroutine 共用同一片段，helper 内不做 coroutine 排除；
+- [x] `CCodegen.generateFuncBody`：`emitLambdaCapturePrologue` 之后、`goto entry` 之前追加片段，仅当 `!func.isCoroutine()`（与 `__coro_body` 共用路径的 coroutine 体函数排除）；
+- [x] `entry.c.ftl`：coroutine start thunk 函数体最前（状态分配之前，allocation failure 也先跑入口按需初始化）追加同一片段；body 与 shell 不重复注入。
 
-**验收**：
-- golden 断言：prologue 的 flag 检查顺序（DONE 测试 → CTOR_COMPLETE 测试 → 函数字段非空 → 置位 DONE → 调用）；普通函数注入位置在用户代码之前且 coroutine 体函数不注入；thunk 注入位置在首次 `mco_resume` 之前；声明类无链事实但后代有（`_ready` 被继承场景）也注入；
-- `script/run-gradle-targeted-tests.sh --tests CCodegenTest` 通过。
+**验收**（已验证项打勾）：
+- [x] golden 断言：入口按需初始化检查顺序（DONE 测试 → CTOR_COMPLETE 测试 → 函数字段非空 → 置位 DONE → 调用）与 `goto entry` 前注入位置（`generateShouldInitializeOnreadyAtSyncReadyEntry`）；声明类无链事实但后代有仍注入（`generateShouldInitializeOnreadyAtInheritedReadyEntry`）；抽象类注入（`generateShouldInitializeOnreadyAtAbstractBaseReadyEntry`）；clean/sibling、static/hidden/wrong-signature/wrong-name 全部不注入（`generateShouldSkipOnreadyEntryInitializationWhenIneligible` + `CGenHelperTest.renderOnreadyEntryInitializationShould*` 含 lambda）；coroutine thunk 唯一注入且先于 `mco_resume`、body 与 shell 无重复（`generateShouldInitializeOnreadyAtCoroutineStartThunkEntry`）；组合 impl 按最派生 owner 转发（`generateShouldForwardCompositeReadyToMostDerivedUserReady`：StepC 自声明 `_ready` 时转发 `StepC__ready` 无 cast，StepB 仍转发 `(StepA*)self` 强转）；
+- [x] `script/run-gradle-targeted-tests.sh --tests CCodegenOnreadyTest,CGenHelperTest,AwaitInsnGenTest,CCoroutineStateClassCodegenTest,CCodegenTest` 通过（297 tests, 0 failures）；`CProjectBuilderIntegrationTest.compileDerivedFirstOnreadyChainModuleWithRealZig` 通过（derived-first 原生编译），日志/XML 存 `tmp/onready-step567/stage7*`；
+- [x] Godot runtime 回归（Step 7 证据，非 Step 9 锚点收口）：`FrontendLoweringToCProjectBuilderIntegrationTest` 两个场景方法——sync（构造期默认值 / 手调入口按需初始化首调应用与 DONE 去重 / 引擎 READY 重放 / request_ready 重新武装 / `_init` 内直调与 `notification(Node.NOTIFICATION_READY)` 双路径 fail-closed / 无用户 `_ready` 类 / **super 场景**：`OnreadySuperChild` 覆写 `_ready` 且 `super._ready()`——vtable 与 super 双入口共享 DONE，链应用一次后 child body `+=10`，引擎重放与 request_ready 均正确 reset 7→17）与 coroutine（thunk入口按需初始化首调、组合 impl→shell→thunk 引擎路径、signal 同步恢复）——均以 fresh runtime project 运行，combined output 存 `tmp/onready-step567/runtime-onready-sync.log` 与 `runtime-onready-coro.log`（stop signal + 场景成功标记、无错误；测试内日志落 `tempDir/godot.log`）；`NOTIFICATION_READY` 采用前端支持的 `Node.NOTIFICATION_READY` 限定常量语法；
+- 已知边界：Step 9 的完整锚点矩阵（super 调用、export override、热重载场景等）未执行，保持未验证。
 
 ### Step 8：前端补充诊断与保留前缀
 
@@ -347,9 +360,9 @@
 - `onready_super_no_replay.gd`：`super._ready()` 不重放父类 onready；
 - `onready_replay_with_request_ready.gd`：移除再入树不重放；`request_ready()` 后再入树重放；重放前字段已持 RefCounted/容器值时旧值正确释放（以可达性/计数观察，不断言内部实现）；
 - `onready_internal_first_call.gd`：构造完成后、入树前的非引擎路径（如方法内 `self._ready()`）首次调用按实例实际类型执行一次 onready，引擎 ready 分发时再经组合 impl overwrite 修正（对齐 Godot `callp` 双次求值形态）；
-- `onready_inherited_ready_derived_onready.gd`：用户 `_ready` 仅在父类声明、子类新增 onready——内部调用经 wrapper 函数字段应用**子类**完整链（回归 §3.2-7 的实例类型分发）；
+- `onready_inherited_ready_derived_onready.gd`：用户 `_ready` 仅在父类声明、子类新增 onready——内部调用经类级查询表应用**子类**完整链（回归 §3.2-7 的实例类型分发）；
 - `onready_ctor_window_fail_closed.gd`：构造期 fail-closed 三子场景——(a) 基类 `_init` 内虚调用 `_ready`、(b) `_init` 内显式 `notification(NOTIFICATION_READY)`：onready 跳过、DONE 不置位、之后真正入树时正常应用；(c) `_init` 内 `add_child` 进已 ready 的父节点：onready 跳过且**构造完成后不自动补执行**（字段保持默认值），`request_ready()` 后再次入树才应用 initializer 值。锚点的用户 `_ready`/`_init` 函数体只允许读已完成 first-write 的祖先槽，不得读派生 onready 字段（该路径上派生槽未初始化，「不崩溃」承诺不覆盖任意用户函数体）；
-- coroutine 锚点：coroutine `_ready` 经内部 direct 调用与 super 调用时 onready 在首次 await 前完成（thunk prologue 覆盖）；
+- coroutine 锚点：coroutine `_ready` 经内部 direct 调用与 super 调用时 onready 在首次 await 前完成（thunk 入口按需初始化覆盖）；
 - `onready_export_override.gd`（如 export 支持面允许）：ready 前外部写入的值在 ready 后被 initializer 覆盖；
 - 热重载场景：`GodotEditorHotReloadIntegrationTest` 不读 test_suite `.gd`，锚点必须是在该类内新增的 `SourceFileSpec` scenario（约 `:71` 起），分别覆盖：仅 recreate 不做调用（保持默认值 + 恢复值）；recreate 后手动 `_ready()`（DONE 已置位，不补执行、不覆盖恢复值）；recreate 后 `request_ready()`（组合 impl 按新代码重放）；如基础设施允许，混合 super × request_ready/recreate 场景验收「GDCC 链不重放」的差异行为（差异合同见 §7.1）。
 
@@ -369,9 +382,9 @@
   - `:59`「trampoline 是唯一受控下行转换例外」：改写为「trampoline 与 onready 根适配器（§3.2-5）两处受控例外」；
   - `:84`「本类按名匹配之后才父类转发」与 `:85-86` 的 fall-through 描述：改写为含 `_ready` 特判例外——链事实为真时 `_ready` 查询在 own-function 循环之前由组合 impl 分支接管并 `return`，不再转发；
   - `:87`「userdata 地址即方法身份（impl 地址或 per-method default-ud），ClassDB 与 virtual 共享同一协议」：只需**澄清**而非例外——onready 链类的 `_ready` 返回合成组合 impl 地址，仍属 impl 地址类（本方案不新增 userdata 种类）；
-  - `:88` 双通道一致性：改写为——onready 链类上两个通道都含「onready 链 + 用户 `_ready`」语义（引擎通道经组合 impl、内部通道经 prologue 首调补执行），差异仅在重放：引擎通道每次分发重放，内部通道由 DONE 守卫只执行一次；
-- `explicit_c_inheritance_layout_contract.md`：`:59` 的 GDCC→GDCC 可证明上行限制补充指向上述两处受控例外；`:70`「两个根段共享字段」改写为三个（`_vtable`、`_gdcc_flags`、`_gdcc_onready_apply`）；改写 `:72`、`:104`、`:174-176` 的 `_gdcc_destructed` 字段声明/读写描述为 `_gdcc_flags` 位域合同；`:115` 的 `_gdcc_destructed = false` 改写为「`_gdcc_flags = GDCC_FLAG_CTOR_COMPLETE | GDCC_FLAG_ONREADY_DONE`，并按链事实重写 `_gdcc_onready_apply`（为真写本代根适配器地址，否则 NULL）」；`:117` **保留**「recreate 专用、base-first 递归父段、不调 `_init`、constructor 不复用」等现行从句，只把「本类非 static 属性一律 init apply」改为「非 onready 属性维持真实 initializer apply，onready-with-init 属性只走默认值 apply」；
-- `hot_reload_implementation.md`：`:173` 改两处——flags 赋值改为 `_gdcc_flags = GDCC_FLAG_CTOR_COMPLETE | GDCC_FLAG_ONREADY_DONE` 并按链事实重写函数字段（为真写本代根适配器、否则 NULL），括号内「base-first 重放非 static 属性 initializer」从句改写为「base-first：非 onready 属性重放真实 initializer，onready-with-init 属性只走默认值 apply」；`:182`、`:188` 只承担 destructed 位域迁移，且必须区分两个初始化点：create 写 `_gdcc_flags = 0`，**不得**套用 recreate 的 `CTOR_COMPLETE | ONREADY_DONE`；`:372` **保留**「随后引擎 setter 覆盖保存值」与「非 onready initializer 不得依赖 exactly-once 副作用」从句，只把 onready-with-init 的分流写入（真实 initializer 留到 READY 实际进入组合 impl 的路径；混合 super 路径不重放，见 `onready_lowering_implementation.md` §7.1——注意引用本文档章节号，不得写成无文档限定的「§7.1」）；
+  - `:88` 双通道一致性：改写为——onready 链类上两个通道都含「onready 链 + 用户 `_ready`」语义（引擎通道经组合 impl、内部通道经 `_ready` 入口按需初始化首调补执行），差异仅在重放：引擎通道每次分发重放，内部通道由 DONE 守卫只执行一次；
+- `explicit_c_inheritance_layout_contract.md`：`:59` 的 GDCC→GDCC 可证明上行限制补充指向受控例外；`:70` 根段共享字段为 `_vtable`（若有）与 `_gdcc_flags` 两个——**不引入任何实例函数字段**；位域条款写 bit0 析构守卫 + bit1-3 onready 状态（`DONE`/`CTOR_COMPLETE`/`HAS_ONREADY`）；create 写 HAS（链事实）或 `0`，recreate 写 `GDCC_FLAG_CTOR_COMPLETE | GDCC_FLAG_ONREADY_DONE`（+HAS，不做类名查询、不执行初始化器）；`:117` **保留**「recreate 专用、base-first 递归父段、不调 `_init`、constructor 不复用」等现行从句，只把「本类非 static 属性一律 init apply」改为「非 onready 属性维持真实 initializer apply，onready-with-init 属性只走默认值 apply」；
+- `hot_reload_implementation.md`：recreate 的 flags 写入为 `GDCC_FLAG_CTOR_COMPLETE | GDCC_FLAG_ONREADY_DONE`（+链事实时 `GDCC_FLAG_HAS_ONREADY`），括号内「base-first 重放非 static 属性 initializer」从句为「base-first：非 onready 属性重放真实 initializer，onready-with-init 属性只走默认值 apply」；位域段落承担 destructed 位域迁移，且必须区分两个初始化点：create 写 HAS（链事实）或 `0`，**不得**套用 recreate 的 `CTOR_COMPLETE | ONREADY_DONE`；查询表条款注明表只存本代 getter/适配器地址、不持久化跨代查询结果，key 经既有 generation registry 销毁重建；`:372` **保留**「随后引擎 setter 覆盖保存值」与「非 onready initializer 不得依赖 exactly-once 副作用」从句，只把 onready-with-init 的分流写入（真实 initializer 留到 READY 实际进入组合 impl 的路径；混合 super 路径不重放，见本文 §7.1）；
 - `cbodybuilder_implementation.md:57-61`、`:220`：「单一 constructor apply helper」表述改写为「构造期 first-write apply 与 ready 时 overwrite apply 双入口」；
 - `gdcc_ownership_lifecycle_spec.md:102-106`：constructor apply 的 first-write 定义补充 ready apply 的 overwrite 语义边界；
 - `gdcc_c_backend.md:690`：「`initFunc == null` 才允许 backend 合成默认 helper」改写为含 onready 默认值 helper 的例外；
@@ -386,12 +399,12 @@
 - [ ] Godot 顺序对照表（§3.3）中每一行均有对应测试或 golden 断言；
 - [ ] `script/run-gradle-targeted-tests.sh --tests CCodegenTest,CGenHelperTest,CVtableCodegenTest,CBodyBuilderPhaseCTest,CCodegenEngineMethodUsageSessionTest,FrontendAnnotationUsageAnalyzerTest,FrontendClassSkeletonAnnotationTest,GdScriptUnitTestCompileRunnerTest,GdScriptEngineVirtualOverrideRuntimeTest` 全量通过（engine 项不得 skip 充过）；
 - [ ] 无用户 `_ready` / 用户 `_ready` 仅在父类 / coroutine `_ready`（引擎与内部双路径）/ 三级继承链（A 有、B 无、C 有）/ 无 initializer onready / derived-first 模块输入 六种形态各有至少一个断言；
-- [ ] 交叉场景：构造期 fail-closed 三子场景（基类 `_init` 虚调用 `_ready` / `_init` 内显式 READY 通知 / `_init` 内 add_child 进已 ready 父节点）、继承用户 `_ready` × 派生独有 onready（wrapper 函数字段分发到派生链）、coroutine × 非引擎入口（thunk prologue）、recreate × 手调（不补执行）× request_ready（重放）、混合 super × request_ready/recreate（不重放，差异验收）；
+- [ ] 交叉场景：构造期 fail-closed 三子场景（基类 `_init` 虚调用 `_ready` / `_init` 内显式 READY 通知 / `_init` 内 add_child 进已 ready 父节点）、继承用户 `_ready` × 派生独有 onready（类级查询表按实例实际类型分发到派生链）、coroutine × 非引擎入口（thunk入口按需初始化）、recreate × 手调（不补执行）× request_ready（重放）、混合 super × request_ready/recreate（不重放，差异验收）；
 - [ ] re-ready 双形态：移除再入树不重放、`request_ready()` 重放且旧值（含 RefCounted/容器）正确释放；
-- [ ] 双入口一致性：引擎路径（组合 impl）与非引擎首调路径（prologue）各自只执行一次 onready，super 调用不触发第三次；
+- [ ] 双入口一致性：引擎路径（组合 impl）与非引擎首调路径（入口按需初始化）各自只执行一次 onready，super 调用不触发第三次；
 - [ ] frontend LIR → XML → parse → C codegen 完整链路回归：onready 分流在序列化 roundtrip 后保持不变（annotation map 保真 + 分流判定来自计划快照）；
 - [x] 双 codegen 会话回归：同一 `LirModule` 两次生成，onready 分流与默认 helper 合成结果一致（Step 1 已验证计划事实与既有默认 helper 幂等；Step 2-3 已验证 C 分流与 `_onready_field_default_` helper 跨会话恰一份且 apply body 逐字节一致）；
-- [ ] 无 onready 链的类：不生成链函数/适配器/组合 impl，get_virtual/call_virtual 分发段 golden diff 为空（prologue 注入由本类或后代链事实单独控制，不纳入本条）；flags 位域迁移属全局统一变化，单独断言位运算形态与 destructed 语义不变；
+- [ ] 无 onready 链的类：不生成链函数/适配器/组合 impl，get_virtual/call_virtual 分发段 golden diff 为空（入口按需初始化注入由本类或后代链事实单独控制，不纳入本条）；flags 位域迁移属全局统一变化，单独断言位运算形态与 destructed 语义不变；
 - [ ] 热重载 recreate 三 scenario（仅 recreate / recreate+手调 / recreate+request_ready）通过（`GodotEditorHotReloadIntegrationTest` 类内锚点）。
 
 ---
@@ -400,21 +413,21 @@
 
 | 风险 | 等级 | 控制 |
 | --- | --- | --- |
-| 构造期（`_init` 链完成前）`_ready` 被触发，对未 first-write 的派生字段槽做 overwrite → 销毁垃圾值 UB + 后续构造 first-write 泄漏。双入口：内部虚调用走 prologue；`_init` 内显式 `notification(NOTIFICATION_READY)` / add_child 进已 ready 的父节点走组合 impl（引擎 READY 分发不检查构造状态） | 高 | prologue 与组合 impl **双入口**均受 `CTOR_COMPLETE` 守卫（组合 impl 守卫失败时仅转发用户 `_ready`，不置 DONE、不 apply）；`CTOR_COMPLETE` 由最派生类 notification 在 constructor 链结束后置位；`onready_ctor_window_fail_closed.gd` 三子场景锚点（含 add_child 路径的「不自动补执行」断言）；守卫条件写入 Step 6/7 golden |
-| 函数字段 ABI 不兼容：链函数签名 `void (<C>*)` 与字段 `void (*)(<Root>*)` 在非根类上不兼容，裸强转消除诊断但保留间接调用 UB | 高 | 每类根签名适配器 `<C>__gdcc_onready_apply_root`（受控 offset-0 转换，与 trampoline 同一豁免）；禁止裸强转写入验收；适配器进段首原型与符号登记 |
-| 非引擎入口按声明类分发导致派生类链漏执行 | 高 | wrapper 根段 `_gdcc_onready_apply` 函数字段按实例实际类型分发（不改 vtable）；prologue 注入条件为本类或后代链事实；`onready_inherited_ready_derived_onready.gd` 锚点；Step 7 golden 覆盖「声明类无链事实但后代有」 |
-| coroutine `_ready` 内部路径（direct/vtable/super）绕过同步 shell 导致 prologue 漏执行 | 高 | prologue 注入 start thunk 首次 `mco_resume` 之前（全内部路径共同入口）；组合 impl 仍转发 shell 保 `release_object` 语义；coroutine 双路径锚点 |
+| 构造期（`_init` 链完成前）`_ready` 被触发，对未 first-write 的派生字段槽做 overwrite → 销毁垃圾值 UB + 后续构造 first-write 泄漏。双入口：内部虚调用走入口按需初始化；`_init` 内显式 `notification(NOTIFICATION_READY)` / add_child 进已 ready 的父节点走组合 impl（引擎 READY 分发不检查构造状态） | 高 | `_ready` 入口按需初始化与组合 impl **双入口**均受 `CTOR_COMPLETE` 守卫（组合 impl 守卫失败时仅转发用户 `_ready`，不置 DONE、不 apply）；`CTOR_COMPLETE` 由最派生类 notification 在 constructor 链结束后置位；`onready_ctor_window_fail_closed.gd` 三子场景锚点（含 add_child 路径的「不自动补执行」断言）；守卫条件写入 Step 6/7 golden |
+| 查询表 apply 列签名不匹配被裸强转掩盖（间接调用 UB） | 高 | 表行只填根签名适配器 `<C>__gdcc_onready_apply_root`（entry 的 `apply` 字段类型即 `(<R>*)`，typed 指针零强转）；「禁止裸函数指针强转」合同不变；golden 断言 typed 表形态 |
+| 非引擎入口按声明类分发导致派生类链漏执行 | 高 | 类级查询表按 `object_get_class_name` 精确类名匹配最派生行（不改 vtable，不依赖 vtable 唯一性）；入口按需初始化注入条件为本类或后代链事实；`onready_inherited_ready_derived_onready.gd` 锚点；Step 7 golden 覆盖「声明类无链事实但后代有」 |
+| coroutine `_ready` 内部路径（direct/vtable/super）绕过同步 shell 导致入口按需初始化漏执行 | 高 | `_ready` 入口按需初始化注入 start thunk 首次 `mco_resume` 之前（全内部路径共同入口）；组合 impl 仍转发 shell 保 `release_object` 语义；coroutine 双路径锚点 |
 | 组合 impl 转发目标解析错误（声明类 vs 最派生类）、漏转发或漏 `(Decl*)` 转换 | 高 | Step 1 resolve helper 返回声明 owner 并专项单测；Step 6 golden 覆盖「`_ready` 仅在父类」与「无用户 `_ready`」场景 |
 | 组合 impl 误走 ptrcall（userdata 被当 fat 函数指针）或 flags 字面访问在非根类编译失败 | 高 | §3.2-6 明确 dispatcher 直接调用形态（含 `(void)p_args/r_ret`）与根段 helper 渲染；Step 6 golden 断言 |
-| 组合 impl 置位/apply/转发顺序错误（重入递归或 prologue 失效） | 中 | §3.2-6 固定形态（CTOR_COMPLETE 守卫 → 置位 DONE → apply → 转发）写入验收；golden 断言指令顺序 |
+| 组合 impl 置位/apply/转发顺序错误（重入递归或入口按需初始化失效） | 中 | §3.2-6 固定形态（CTOR_COMPLETE 守卫 → 置位 DONE → apply → 转发）写入验收；golden 断言指令顺序 |
 | ready-time overwrite 与构造期 first-write 混用导致泄漏/double-free | 高 | ready 路径统一 `moveOwnedCallIntoSlot` + §3.2-3 三条不变量；三类形态 golden 断言；`CTOR_COMPLETE` 保证执行时字段已初始化 |
 | 「源码 initializer 是否存在」事实被默认值合成覆盖（含同一模块被第二个 codegen 会话 re-prepare 的污染路径） | 高 | Step 1 计划快照先于 `generateDefaultGetterSetterInitialization` 且位于 `CGenHelper` 构造之后；回填当场留下持久 provenance 标记；模板渲染期禁止反读 `initFunc != null`；双 codegen 会话回归 |
 | 跨类 static 引用（链函数/适配器被组合 impl / create_instance 引用）在 derived-first 模块输入下「先用后声明」编不过 | 高 | §3.2-4 段首统一 `static` 原型合同（含适配器与组合 impl）+ derived-first 编译 smoke |
 | flags 位域改动破坏 destructed 守卫（原整字节赋值/真值判断吃掉新增位）；字段插入 `_object` 与 `_vtable` 之间破坏冻结布局 | 中 | `|= 1` / `& 1` 位操作改造与字段顺序（`_vtable` 之后）写入 Step 5 验收；访问收口 helper；既有析构测试回归 |
-| prologue 与组合 impl 双入口重复执行 | 中 | DONE 置位先于 apply；§5 双入口一致性断言（引擎分发 + super 调用总计只执行一次） |
+| `_ready` 入口按需初始化与组合 impl 双入口重复执行 | 中 | DONE 置位先于 apply；§5 双入口一致性断言（引擎分发 + super 调用总计只执行一次） |
 | DONE 语义被误读为「成功完成」（initializer 失败后的重试预期） | 低 | §3.2-5 明确 DONE = 已尝试；失败不清位不重试；DONE 不阻止组合 impl 重放 apply |
-| recreate 后 flags 状态错误（手调覆盖已恢复 storage 值 / request_ready 不重放新代码 / 旧代适配器地址悬空） | 中 | recreate 置 `CTOR_COMPLETE|ONREADY_DONE` 且按链事实重写函数字段（为真写本代适配器、否则 NULL）；热重载三 scenario 锚点 |
-| 新符号与用户成员/既有 synthetic 撞名 | 中 | 全部新符号显式 `registerFileScopeSymbol`；组合 impl 与适配器挂 `_gdcc_` 保留前缀；保留前缀 `_onready_field_default_` 落点 `FrontendSyntheticPropertyHelperSupport` |
+| recreate 后 flags 状态错误（手调覆盖已恢复 storage 值 / request_ready 不重放新代码 / 旧代查询结果残留） | 中 | recreate 置 `CTOR_COMPLETE|ONREADY_DONE(+HAS)`，不做类名查询、不执行初始化器；表只存本代静态地址不跨代逃逸；热重载锚点 |
+| 新符号与用户成员/既有 synthetic 撞名 | 中 | 全部新符号显式 `registerFileScopeSymbol`（含 getter/typedef/table/helper 四族）；组合 impl 与适配器挂 `_gdcc_` 保留前缀；保留前缀 `_onready_field_default_` 落点 `FrontendSyntheticPropertyHelperSupport` |
 | 链解析依赖 `ClassRegistry` 的 GDCC 类判定，path-based / 跨模块父类形态误判或环状输入死循环 | 中 | helper 显式终止于 engine/未知父类并带 visited set（含根类解析 helper）；单元测试覆盖四种链形态与环输入 |
 
 ---
@@ -423,9 +436,9 @@
 
 ### 7.1 与 Godot 的已知行为差异（本方案接受并记录）
 
-- **非引擎分发路径的 `_ready` 重放不重放 onready**：gdcc 内部 vtable/`call_method`、纯 GDCC 无 ScriptInstance 对象上的外部 `Object.call("_ready")` / `Callable` 调用，**首次**经 prologue 按实例实际类型执行一次 onready（DONE 守卫），之后重复调用不再重放；Godot 经 `GDScriptInstance::callp` 的同名调用每次都重放。`request_ready()` 的重放承诺**仅适用于 READY 实际进入组合 impl 的路径**（见下行混合继承的例外）。（对象上挂有 GDScript 时，`Object.call` 会经 `GDScriptInstance::callp` 重放 GDScript 自己的 `@implicit_ready`，GDCC 侧仍按上述规则。）
+- **非引擎分发路径的 `_ready` 重放不重放 onready**：gdcc 内部 vtable/`call_method`、纯 GDCC 无 ScriptInstance 对象上的外部 `Object.call("_ready")` / `Callable` 调用，**首次**经 `_ready` 入口按需初始化，按实例实际类型执行一次 onready（DONE 守卫），之后重复调用不再重放；Godot 经 `GDScriptInstance::callp` 的同名调用每次都重放。`request_ready()` 的重放承诺**仅适用于 READY 实际进入组合 impl 的路径**（见下行混合继承的例外）。（对象上挂有 GDScript 时，`Object.call` 会经 `GDScriptInstance::callp` 重放 GDScript 自己的 `@implicit_ready`，GDCC 侧仍按上述规则。）
 - **构造期内的 `_ready` 触发不执行 onready**（分三条路径记录）：(a) 手动/虚调用 `_ready()`、(b) `_init` 内显式 `notification(NOTIFICATION_READY)`：双入口 fail-closed 跳过，DONE 不置位，这两条路径不清引擎 `ready_first`，之后真正入树时引擎仍发 READY 并正常应用；(c) `_init` 内 `add_child` 进已 ready 的父节点：经 `_propagate_ready` 同步发 READY 且先清 `ready_first`，是唯一一次自然 READY——守卫跳过 apply 后**构造完成不自动补执行**，onready 字段保持构造期默认值，直到 `request_ready()` 后再次入树才应用 initializer 值。Godot 的两阶段构造（全部字段默认值先于任何 `_init`）使这些路径都能安全执行 implicit ready；gdcc constructor 的交错结构使守卫成为必需。另注：守卫失败路径上转发的用户 `_ready` 只允许读已完成 first-write 的祖先槽，读派生字段仍是未初始化访问（这是构造期触发 `_ready` 的固有风险，与 onready 无关）。
-- **混合 GDCC/GDScript 继承**：GDScript 子类覆写 `_ready` 且调用 `super._ready()` 时，super 经 MethodBind 进入 GDCC 侧 `_ready` 入口，prologue 在 super 调用点**晚执行**实例的完整 GDCC 链（经 wrapper 函数字段分发；执行时点晚于脚本子类 onready 与脚本 `_ready` 体开头，顺序与 Godot 纯脚本链不一致，但优于不执行）。**该路径没有重放保证**：脚本 `_ready` 经 `callp` 成功处理后引擎短路、不再 fallback 到 extension virtual，组合 impl 不执行——重复 READY（`request_ready()`）及 recreate 后的 READY 经 super 入口时 DONE 已置位，GDCC 链不会重放（recreate 后亦不补执行新 initializer）。GDScript 子类不调 `super._ready()` 时 GDCC 链上的 onready **不执行**；GDScript 子类只有 onready、无 `_ready` 时，执行顺序为「派生脚本 onready 先于 GDCC 基类 onready」，与 Godot 纯脚本链相反。完整对齐需要把 ClassDB 按名入口与 ScriptInstance ready 生命周期纳入统一设计，属架构级变更，本方案保留为待确认后续项（见 §7.3）。
+- **混合 GDCC/GDScript 继承**：GDScript 子类覆写 `_ready` 且调用 `super._ready()` 时，super 经 MethodBind 进入 GDCC 侧 `_ready` 入口，入口按需初始化在 super 调用点**晚执行**实例的完整 GDCC 链（经类级查询表精确类名匹配分发；执行时点晚于脚本子类 onready 与脚本 `_ready` 体开头，顺序与 Godot 纯脚本链不一致，但优于不执行）。**该路径没有重放保证**：脚本 `_ready` 经 `callp` 成功处理后引擎短路、不再 fallback 到 extension virtual，组合 impl 不执行——重复 READY（`request_ready()`）及 recreate 后的 READY 经 super 入口时 DONE 已置位，GDCC 链不会重放（recreate 后亦不补执行新 initializer）。GDScript 子类不调 `super._ready()` 时 GDCC 链上的 onready **不执行**；GDScript 子类只有 onready、无 `_ready` 时，执行顺序为「派生脚本 onready 先于 GDCC 基类 onready」，与 Godot 纯脚本链相反。完整对齐需要把 ClassDB 按名入口与 ScriptInstance ready 生命周期纳入统一设计，属架构级变更，本方案保留为待确认后续项（见 §7.3）。
 - **热重载后首调**：recreate 置位 DONE（继承前代「ready 已发生」事实），reload 后手动 `_ready()` 不再补执行 onready，已恢复的 storage 值不被覆盖；纯 GDCC 对象的 `request_ready()` 仍经组合 impl 按新代码重放（混合继承 super 路径除外，见上条）。
 - `@onready` + `@export`：行为自然对齐 Godot（export 先写、ready 覆盖），但 Godot 的 `ONREADY_WITH_EXPORT`（默认 ERROR）诊断本方案不实现，不得据此声称诊断层面兼容。
 
