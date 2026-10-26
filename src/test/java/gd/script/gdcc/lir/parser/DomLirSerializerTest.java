@@ -1,12 +1,48 @@
 package gd.script.gdcc.lir.parser;
 
+import java.io.StringReader;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Test;
+
+import gd.script.gdcc.backend.CodegenContext;
+import gd.script.gdcc.backend.ProjectInfo;
+import gd.script.gdcc.backend.c.gen.CGenHelper;
+import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.enums.LifecycleProvenance;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
-import gd.script.gdcc.lir.*;
-import gd.script.gdcc.lir.insn.*;
+import gd.script.gdcc.lir.LirBasicBlock;
+import gd.script.gdcc.lir.LirCaptureDef;
+import gd.script.gdcc.lir.LirClassDef;
+import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.lir.LirInstruction;
+import gd.script.gdcc.lir.LirLambdaMeta;
+import gd.script.gdcc.lir.LirModule;
+import gd.script.gdcc.lir.LirParameterDef;
+import gd.script.gdcc.lir.LirPropertyDef;
+import gd.script.gdcc.lir.insn.AwaitInsn;
+import gd.script.gdcc.lir.insn.CallGlobalInsn;
+import gd.script.gdcc.lir.insn.DestructInsn;
+import gd.script.gdcc.lir.insn.LineNumberInsn;
+import gd.script.gdcc.lir.insn.LiteralStringInsn;
+import gd.script.gdcc.lir.insn.PackVariantInsn;
+import gd.script.gdcc.lir.insn.ReturnInsn;
+import gd.script.gdcc.lir.insn.TryReleaseObjectInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdccForArrayIterType;
 import gd.script.gdcc.type.GdccForDictionaryIterType;
 import gd.script.gdcc.type.GdccForFloatIterType;
@@ -14,15 +50,6 @@ import gd.script.gdcc.type.GdccForPackedArrayIterType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdccForStringIterType;
 import gd.script.gdcc.type.GdccForVariantIterType;
-import gd.script.gdcc.type.GdObjectType;
-import gd.script.gdcc.type.GdVariantType;
-import org.junit.jupiter.api.Test;
-
-import java.io.StringReader;
-import java.util.List;
-import java.util.Map;
-
-import static org.junit.jupiter.api.Assertions.*;
 
 public class DomLirSerializerTest {
     /// `is_tool` and class/property annotations survive an XML roundtrip; in particular the parsed
@@ -452,5 +479,71 @@ public class DomLirSerializerTest {
                 () -> assertInstanceOf(AwaitInsn.class,
                         parsedFn.getBasicBlock("entry").getNonTerminatorInstructions().getFirst())
         );
+    }
+
+    @Test
+    public void serialize_module_onreadyPropertyRoundTripKeepsPlanClassification() throws Exception {
+        // Frontend-shaped input: an onready property with a source initializer, a plain
+        // property with one, and an onready property without one.
+        var readyProp = new LirPropertyDef(
+                "ready_count", new GdIntType(), false, "_field_init_ready_count",
+                null, null, Map.of("onready", ""));
+        var plainProp = new LirPropertyDef(
+                "plain_count", new GdIntType(), false, "_field_init_plain_count",
+                null, null, Map.of());
+        var noInitProp = new LirPropertyDef(
+                "pending", new GdIntType(), false, null,
+                null, null, Map.of("onready", ""));
+        var cls = new LirClassDef(
+                "Hero", "Node", false, false, Map.of(), List.of(),
+                List.of(readyProp, plainProp, noInitProp), List.of());
+        var module = new LirModule("m", List.of(cls));
+
+        var xml = new DomLirSerializer().serializeToString(module);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var parsed = new DomLirParser(registry).parse(new StringReader(xml));
+        var parsedClass = parsed.getClassDefs().getFirst();
+        var parsedReady = parsedClass.getProperties().get(0);
+        var parsedPlain = parsedClass.getProperties().get(1);
+        var parsedNoInit = parsedClass.getProperties().get(2);
+        assertEquals(Map.of("onready", ""), parsedReady.getAnnotations());
+        assertEquals("_field_init_ready_count", parsedReady.getInitFunc());
+        assertEquals("_field_init_plain_count", parsedPlain.getInitFunc());
+        assertNull(parsedNoInit.getInitFunc());
+        assertFalse(parsedReady.isInitializerSynthesizedByBackend());
+
+        // The backend session plan built on the parsed LIR classifies the properties
+        // exactly as the pre-serialization semantics would.
+        registry.addGdccClass(parsedClass);
+        var projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var helper = new CGenHelper(
+                new CodegenContext(projectInfo, registry), parsed.getClassDefs());
+        var classPlan = helper.onreadyPlan().classPlan(parsedClass.getName());
+        assertEquals(List.of(parsedReady), classPlan.onreadyInitializers());
+        assertTrue(classPlan.chainHasOnreadyInitializer());
+        assertTrue(helper.checkOnreadyProperty(parsedReady));
+        assertFalse(helper.checkOnreadyProperty(parsedPlain));
+        assertTrue(helper.checkOnreadyProperty(parsedNoInit));
+    }
+
+    @Test
+    public void serialize_module_backendDefaultInitMarkerDoesNotSurviveRoundTrip() throws Exception {
+        // The backend-default provenance marker is transient state: the init function name
+        // is ordinary serialized data, but the marker itself is not part of the LIR schema.
+        var prop = new LirPropertyDef(
+                "hp", new GdIntType(), false, null,
+                null, null, Map.of("onready", ""));
+        prop.setBackendSynthesizedInitFunc("_field_init_hp");
+        var cls = new LirClassDef(
+                "Hero", "Node", false, false, Map.of(), List.of(), List.of(prop), List.of());
+        var module = new LirModule("m", List.of(cls));
+
+        var xml = new DomLirSerializer().serializeToString(module);
+        var parsed = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()))
+                .parse(new StringReader(xml));
+        var parsedProp = parsed.getClassDefs().getFirst().getProperties().getFirst();
+        assertEquals("_field_init_hp", parsedProp.getInitFunc());
+        assertFalse(parsedProp.isInitializerSynthesizedByBackend());
     }
 }

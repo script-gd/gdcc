@@ -3130,7 +3130,7 @@ public class CCodegenTest {
     /// free_instance destroys fields after exit notifications on both normal deletion and
     /// reload (which does not send PREDELETE). PREDELETE must leave fields intact for
     /// Node's subsequent `_exit_tree` callback. This pins the guard
-    /// layout: the root-only `_gdcc_destructed` flag, the guarded `<C>_class_destructor`
+    /// layout: the root-only `_gdcc_flags` byte (destructed = bit0), the guarded `<C>_class_destructor`
     /// entry, and the unguarded `<C>_class_destruct_fields` chain — with destroyable fields
     /// on BOTH base and derived classes so a flag-set truncation of the parent segment fails
     /// here. Object field teardown must resolve targets through ObjectDB
@@ -3160,29 +3160,30 @@ public class CCodegenTest {
         var cCode = generatedFileText(files, "entry.c");
         var hCode = generatedFileText(files, "entry.h");
 
-        // The flag lives only in the ROOT wrapper segment; the derived struct embeds the
+        // The flag byte lives only in the ROOT wrapper segment; the derived struct embeds the
         // parent by value and must not repeat it.
         var parentStructBody = resolveFunctionBodyByPrefix(hCode, "struct GDGuardParent {");
         var childStructBody = resolveFunctionBodyByPrefix(hCode, "struct GDGuardChild {");
-        assertContainsAll(parentStructBody, "GDExtensionBool _gdcc_destructed;");
-        assertFalse(childStructBody.contains("_gdcc_destructed"), childStructBody);
+        assertContainsAll(parentStructBody, "uint8_t _gdcc_flags;");
+        assertFalse(childStructBody.contains("_gdcc_flags"), childStructBody);
+        assertFalse(childStructBody.contains("_gdcc_onready_apply"), childStructBody);
 
-        // Guarded entry: the only place the flag is tested and set; reaches the root flag
-        // through the wrapper `_super` chain for the derived class.
+        // Guarded entry: the only place the destructed bit is tested and set; reaches the
+        // root flags byte through the wrapper `_super` chain for the derived class.
         var childDestructorBody = resolveClassDestructorBody(cCode, "GDGuardChild");
         assertOrdered(
                 childDestructorBody,
                 "if (self == NULL)",
-                "if (self->_super._gdcc_destructed)",
-                "self->_super._gdcc_destructed = true;",
+                "if ((self->_super._gdcc_flags & 1))",
+                "self->_super._gdcc_flags |= 1;",
                 "GDGuardChild_class_destruct_fields(self);"
         );
         var rootDestructorBody = resolveClassDestructorBody(cCode, "GDGuardParent");
         assertOrdered(
                 rootDestructorBody,
                 "if (self == NULL)",
-                "if (self->_gdcc_destructed)",
-                "self->_gdcc_destructed = true;",
+                "if ((self->_gdcc_flags & 1))",
+                "self->_gdcc_flags |= 1;",
                 "GDGuardParent_class_destruct_fields(self);"
         );
 
@@ -3196,30 +3197,31 @@ public class CCodegenTest {
                 "try_release_object(gdcc_object_live_ptr(self->peer.instance_id), self->peer.instance_id);",
                 "GDGuardParent_class_destruct_fields(&self->_super);"
         );
-        assertFalse(childDestructFieldsBody.contains("_gdcc_destructed"), childDestructFieldsBody);
+        assertFalse(childDestructFieldsBody.contains("_gdcc_flags"), childDestructFieldsBody);
         assertFalse(childDestructFieldsBody.contains("GDGuardParent_class_destructor("), childDestructFieldsBody);
         assertFalse(childDestructFieldsBody.contains("_fat_ptr_live_object(self->"), childDestructFieldsBody);
         var parentDestructFieldsBody = resolveFunctionBodyByPrefix(cCode, "void GDGuardParent_class_destruct_fields");
         assertContainsAll(parentDestructFieldsBody, "godot_String_destroy(&(self->base_text));");
-        assertFalse(parentDestructFieldsBody.contains("_gdcc_destructed"), parentDestructFieldsBody);
+        assertFalse(parentDestructFieldsBody.contains("_gdcc_flags"), parentDestructFieldsBody);
 
         // free_instance funnels into the guarded entry before releasing the wrapper.
         var childFreeBody = resolveFunctionBodyByPrefix(cCode, "void GDGuardChild_class_free_instance");
         assertOrdered(
                 childFreeBody,
                 "if (p_instance == NULL)",
-                "if (!self->_super._gdcc_destructed)",
+                "if (!(self->_super._gdcc_flags & 1))",
                 "GDGuardChild_class_destructor(self);",
                 "godot_mem_free(self);"
         );
 
-        // create_instance clears the flag explicitly (godot_mem_alloc does not zero) BEFORE
-        // the instance is attached — the engine cannot reach free_instance for this wrapper
-        // before set_instance, so the guard is never read uninitialized.
+        // create_instance clears the flags byte explicitly (godot_mem_alloc does not zero)
+        // BEFORE the instance is attached — the engine cannot reach free_instance for this
+        // wrapper before set_instance, so the byte is never read uninitialized. This class
+        // has no onready chain, so flags stay plain zero (no HAS_ONREADY).
         var childCreateBody = resolveCreateInstanceBody(cCode, "GDGuardChild");
         assertOrdered(
                 childCreateBody,
-                "self->_super._gdcc_destructed = false;",
+                "self->_super._gdcc_flags = 0;",
                 "godot_object_set_instance("
         );
 
@@ -3274,7 +3276,9 @@ public class CCodegenTest {
                 "if (self == NULL)",
                 "return NULL;",
                 "GDRecreateChild_set_object_ptr(self, p_object);",
-                "self->_super._gdcc_destructed = false;",
+                // Surviving fields already hold valid values: construction counts as
+                // complete and "ready already happened" is inherited across the reload.
+                "self->_super._gdcc_flags = GDCC_FLAG_CTOR_COMPLETE | GDCC_FLAG_ONREADY_DONE;",
                 "godot_object_set_instance_binding(p_object, class_library, self, &GDRecreateChild_class_binding_callbacks);",
                 "GDRecreateChild_class_init_fields(self);",
                 "return self;"
@@ -3770,11 +3774,11 @@ public class CCodegenTest {
         assertEquals(1, countOccurrences(leafCreateInstanceBody, "godot_object_set_instance_binding("));
 
         // Root-flag access walks one `_super` hop per wrapper level (three-level chain).
-        assertContainsAll(leafCreateInstanceBody, "self->_super._super._gdcc_destructed = false;");
+        assertContainsAll(leafCreateInstanceBody, "self->_super._super._gdcc_flags = 0;");
         var leafFreeBody = resolveFunctionBodyByPrefix(cCode, "void GDLeafNode_class_free_instance");
-        assertContainsAll(leafFreeBody, "if (!self->_super._super._gdcc_destructed)");
+        assertContainsAll(leafFreeBody, "if (!(self->_super._super._gdcc_flags & 1))");
         var leafDestructorBody = resolveClassDestructorBody(cCode, "GDLeafNode");
-        assertContainsAll(leafDestructorBody, "self->_super._super._gdcc_destructed = true;");
+        assertContainsAll(leafDestructorBody, "self->_super._super._gdcc_flags |= 1;");
     }
 
     @Test
@@ -4048,7 +4052,7 @@ public class CCodegenTest {
 
     private static @NotNull String extractSection(@NotNull String cCode, @NotNull String sectionHeader) {
         // Match the function definition (header + line break + brace), never its file-top
-        // prototype; the formatter emits CRLF, so the line break is matched with `\R`.
+        // prototype; the line break is matched leniently with `\R`.
         var matcher = Pattern.compile(Pattern.quote(sectionHeader) + "\\R\\{").matcher(cCode);
         assertTrue(matcher.find(), () -> "Missing section: " + sectionHeader);
         var start = matcher.start();

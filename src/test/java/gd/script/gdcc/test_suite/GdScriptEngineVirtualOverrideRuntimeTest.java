@@ -1,13 +1,5 @@
 package gd.script.gdcc.test_suite;
 
-import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
-import gd.script.gdcc.backend.c.build.ZigUtil;
-import org.jetbrains.annotations.NotNull;
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.DynamicTest;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestFactory;
-
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -15,8 +7,16 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.stream.Stream;
 
+import org.jetbrains.annotations.NotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestFactory;
+
+import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
+import gd.script.gdcc.backend.c.build.ZigUtil;
 
 class GdScriptEngineVirtualOverrideRuntimeTest {
     private static final int PHYSICS_PROCESS_QUIT_AFTER_FRAMES = 60;
@@ -26,6 +26,16 @@ class GdScriptEngineVirtualOverrideRuntimeTest {
             PHYSICS_PROCESS_SCRIPT_RESOURCE_PATH,
             "runtime/virtual/engine_virtual_three_level_forwarding.gd",
             "runtime/virtual/mixed_engine_virtual_and_vtable.gd",
+            "runtime/virtual/onready_base_before_subclass.gd",
+            "runtime/virtual/onready_coroutine_entry_init.gd",
+            "runtime/virtual/onready_ctor_window_fail_closed.gd",
+            "runtime/virtual/onready_export_override.gd",
+            "runtime/virtual/onready_inherited_ready_derived_onready.gd",
+            "runtime/virtual/onready_internal_first_call.gd",
+            "runtime/virtual/onready_ready_time_init.gd",
+            "runtime/virtual/onready_replay_with_request_ready.gd",
+            "runtime/virtual/onready_super_no_replay.gd",
+            "runtime/virtual/onready_without_user_ready.gd",
             "runtime/virtual/process_called_and_delta_valid.gd",
             "runtime/virtual/ready_called_once.gd",
             "runtime/virtual/ready_parent_chain_dispatch.gd"

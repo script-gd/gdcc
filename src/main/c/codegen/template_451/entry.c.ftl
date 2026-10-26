@@ -14,6 +14,21 @@
 
 #include <string.h>
 
+<#-- Forwards the chain's user `_ready` via the declaring owner's synchronous entry -->
+<#-- symbol (a coroutine `_ready` resolves to its engine shell, never the thunk); an -->
+<#-- ancestor owner needs the offset-0 `(<Decl>*)self` conversion first. -->
+<#macro onreadyForwardUserReady helper classDef>
+    <#local onreadyUserReadyPlan = helper.onreadyPlan().classPlan(classDef.name)>
+    <#if onreadyUserReadyPlan.userReadyFunction()??>
+        <#local onreadyOwnerName = onreadyUserReadyPlan.userReadyOwnerClassName()>
+        <#local onreadySelfExpr = "self">
+        <#if onreadyOwnerName != classDef.name>
+            <#local onreadySelfExpr = "(" + onreadyOwnerName + "*)self">
+        </#if>
+    ${onreadyOwnerName}_${onreadyUserReadyPlan.userReadyFunction().name}(${helper.renderOwnerFatSelfFromWrapperPtr(onreadyOwnerName, onreadySelfExpr)});
+    </#if>
+</#macro>
+
 <#-- Static property backing variables (file-scope shared storage): zero-initialized at -->
 <#-- program load; every value write goes through the module lifecycle sections or the -->
 <#-- load/store_static gens, all via CBodyBuilder slot-write semantics. -->
@@ -30,6 +45,20 @@ ${helper.renderGdTypeInC(property.type)} ${helper.renderStaticBackingSymbol(clas
 static void ${helper.renderStaticDefaultsSymbol(classDef.name)}(void);
 static void ${helper.renderStaticInitializersSymbol(classDef.name)}(void);
 </#list>
+
+<#-- Declare onready helpers before cross-class references. -->
+<#list module.classDefs as classDef>
+    <#if helper.onreadyPlan().classPlan(classDef.name).chainHasOnreadyInitializer()>
+static void ${helper.renderOnreadyChainApplyHelperName(classDef.name)}(${classDef.name}* self);
+        <#list helper.onreadyPlan().classPlan(classDef.name).onreadyInitializers() as onreadyProperty>
+static inline void ${helper.renderOnreadyApplyHelperName(classDef, onreadyProperty)}(${classDef.name}* self);
+        </#list>
+static void ${helper.renderOnreadyRootApplyHelperName(classDef.name)}(${helper.resolveGdccRootClassName(classDef)}* root);
+static void ${helper.renderOnreadyReadyHelperName(classDef.name)}(${classDef.name}* self);
+    </#if>
+</#list>
+
+<#include "onready_lookup.ftl">
 
 <#-- Per-extension stable anchor token (derived from the module name only; only ever -->
 <#-- compared, never dereferenced) and the module-level Callable identity catalog. Identity -->
@@ -390,11 +419,57 @@ static inline const ${vtableTypeName}* ${helper.renderVtableAccessorName(classDe
 <#list classDef.properties as property>
 <#-- Static properties have no instance apply helper; their init runs via module lifecycle. -->
 <#if !property.static>
+<#if helper.checkOnreadyInitializer(classDef, property)>
+static inline void ${helper.renderPropertyDefaultApplyHelperName(classDef, property)}(${classDef.name}* self) {
+    <#-- First-write the field's type default. -->
+    ${bodyRender.generatePropertyDefaultApplyBody(classDef, property)}
+}
+
+static inline void ${helper.renderOnreadyApplyHelperName(classDef, property)}(${classDef.name}* self) {
+    <#-- Overwrite the field with its onready initializer. -->
+    ${bodyRender.generateOnreadyApplyBody(classDef, property)}
+}
+<#else>
 static inline void ${helper.renderPropertyInitApplyHelperName(classDef, property)}(${classDef.name}* self) {
     ${bodyRender.generatePropertyInitApplyBody(classDef, property)}
 }
 </#if>
+</#if>
 </#list>
+
+<#if helper.onreadyPlan().classPlan(classDef.name).chainHasOnreadyInitializer()>
+<#-- Apply the parent chain before this class's frozen initializer list. -->
+static void ${helper.renderOnreadyChainApplyHelperName(classDef.name)}(${classDef.name}* self) {
+    <#if helper.checkGdccClassByName(classDef.superName) && helper.onreadyPlan().classPlan(classDef.superName).chainHasOnreadyInitializer()>
+    ${helper.renderOnreadyChainApplyHelperName(classDef.superName)}(&self->_super);
+    </#if>
+    <#list helper.onreadyPlan().classPlan(classDef.name).onreadyInitializers() as onreadyProperty>
+    ${helper.renderOnreadyApplyHelperName(classDef, onreadyProperty)}(self);
+    </#list>
+}
+
+<#-- The matching dynamic wrapper shares the root prefix at offset 0; no function-pointer cast is needed. -->
+static void ${helper.renderOnreadyRootApplyHelperName(classDef.name)}(${helper.resolveGdccRootClassName(classDef)}* root) {
+    ${helper.renderOnreadyChainApplyHelperName(classDef.name)}((${classDef.name}*)root);
+}
+
+static void ${helper.renderOnreadyReadyHelperName(classDef.name)}(${classDef.name}* self) {
+    <#assign onreadyFlagsExpr = helper.renderGdccFlagsAccessExpr(classDef.name)>
+    <#-- A READY raised while the constructor chain still runs (`_init` calling -->
+    <#-- `notification(READY)` or add_child into a ready parent) must not apply: -->
+    <#-- descendant slots lack first-writes, so overwriting would destroy garbage. -->
+    <#-- The user `_ready` still forwards; DONE stays clear so a real READY applies. -->
+    if ((${onreadyFlagsExpr} & GDCC_FLAG_CTOR_COMPLETE) == 0) {
+        <@onreadyForwardUserReady helper classDef/>
+        return;
+    }
+    <#-- DONE = "attempted", set before the chain so a re-entrant `_ready` or a -->
+    <#-- non-engine `_ready` entry initialization cannot recurse; the apply ignores DONE for replay. -->
+    ${onreadyFlagsExpr} |= GDCC_FLAG_ONREADY_DONE;
+    ${helper.renderOnreadyChainApplyHelperName(classDef.name)}(self);
+    <@onreadyForwardUserReady helper classDef/>
+}
+</#if>
 
 GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize) {
     GDExtensionObjectPtr obj = godot_classdb_construct_object2(GD_STATIC_SN(u8"${helper.resolveNearestNativeAncestorName(classDef)}"));
@@ -409,9 +484,10 @@ GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userda
     <#if vtableFieldInit?has_content>
     ${helper.renderVtableFieldAccessExpr(classDef.name)} = ${vtableFieldInit};
     </#if>
-    <#-- godot_mem_alloc does not zero-initialize: the exactly-once destruction guard -->
-    <#-- must be cleared explicitly before the instance can run any destructor path. -->
-    ${helper.renderDestructedFlagAccessExpr(classDef.name)} = false;
+    <#-- godot_mem_alloc does not zero-initialize: flags start clear before any -->
+    <#-- destructor/ready path, with HAS_ONREADY only when THIS class's frozen chain -->
+    <#-- fact is true (the lookup helper short-circuits chain-free instances). -->
+    ${helper.renderGdccFlagsAccessExpr(classDef.name)} = <#if helper.onreadyPlan().classPlan(classDef.name).chainHasOnreadyInitializer()>GDCC_FLAG_HAS_ONREADY<#else>0</#if>;
     godot_object_set_instance(obj, GD_STATIC_SN(u8"${classDef.name}"), self);
     godot_object_set_instance_binding(obj, class_library, self, &${classDef.name}_class_binding_callbacks);
     if (p_notify_postinitialize) {
@@ -437,7 +513,8 @@ void ${classDef.name}_class_init_fields(${classDef.name}* self) {
         <#-- Static properties are not instance fields; statics are re-initialized by the -->
         <#-- module lifecycle, never here. -->
         <#if !property.static>
-        ${helper.renderPropertyInitApplyHelperName(classDef, property)}(self);
+        <#-- Call the onready default or ordinary initializer apply helper. -->
+        ${helper.renderPropertyConstructionApplyHelperName(classDef, property)}(self);
         </#if>
     </#list>
 }
@@ -469,7 +546,11 @@ GDExtensionClassInstancePtr ${classDef.name}_class_recreate_instance(void* p_cla
     <#if vtableFieldInit?has_content>
     ${helper.renderVtableFieldAccessExpr(classDef.name)} = ${vtableFieldInit};
     </#if>
-    ${helper.renderDestructedFlagAccessExpr(classDef.name)} = false;
+    <#-- The Godot object survived the reload and the engine will restore its field -->
+    <#-- values after init_fields below: construction counts as complete, and DONE -->
+    <#-- inherits "ready already happened" so a manual `_ready` cannot overwrite the -->
+    <#-- restored storage. HAS_ONREADY is recomputed from THIS generation's chain fact. -->
+    ${helper.renderGdccFlagsAccessExpr(classDef.name)} = GDCC_FLAG_CTOR_COMPLETE | GDCC_FLAG_ONREADY_DONE<#if helper.onreadyPlan().classPlan(classDef.name).chainHasOnreadyInitializer()> | GDCC_FLAG_HAS_ONREADY</#if>;
     godot_object_set_instance_binding(p_object, class_library, self, &${classDef.name}_class_binding_callbacks);
     ${classDef.name}_class_init_fields(self);
     return self;
@@ -498,7 +579,8 @@ void ${classDef.name}_class_constructor(${classDef.name}* self) {
     <#list classDef.properties as property>
         <#-- Static properties are not instance fields; the constructor must not touch them. -->
         <#if !property.static>
-        ${helper.renderPropertyInitApplyHelperName(classDef, property)}(self);
+        <#-- Call the onready default or ordinary initializer apply helper. -->
+        ${helper.renderPropertyConstructionApplyHelperName(classDef, property)}(self);
         </#if>
     </#list>
     <#list classDef.functions as function>
@@ -536,17 +618,18 @@ void ${classDef.name}_class_destruct_fields(${classDef.name}* self) {
     </#if>
 }
 
-<#-- Guarded destruction entry: the ONLY place the root `_gdcc_destructed` flag is SET; -->
+<#-- Guarded destruction entry: the ONLY place the root destructed bit is SET; -->
 <#-- free_instance funnels through this entry on both normal deletion and reload. -->
+<#-- Bit ops only — a whole-byte write would clobber the sibling onready flags. -->
 void ${classDef.name}_class_destructor(${classDef.name}* self) {
     if (self == NULL) {
         return;
     }
-    <#assign destructedFlagExpr = helper.renderDestructedFlagAccessExpr(classDef.name)>
-    if (${destructedFlagExpr}) {
+    <#assign gdccFlagsExpr = helper.renderGdccFlagsAccessExpr(classDef.name)>
+    if (${helper.renderDestructedFlagAccessExpr(classDef.name)}) {
         return;
     }
-    ${destructedFlagExpr} = true;
+    ${gdccFlagsExpr} |= 1;
     ${classDef.name}_class_destruct_fields(self);
 }
 
@@ -554,6 +637,9 @@ void ${classDef.name}_class_notification(GDExtensionClassInstancePtr p_instance,
     ${classDef.name}* self = p_instance;
     if (p_what == godot_Object_NOTIFICATION_POSTINITIALIZE()) {
         ${classDef.name}_class_constructor(self);
+        <#-- The engine notifies only the most-derived class, so reaching this point -->
+        <#-- means the whole constructor chain has completed; onready guards rely on it. -->
+        ${helper.renderGdccFlagsAccessExpr(classDef.name)} |= GDCC_FLAG_CTOR_COMPLETE;
     }
 }
 
@@ -562,6 +648,14 @@ void* ${classDef.name}_class_get_virtual_with_data(void* p_class_userdata, GDExt
     (void)p_class_userdata;
     (void)p_hash;
     // Bind virtual methods
+    <#if helper.onreadyPlan().classPlan(classDef.name).chainHasOnreadyInitializer()>
+    <#-- A chain class takes over `_ready` entirely: the composite impl runs the whole -->
+    <#-- chain (constructor-complete only) and forwards the user body. Returned as a -->
+    <#-- real impl address — the same userdata protocol class the loops below use. -->
+    if (godot_StringName_op_equal_StringName(p_name, GD_STATIC_SN(u8"_ready"))) {
+        return (void*)&${helper.renderOnreadyReadyHelperName(classDef.name)};
+    }
+    </#if>
     <#list classDef.functions as function>
         <#if helper.checkVirtualMethod(classDef, function)>
             <#-- Virtual dispatch must hand the ptrcall wrapper the same userdata protocol as
@@ -589,6 +683,17 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
                                                      GDExtensionTypePtr r_ret) {
     (void)p_name;
     // Call virtual methods
+    <#if helper.onreadyPlan().classPlan(classDef.name).chainHasOnreadyInitializer()>
+    <#-- The userdata returned by the `_ready` branch above is the composite impl's -->
+    <#-- real address: dispatch it directly — its signature takes the wrapper pointer, -->
+    <#-- not the engine's ptrcall form. -->
+    if (p_virtual_call_userdata == &${helper.renderOnreadyReadyHelperName(classDef.name)}) {
+        ${helper.renderOnreadyReadyHelperName(classDef.name)}((${classDef.name}*)p_instance);
+        (void)p_args;
+        (void)r_ret;
+        return;
+    }
+    </#if>
     <#list classDef.functions as function>
         <#if helper.checkVirtualMethod(classDef, function)>
             if (p_virtual_call_userdata == <#if helper.countDefaultSlots(function) gt 0>&${helper.renderDefaultUserdataInstanceName(classDef, function)}<#else>&${classDef.name}_${function.name}</#if>) {
@@ -820,6 +925,12 @@ void ${helper.renderCoroBodyFunctionName(classDef, func)}(mco_coro *${helper.ren
 }
 
 <@coroStartThunkHeader helper classDef func/> {
+    <#-- Every internal coroutine `_ready` entry lands here (the shell only forwards); -->
+    <#-- the entry initialization runs before the state allocation so the chain still -->
+    <#-- applies when allocation fails. -->
+    <#if func.name == "_ready">
+    ${helper.renderOnreadyEntryInitialization(classDef, func)}
+    </#if>
     GDExtensionObjectPtr coro_state_obj = ${stateName}_class_create_instance(NULL, false);
     if (coro_state_obj == NULL) {
         GDCC_PRINT_RUNTIME_ERROR("gdcc: failed to create coroutine state object", __func__, __FILE__, __LINE__);

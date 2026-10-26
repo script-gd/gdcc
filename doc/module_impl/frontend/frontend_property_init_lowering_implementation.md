@@ -17,6 +17,7 @@
   - `frontend_compile_check_analyzer_implementation.md`
   - `gdcc_ownership_lifecycle_spec.md`
   - `cbodybuilder_implementation.md`
+  - `doc/module_impl/backend/onready_class_implementation.md`
   - 与 property-init helper / constructor-time apply / object return move 直接相关的代码注释
 
 ---
@@ -29,7 +30,7 @@
 - lowering 单元使用独立的 `FunctionLoweringContext.Kind.PROPERTY_INIT`
 - frontend 会为该 property 发布 hidden synthetic `_field_init_<property>` helper
 - helper 在默认 pipeline 终态拥有真实 CFG、真实 LIR body、有效 `entryBlockId`
-- backend 会把 helper 产出的 initializer value 通过独立的 constructor-time apply route 写回 backing field
+- backend 会把普通 property helper 产出的 initializer value 通过独立的 constructor-time apply route 写回 backing field；onready 且有源码 initializer 的 property 由 ready-time overwrite apply 写回（§6.1 与 `onready_class_implementation.md`）
 - static property 的 helper 不走 constructor-time apply；其结果由 module 级两段式全局 static 初始化（先类型默认值、后 source initializer）写回共享 backing 存储
 
 这条支持面当前覆盖：
@@ -47,9 +48,10 @@
 - property `:=` metadata 回写
 - property initializer 对同 class non-static property / method / signal / `self` 的完整初始化时序语义
 - parameter default lowering
-- `@onready` ready-time 执行模型
 
-换言之，当前支持的是“property initializer helper 的 lowering 与实例 property 的 constructor-time apply、static var 的全局 static 初始化写回均已闭合”，不是“完整实例成员初始化语义已经闭合”。
+`@onready` property 的 initializer 复用同一 `PROPERTY_INIT` lowering 支持面；backend 在 apply 侧分流：onready 且有源码 initializer 的 property 在 constructor-time 只写类型默认值（first-write），真实 initializer 推迟到 ready-time overwrite apply（完整合同见 `doc/module_impl/backend/onready_class_implementation.md`）。frontend 的 `$`/`%` compile gate 边界不变。
+
+换言之，当前支持的是“property initializer helper 的 lowering 与实例 property 的 constructor-time apply（含 onready 默认值分流）、static var 的全局 static 初始化写回均已闭合”，不是“完整实例成员初始化语义已经闭合”。
 
 ---
 
@@ -139,6 +141,7 @@ backend 对 property initializer 的责任边界当前已经收紧为 fail-close
 若 property 没有 frontend 发布的 `initFunc`：
 
 - backend 可以继续走默认值 helper 路径
+- 附加例外：onready 且有源码 initializer 的 property 在 `initFunc != null` 时也会由 backend 合成 `_onready_field_default_<prop>` 默认值 helper（构造期分流，见 §2）
 
 ### 5.2 `initFunc != null`
 
@@ -159,7 +162,7 @@ backend 不再承担以下职责：
 
 - frontend 决定 property initializer 是否存在，以及它的语义事实
 - lowering 把 helper materialize 为真实函数体
-- backend 只消费 lowering 完成后的 helper，或在 `initFunc == null` 时生成默认值 helper
+- backend 只消费 lowering 完成后的 helper，或在 `initFunc == null` 时生成默认值 helper；onready 且有源码 initializer 的 property 另由 backend 合成 `_onready_field_default_<prop>` 默认值 helper 供构造期分流
 
 ---
 
@@ -168,18 +171,23 @@ backend 不再承担以下职责：
 当前 backend 已经把“property initializer helper 产出值”和“constructor-time backing-field apply”拆成两层 contract：
 
 - `_field_init_<property>` helper 只负责产出 initializer value
-- `${Class}_class_apply_property_init_<property>(self)` 负责在 constructor-time 把该值应用到 backing field
+- 普通 property 的值经 `${Class}_class_apply_property_init_<property>(self)` 在 constructor-time 写回 backing field；onready 且有源码 initializer 的 property 构造期只写 `_onready_field_default_` 默认值，`_field_init_` 的真实值由 `<C>_class_apply_onready_init_<prop>` 在 ready-time overwrite 写回
 
 ### 6.1 apply route 合同
 
-constructor-time property apply 当前固定为：
+property apply 当前固定为双入口：
 
-- apply helper 是 direct backing-field route，不是 setter route
-- class constructor 只调用 apply helper，不再内联裸 `self->field = init_helper(self)` 语句
-- apply helper body 由 `CCodegen#generatePropertyInitApplyBody(...)` 统一生成
-- object-valued property apply 通过 `CBodyBuilder#applyPropertyInitializerFirstWrite(...)` 复用统一 ptr-conversion / ownership-consume 语义
-- constructor-time first write 不释放旧 field value
-- non-object property initializer path 也通过同一 first-write abstraction 收口
+- **constructor-time apply（first-write）**：
+  - apply helper 是 direct backing-field route，不是 setter route
+  - class constructor 只调用 apply helper，不再内联裸 `self->field = init_helper(self)` 语句
+  - 普通 initializer apply body 由 `CCodegen#generatePropertyInitApplyBody(...)` 统一生成；onready 且有源码 initializer 的 property 走 `generatePropertyDefaultApplyBody(...)` 写类型默认值
+  - object-valued property apply 通过 `CBodyBuilder#applyPropertyInitializerFirstWrite(...)` 复用统一 ptr-conversion / ownership-consume 语义
+  - constructor-time first write 不释放旧 field value
+  - non-object property initializer path 也通过同一 first-write abstraction 收口
+- **ready-time apply（overwrite，仅 onready 且有源码 initializer 的 property）**：
+  - `<C>_class_apply_onready_init_<prop>(<C>* self)` body 由 `CCodegen#generateOnreadyApplyBody(...)` 统一生成
+  - 写入经 `CBodyBuilder#moveOwnedCallIntoSlot(...)` destroy-then-move overwrite，不退回 first-write 路径
+  - 由 onready 链函数按声明顺序调用，完整合同见 `doc/module_impl/backend/onready_class_implementation.md`
 
 ### 6.2 object-valued initializer 合同
 
@@ -189,7 +197,7 @@ constructor-time property apply 当前固定为：
 - 必要时做 GDCC / Godot ptr conversion
 - rhs 为 `OWNED` 时直接 consume，不重复 own
 - rhs 为 `BORROWED` 时由 field retain 新值
-- 这条路由仍然属于 direct backing-field first write，不得退化为 setter invocation
+- 该 slot-write 规则对 constructor-time apply 与 ready-time onready overwrite apply 共用；前者仍是 direct backing-field first write，后者必须销毁旧值——两者都不得退化为 setter invocation
 
 ### 6.3 init helper return 合同
 
@@ -223,6 +231,8 @@ property initializer 当前仍只是 frontend body-phase 的最小支持岛，�
 - “property-init helper 已有真实 lowering body”
 - “constructor-time apply 已有统一 first-write 语义”
 - “完整实例初始化模型已经完成”
+
+`@onready` 的 ready-time apply 已由 backend 闭合（`onready_class_implementation.md`），但 ready-time 求值可使用的 initializer 表达式支持面仍等于 §2 边界——`$`/`%` node literal、同类实例成员/`self` 访问的 compile gate 均未解除。
 
 ---
 

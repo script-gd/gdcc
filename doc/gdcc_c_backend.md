@@ -687,9 +687,9 @@ Object category rules:
 
 ### Property Init Helper Ownership
 
-- `LirPropertyDef.initFunc == null` is the only state where backend owns property default helper synthesis.
+- `LirPropertyDef.initFunc == null` remains the normal state where backend owns property default helper synthesis; the additional exception is the onready default helper `_onready_field_default_<prop>` synthesized for onready properties that carry a source initializer (see `doc/module_impl/backend/onready_class_implementation.md`).
 - Once `initFunc` points at a named helper, backend treats it as a fully lowered executable helper and never tries to repair or synthesize its body.
-- Template rendering keeps the current constructor call shape `self->prop = Class_<init_func>(self);`, but this now has a hard precondition:
+- The constructor no longer inlines `self->prop = Class_<init_func>(self);`; it dispatches through per-property apply helpers — `<C>_class_apply_property_init_<prop>` for ordinary properties and `<C>_class_apply_property_default_<prop>` for onready properties with a source initializer — and each apply route enforces a hard precondition on the init helper it calls:
   - the helper is hidden/internal
   - the helper returns exactly the property type
   - the helper takes exactly one owning-class `self` parameter

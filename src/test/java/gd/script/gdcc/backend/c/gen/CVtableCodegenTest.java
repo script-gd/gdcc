@@ -104,7 +104,7 @@ public class CVtableCodegenTest {
         assertCreateInstanceWrites(cCode, "VtB", "self->_super._vtable = &gdcc_VtA_vtable_inst;");
         assertCreateInstanceWrites(cCode, "VtC", "self->_super._super._vtable = &gdcc_VtC_vtable_inst;");
         assertCreateInstanceWrites(cCode, "VtD", "self->_super._super._super._vtable = &gdcc_VtD_vtable_inst;");
-        assertFalse(resolveCreateInstanceBody(cCode, "VtB").contains("NULL"),
+        assertFalse(resolveCreateInstanceBody(cCode, "VtB").contains("_vtable = NULL"),
                 "pass-through classes must never initialize _vtable with NULL");
 
         // Hot reload recreate: the same four vtable roles must be rebound to THIS

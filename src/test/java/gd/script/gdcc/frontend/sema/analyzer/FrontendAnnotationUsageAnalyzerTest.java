@@ -1,5 +1,16 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Objects;
+
+import org.jetbrains.annotations.NotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Test;
+
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
@@ -13,17 +24,6 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.PropertyDef;
-import org.jetbrains.annotations.NotNull;
-import org.junit.jupiter.api.Test;
-
-import java.nio.file.Path;
-import java.util.List;
-import java.util.Objects;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendAnnotationUsageAnalyzerTest {
     @Test
@@ -122,6 +122,52 @@ class FrontendAnnotationUsageAnalyzerTest {
         var staticLocalClass = findClassDef(analyzedModule.analysisData(), "StaticLocalOnready");
         assertEquals("", findProperty(nonNodeClass, "child").getAnnotations().get("onready"));
         assertEquals("", findProperty(staticLocalClass, "child").getAnnotations().get("onready"));
+    }
+
+    /// Godot rejects every repeat of `@onready` on the same variable ("can only be used once
+    /// per variable"). Each annotation past the first reports the dedicated diagnostic at its
+    /// own range, while a single `@onready` per property stays clean and the placement rules
+    /// keep diagnosing the first annotation exactly once.
+    @Test
+    void analyzeReportsDuplicateOnreadyAnnotationsOnSameProperty() throws Exception {
+        var analyzedModule = analyze("""
+                class_name DuplicateOnready
+                extends Node
+                
+                @onready var kept: Variant = null
+                @onready
+                @onready var child: Variant = null
+                @onready
+                @onready
+                @onready var triple: Variant = null
+                
+                func ping():
+                    @onready
+                    @onready var local = null
+                """);
+
+        var annotationUsageDiagnostics = diagnosticsByCategory(
+                analyzedModule.analysisData().diagnostics().asList(),
+                "sema.annotation_usage"
+        );
+        // kept: no diagnostics; child: one duplicate; triple: two duplicates;
+        // local: first annotation hits the placement rule, second hits the duplicate rule.
+        assertEquals(5, annotationUsageDiagnostics.size(), annotationUsageDiagnostics::toString);
+        assertTrue(annotationUsageDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && diagnostic.range() != null
+        ));
+        assertEquals(4, annotationUsageDiagnostics.stream()
+                .filter(diagnostic -> diagnostic.message().contains("@onready can only be used once per variable"))
+                .count());
+        assertEquals(1, annotationUsageDiagnostics.stream()
+                .filter(diagnostic -> diagnostic.message().contains("class properties declared with 'var'"))
+                .count());
+
+        var classDef = findClassDef(analyzedModule.analysisData(), "DuplicateOnready");
+        assertEquals("", findProperty(classDef, "kept").getAnnotations().get("onready"));
+        assertEquals("", findProperty(classDef, "child").getAnnotations().get("onready"));
+        assertEquals("", findProperty(classDef, "triple").getAnnotations().get("onready"));
     }
 
     /// `@export` on a static var is rejected (Godot parity: export registers per-instance

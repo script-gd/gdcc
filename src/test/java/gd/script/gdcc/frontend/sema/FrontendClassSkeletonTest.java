@@ -1,5 +1,24 @@
 package gd.script.gdcc.frontend.sema;
 
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Predicate;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Test;
+
+import dev.superice.gdparser.frontend.ast.ClassDeclaration;
+import dev.superice.gdparser.frontend.ast.SignalStatement;
+import dev.superice.gdparser.frontend.ast.Statement;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
@@ -12,26 +31,12 @@ import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.SignalDef;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
-import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
-import dev.superice.gdparser.frontend.ast.ClassDeclaration;
-import dev.superice.gdparser.frontend.ast.SignalStatement;
-import dev.superice.gdparser.frontend.ast.Statement;
-import dev.superice.gdparser.frontend.ast.VariableDeclaration;
-import org.junit.jupiter.api.Test;
-
-import java.io.IOException;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.function.Predicate;
-
-import static org.junit.jupiter.api.Assertions.*;
 
 class FrontendClassSkeletonTest {
     @Test
@@ -1114,6 +1119,56 @@ class FrontendClassSkeletonTest {
         assertEquals(3, skeletonDiagnostics.size());
         assertTrue(skeletonDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.message().contains("reserved synthetic property-helper prefix")
+        ));
+    }
+
+    /// The `_onready_field_default_` namespace is compiler-owned for the backend-synthesized
+    /// onready default-value helpers, so source members reusing it are rejected like the other
+    /// reserved prefixes. Boundary names that lack the trailing separator stay alive.
+    @Test
+    void buildRejectsReservedOnreadyFieldDefaultPrefixButKeepsBoundaryNamesAlive() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "reserved_onready_default_names.gd"), """
+                class_name ReservedOnreadyDefaultNames
+                extends RefCounted
+
+                signal _onready_field_default_changed()
+
+                var _onready_field_default_value: int = 1
+                var _onready_field_default: int = 2
+                var _onready_field: int = 3
+
+                func _onready_field_default_value():
+                    pass
+
+                func ok():
+                    pass
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "ReservedOnreadyDefaultNames");
+        var skeletonDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton"))
+                .toList();
+
+        assertNull(findSignalByNameOrNull(classDef, "_onready_field_default_changed"));
+        assertNull(findPropertyByNameOrNull(classDef, "_onready_field_default_value"));
+        assertNotNull(findPropertyByNameOrNull(classDef, "_onready_field_default"));
+        assertNotNull(findPropertyByNameOrNull(classDef, "_onready_field"));
+        assertNull(findFunctionByNameOrNull(classDef, "_onready_field_default_value"));
+        assertNotNull(findFunctionByNameOrNull(classDef, "ok"));
+        assertEquals(3, skeletonDiagnostics.size());
+        assertTrue(skeletonDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.message().contains("reserved synthetic onready-default prefix '_onready_field_default_'")
         ));
     }
 

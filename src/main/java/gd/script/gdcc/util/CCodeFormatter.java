@@ -23,7 +23,9 @@ public final class CCodeFormatter {
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
-        return outputWriter.toString();
+        // jAstyle terminates each line via PrintWriter.println, which uses the platform
+        // line separator; normalize to LF so generated sources are identical everywhere.
+        return outputWriter.toString().replace("\r\n", "\n");
     }
 }
 

@@ -258,7 +258,7 @@ backend 与 shared metadata 侧必须继续覆盖：
 
 runtime 回归至少要继续证明：
 
-- `_ready` 只触发一次
+- `_ready` 在正常生命周期内只触发一次；`request_ready()` 后再次入树属引擎语义内的合法重放（onready 链类经组合 impl 重放 onready apply，见 `onready_class_implementation.md`）
 - `_process` 能被引擎驱动，且 `delta > 0`
 - `_physics_process` 能被引擎驱动，且 `delta > 0`
 - resource discovery 仍包含三条 virtual runtime fixtures

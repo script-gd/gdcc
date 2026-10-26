@@ -146,9 +146,17 @@ public class CCodegen implements Codegen {
                 // Static properties stay entirely out of instance member synthesis: no
                 // getter/setter, and no `_field_init_` default helper either. Static default
                 // values are materialized inline by the module-lifecycle defaults section,
-                // so `initFunc != null` keeps meaning "source has an explicit initializer".
+                // so on static properties `initFunc != null` keeps meaning "source has an
+                // explicit initializer". Instance properties instead may carry a synthesized
+                // default helper, distinguishable via `isInitializerSynthesizedByBackend`.
                 if (propertyDef.isStatic()) {
                     continue;
+                }
+                // A frozen-eligible onready property must keep its unmarked source init
+                // reference; a cleared or marker-poisoned initFunc fails here instead of
+                // falling into the `_field_init_` backfill below.
+                if (helper.checkOnreadyInitializer(classDef, propertyDef)) {
+                    requireOnreadySourceInitFunction(classDef, propertyDef);
                 }
                 if (propertyDef.getGetterFunc() == null) {
                     var getterName = "_field_getter_" + propertyDef.getName();
@@ -181,42 +189,119 @@ public class CCodegen implements Codegen {
                 }
                 if (propertyDef.getInitFunc() == null) {
                     var initName = "_field_init_" + propertyDef.getName();
-                    propertyDef.setInitFunc(initName);
-                    var func = new LirFunctionDef(initName);
-                    func.setHidden(true);
-                    func.setReturnType(propertyDef.getType());
-                    func.addParameter(new LirParameterDef("self", selfType, null, func));
-                    var tmpVar = func.createAndAddTmpVariable(propertyDef.getType());
-                    var bb = new LirBasicBlock("entry");
-                    func.addBasicBlock(bb);
-                    switch (propertyDef.getType()) {
-                        case GdCompilerType _ -> throw new IllegalStateException(
-                                "compiler-only type leaked into property initializer: " + propertyDef.getType().getTypeName()
-                        );
-                        case GdObjectType _ -> bb.appendNonTerminatorInstruction(new LiteralNullInsn(tmpVar.id()));
-                        case GdVariantType _, GdNilType _ ->
-                                bb.appendNonTerminatorInstruction(new LiteralNilInsn(tmpVar.id()));
-                        case GdBoolType _ -> bb.appendNonTerminatorInstruction(new LiteralBoolInsn(tmpVar.id(), false));
-                        case GdIntType _ -> bb.appendNonTerminatorInstruction(new LiteralIntInsn(tmpVar.id(), 0));
-                        case GdFloatType _ -> bb.appendNonTerminatorInstruction(new LiteralFloatInsn(tmpVar.id(), 0.0));
-                        case GdStringType _ ->
-                                bb.appendNonTerminatorInstruction(new LiteralStringInsn(tmpVar.id(), ""));
-                        case GdStringNameType _ ->
-                                bb.appendNonTerminatorInstruction(new LiteralStringNameInsn(tmpVar.id(), ""));
-                        case GdArrayType gdArrayType ->
-                                bb.appendNonTerminatorInstruction(new ConstructArrayInsn(tmpVar.id(), gdArrayType.getValueType().getTypeName()));
-                        case GdPackedArrayType _ ->
-                                bb.appendNonTerminatorInstruction(new ConstructArrayInsn(tmpVar.id(), null));
-                        case GdDictionaryType gdDictionaryType ->
-                                bb.appendNonTerminatorInstruction(new ConstructDictionaryInsn(tmpVar.id(), gdDictionaryType.getKeyType().getTypeName(), gdDictionaryType.getValueType().getTypeName()));
-                        default -> bb.appendNonTerminatorInstruction(new ConstructBuiltinInsn(tmpVar.id(), List.of()));
-                    }
-                    bb.setTerminator(new ReturnInsn(tmpVar.id()));
-                    func.setEntryBlockId("entry");
+                    var func = createPropertyDefaultInitializer(classDef, propertyDef, initName);
                     classDef.addFunction(func);
+                    // Marker goes last so a mid-build failure cannot publish a synthetic init
+                    // name without it; later sessions use it to tell this backfill from source.
+                    propertyDef.setBackendSynthesizedInitFunc(initName);
+                }
+            }
+            // Source-initializer onready properties keep their real initFunc for the
+            // ready-time apply; construction first-writes the type default through this
+            // reserved helper instead.
+            for (var onreadyProperty : helper.onreadyPlan().classPlan(classDef.getName()).onreadyInitializers()) {
+                var defaultName = helper.renderOnreadyFieldDefaultFunctionName(onreadyProperty);
+                requireOnreadyDefaultNameUnaliased(classDef, defaultName);
+                if (classDef.getFunctions().stream()
+                        .noneMatch(function -> function.getName().equals(defaultName))) {
+                    classDef.addFunction(createPropertyDefaultInitializer(classDef, onreadyProperty, defaultName));
+                } else {
+                    requireOnreadyFieldDefaultFunction(classDef, onreadyProperty);
                 }
             }
         }
+    }
+
+    /// Builds the hidden single-owner-self default-value helper shared by the `_field_init_`
+    /// backfill and the `_onready_field_default_` slot.
+    private @NotNull LirFunctionDef createPropertyDefaultInitializer(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef,
+            @NotNull String name
+    ) {
+        var func = new LirFunctionDef(name);
+        func.setHidden(true);
+        func.setReturnType(propertyDef.getType());
+        func.addParameter(new LirParameterDef("self", new GdObjectType(classDef.getName()), null, func));
+        var tmpVar = func.createAndAddTmpVariable(propertyDef.getType());
+        var bb = new LirBasicBlock("entry");
+        func.addBasicBlock(bb);
+        switch (propertyDef.getType()) {
+            case GdCompilerType _ -> throw new IllegalStateException(
+                    "compiler-only type leaked into property initializer: " + propertyDef.getType().getTypeName()
+            );
+            case GdObjectType _ -> bb.appendNonTerminatorInstruction(new LiteralNullInsn(tmpVar.id()));
+            case GdVariantType _, GdNilType _ ->
+                    bb.appendNonTerminatorInstruction(new LiteralNilInsn(tmpVar.id()));
+            case GdBoolType _ -> bb.appendNonTerminatorInstruction(new LiteralBoolInsn(tmpVar.id(), false));
+            case GdIntType _ -> bb.appendNonTerminatorInstruction(new LiteralIntInsn(tmpVar.id(), 0));
+            case GdFloatType _ -> bb.appendNonTerminatorInstruction(new LiteralFloatInsn(tmpVar.id(), 0.0));
+            case GdStringType _ ->
+                    bb.appendNonTerminatorInstruction(new LiteralStringInsn(tmpVar.id(), ""));
+            case GdStringNameType _ ->
+                    bb.appendNonTerminatorInstruction(new LiteralStringNameInsn(tmpVar.id(), ""));
+            case GdArrayType gdArrayType ->
+                    bb.appendNonTerminatorInstruction(new ConstructArrayInsn(tmpVar.id(), gdArrayType.getValueType().getTypeName()));
+            case GdPackedArrayType _ ->
+                    bb.appendNonTerminatorInstruction(new ConstructArrayInsn(tmpVar.id(), null));
+            case GdDictionaryType gdDictionaryType ->
+                    bb.appendNonTerminatorInstruction(new ConstructDictionaryInsn(tmpVar.id(), gdDictionaryType.getKeyType().getTypeName(), gdDictionaryType.getValueType().getTypeName()));
+            default -> bb.appendNonTerminatorInstruction(new ConstructBuiltinInsn(tmpVar.id(), List.of()));
+        }
+        bb.setTerminator(new ReturnInsn(tmpVar.id()));
+        func.setEntryBlockId("entry");
+        return func;
+    }
+
+    /// The reserved default name is dedicated to construction defaults: no property's
+    /// initFunc may reference it, or the source value would be produced at construction.
+    private void requireOnreadyDefaultNameUnaliased(
+            @NotNull LirClassDef classDef,
+            @NotNull String defaultName
+    ) {
+        for (var property : classDef.getProperties()) {
+            if (defaultName.equals(property.getInitFunc())) {
+                throw new IllegalStateException(
+                        "Property '" + classDef.getName() + "." + property.getName()
+                                + "' must not reference reserved onready default helper '"
+                                + defaultName + "' as its init function"
+                );
+            }
+        }
+    }
+
+    /// Resolves the `_onready_field_default_<prop>` occupant and validates it against the
+    /// shared init-helper contract.
+    private @NotNull LirFunctionDef requireOnreadyFieldDefaultFunction(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef
+    ) {
+        var defaultName = helper.renderOnreadyFieldDefaultFunctionName(propertyDef);
+        requireOnreadyDefaultNameUnaliased(classDef, defaultName);
+        LirFunctionDef function = null;
+        var count = 0;
+        for (var candidate : classDef.getFunctions()) {
+            if (candidate.getName().equals(defaultName)) {
+                count++;
+                if (function == null) {
+                    function = candidate;
+                }
+            }
+        }
+        if (count == 0) {
+            throw new IllegalStateException(
+                    "Onready default function '" + classDef.getName() + "." + defaultName
+                            + "' for property '" + propertyDef.getName() + "' does not exist"
+            );
+        }
+        if (count != 1) {
+            throw new IllegalStateException(
+                    "Expected exactly one onready default function '" + classDef.getName() + "." + defaultName
+                            + "' for property '" + propertyDef.getName() + "', but found " + count
+            );
+        }
+        validatePropertyInitFunctionReadyForCodegen(classDef, propertyDef, function);
+        return function;
     }
 
     /// Copies `_capture->name` into the matching lambda local before `__prepare__`.
@@ -341,7 +426,52 @@ public class CCodegen implements Codegen {
             @NotNull LirClassDef classDef,
             @NotNull LirPropertyDef propertyDef
     ) {
+        if (helper.checkOnreadyInitializer(classDef, propertyDef)) {
+            requireOnreadySourceInitFunction(classDef, propertyDef);
+            return;
+        }
         var function = resolvePropertyInitFunction(classDef, propertyDef);
+        validatePropertyInitFunctionReadyForCodegen(classDef, propertyDef, function);
+    }
+
+    /// Resolves the real source init helper for a frozen-eligible onready property: frozen
+    /// membership is required, `initFunc` must be non-null and backend-unmarked (a cleared
+    /// or marker-poisoned source reference is not silently backfilled or reclassified),
+    /// then the resolved helper passes shared signature + readiness validation.
+    private @NotNull LirFunctionDef requireOnreadySourceInitFunction(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef
+    ) {
+        if (ctx == null || module == null) {
+            throw new IllegalStateException("CCodegen not prepared. Call prepare() before resolving onready init functions.");
+        }
+        if (!helper.checkOnreadyInitializer(classDef, propertyDef)) {
+            throw new IllegalStateException(
+                    "Property '" + classDef.getName() + "." + propertyDef.getName()
+                            + "' is not a source-initializer onready property in the frozen plan;"
+                            + " the onready source-init route is frozen-eligible only"
+            );
+        }
+        if (propertyDef.getInitFunc() == null || propertyDef.isInitializerSynthesizedByBackend()) {
+            throw new IllegalStateException(
+                    "Property '" + classDef.getName() + "." + propertyDef.getName()
+                            + "' is a frozen onready initializer but lost its source provenance"
+                            + " (initFunc is null or backend-synthesized);"
+                            + " source initializers must keep an unmarked source init function"
+            );
+        }
+        var function = resolvePropertyInitFunction(classDef, propertyDef);
+        validatePropertyInitFunctionReadyForCodegen(classDef, propertyDef, function);
+        return function;
+    }
+
+    /// Signature + executable-body readiness for a resolved init helper, shared by the
+    /// `initFunc`-named route and the reserved `_onready_field_default_` occupant.
+    private void validatePropertyInitFunctionReadyForCodegen(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef,
+            @NotNull LirFunctionDef function
+    ) {
         validatePropertyInitFunctionSignature(classDef, propertyDef, function);
         if (function.getBasicBlockCount() == 0 || function.getEntryBlockId().isEmpty()) {
             throw new IllegalStateException(
@@ -440,6 +570,22 @@ public class CCodegen implements Codegen {
                             + propertyDef.getType().getTypeName()
             );
         }
+        // Every init route calls the helper with the plain C signature only: special
+        // function kinds and captures would change that signature without a matching
+        // apply-helper calling convention.
+        if (function.isCoroutine() || function.isLambda() || function.isAbstract()
+                || function.isVararg() || !function.getCaptures().isEmpty()) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references init function '"
+                            + function.getName()
+                            + "' with special function flags or captures;"
+                            + " init helpers must be plain synchronous functions"
+            );
+        }
         // Static property init helpers follow the static shell contract: hidden (checked above),
         // explicitly static, zero parameters — they run without any instance and are invoked
         // from the module lifecycle path to write shared storage.
@@ -469,6 +615,20 @@ public class CCodegen implements Codegen {
                 );
             }
             return;
+        }
+        // Instance helpers share one signature contract with the reserved
+        // `_onready_field_default_` slot: an explicitly static function never qualifies,
+        // even when it happens to declare a self-typed first parameter.
+        if (function.isStatic()) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references static init function '"
+                            + function.getName()
+                            + "'; instance property init helpers must be non-static"
+            );
         }
         if (function.getParameterCount() != 1) {
             throw new IllegalStateException(
@@ -596,6 +756,11 @@ public class CCodegen implements Codegen {
         }
         var bodyBuilder = new CBodyBuilder(helper, clazz, func, usageBuffer, newCoroutineFrameContext(clazz, func));
         emitLambdaCapturePrologue(bodyBuilder, clazz, func);
+        // A user `_ready` body gets the entry initialization here; coroutine `_ready`
+        // entries funnel through the start thunk, which carries the same injection.
+        if ("_ready".equals(func.getName()) && !func.isCoroutine()) {
+            bodyBuilder.appendRaw(helper.renderOnreadyEntryInitialization(clazz, func));
+        }
         // generate blocks
         bodyBuilder.appendRaw("goto " + func.getEntryBlockId() + ";\n");
         for (var bb : func) {
@@ -639,21 +804,40 @@ public class CCodegen implements Codegen {
                             + "' is static; static properties have no constructor-time apply helper"
             );
         }
+        // Frozen-eligible onready properties take the dedicated default route; direct
+        // callers must not bypass it through this ordinary apply entry.
+        if (helper.checkOnreadyInitializer(clazz, property)) {
+            throw new IllegalStateException(
+                    "Property '" + clazz.getName() + "." + property.getName()
+                            + "' is a source-initializer onready property in the frozen plan;"
+                            + " use the property default apply route instead"
+            );
+        }
         var initFunction = resolvePropertyInitFunction(clazz, property);
+        validatePropertyInitFunctionReadyForCodegen(clazz, property, initFunction);
         var bodyBuilder = new CBodyBuilder(
                 helper,
                 clazz,
                 initFunction,
                 usageBuffer
         );
-        // Internal init helpers take owner fat self; the apply wrapper still receives Class*.
-        var ownerType = new GdObjectType(clazz.getName());
-        var fatType = helper.renderObjectFatPtrStorageType(ownerType);
-        var selfFatArg = fatType + "_from_raw(" + clazz.getName() + "_object_ptr(self))";
+        emitPropertyConstructionFirstWrite(bodyBuilder, clazz, property, initFunction);
+        return bodyBuilder.build();
+    }
+
+    /// Shared first-write emission of the constructor-time apply helpers: internal init
+    /// helpers take owner fat self while the apply wrapper still receives `Class*`.
+    private void emitPropertyConstructionFirstWrite(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull LirClassDef clazz,
+            @NotNull LirPropertyDef property,
+            @NotNull LirFunctionDef initFunction
+    ) {
         bodyBuilder.applyPropertyInitializerFirstWrite(
                 "self->" + property.getName(),
                 property.getType(),
-                clazz.getName() + "_" + initFunction.getName() + "(" + selfFatArg + ")",
+                clazz.getName() + "_" + initFunction.getName() + "("
+                        + helper.renderOwnerFatSelfFromWrapperPtr(clazz.getName(), "self") + ")",
                 initFunction.getReturnType(),
                 initFunction.getReturnType() instanceof GdObjectType
                         ? CBodyBuilder.PtrKind.FAT_PTR
@@ -662,7 +846,6 @@ public class CCodegen implements Codegen {
                 // consume the returned object directly instead of re-owning the field write.
                 CBodyBuilder.OwnershipKind.OWNED
         );
-        return bodyBuilder.build();
     }
 
     @NotNull String generatePropertyInitApplyBody(@NotNull LirClassDef clazz,
@@ -670,6 +853,75 @@ public class CCodegen implements Codegen {
                                                   @NotNull GodotBindingUsageSession godotBindingUsageSession) {
         var buffer = godotBindingUsageSession.newFunctionBuffer();
         var body = generatePropertyInitApplyBody(clazz, property, buffer);
+        godotBindingUsageSession.commit(buffer);
+        return body;
+    }
+
+    /// Renders the construction-time apply body for a plan-eligible onready property: the
+    /// field's first write is the type default produced by `_onready_field_default_<prop>`,
+    /// while the real source initializer defers to the ready-time apply. Routing is frozen
+    /// plan membership only; ineligible properties fail instead of falling back.
+    private @NotNull String generatePropertyDefaultApplyBody(@NotNull LirClassDef clazz,
+                                                             @NotNull LirPropertyDef property,
+                                                             @NotNull GodotBindingUsageBuffer usageBuffer) {
+        if (ctx == null || module == null) {
+            throw new IllegalStateException("CCodegen not prepared. Call prepare() before generating property default apply code.");
+        }
+        if (!helper.checkOnreadyInitializer(clazz, property)) {
+            throw new IllegalStateException(
+                    "Property '" + clazz.getName() + "." + property.getName()
+                            + "' is not a source-initializer onready property in the frozen plan;"
+                            + " the default apply route is onready-only"
+            );
+        }
+        var defaultFunction = requireOnreadyFieldDefaultFunction(clazz, property);
+        var bodyBuilder = new CBodyBuilder(
+                helper,
+                clazz,
+                defaultFunction,
+                usageBuffer
+        );
+        emitPropertyConstructionFirstWrite(bodyBuilder, clazz, property, defaultFunction);
+        return bodyBuilder.build();
+    }
+
+    @NotNull String generatePropertyDefaultApplyBody(@NotNull LirClassDef clazz,
+                                                     @NotNull LirPropertyDef property,
+                                                     @NotNull GodotBindingUsageSession godotBindingUsageSession) {
+        var buffer = godotBindingUsageSession.newFunctionBuffer();
+        var body = generatePropertyDefaultApplyBody(clazz, property, buffer);
+        godotBindingUsageSession.commit(buffer);
+        return body;
+    }
+
+    /// Renders the ready-time apply body for a plan-eligible onready property: calls the
+    /// source init helper and moves its OWNED result into the field, releasing the stored
+    /// default. The builder stays position-less on purpose: `__prepare__` suppresses destroys
+    /// only for the entry block it owns, while this overwrite must release the old value.
+    private @NotNull String generateOnreadyApplyBody(@NotNull LirClassDef clazz,
+                                                     @NotNull LirPropertyDef property,
+                                                     @NotNull GodotBindingUsageBuffer usageBuffer) {
+        var sourceInit = requireOnreadySourceInitFunction(clazz, property);
+        var bodyBuilder = new CBodyBuilder(
+                helper,
+                clazz,
+                sourceInit,
+                usageBuffer
+        );
+        bodyBuilder.moveOwnedCallIntoSlot(
+                bodyBuilder.targetOfExpr("self->" + property.getName(), property.getType()),
+                clazz.getName() + "_" + sourceInit.getName() + "("
+                        + helper.renderOwnerFatSelfFromWrapperPtr(clazz.getName(), "self") + ")",
+                sourceInit.getReturnType()
+        );
+        return bodyBuilder.build();
+    }
+
+    @NotNull String generateOnreadyApplyBody(@NotNull LirClassDef clazz,
+                                             @NotNull LirPropertyDef property,
+                                             @NotNull GodotBindingUsageSession godotBindingUsageSession) {
+        var buffer = godotBindingUsageSession.newFunctionBuffer();
+        var body = generateOnreadyApplyBody(clazz, property, buffer);
         godotBindingUsageSession.commit(buffer);
         return body;
     }
@@ -864,8 +1116,18 @@ public class CCodegen implements Codegen {
         registerFileScopeSymbol(symbolSources, "initialize", "module initialize callback (entry.c.ftl)");
         registerFileScopeSymbol(symbolSources, "deinitialize", "module deinitialize callback (entry.c.ftl)");
         registerFileScopeSymbol(symbolSources, "class_library", "class library storage (entry.h.ftl)");
+        // Lifecycle flag enumerators (anonymous enum in entry.h.ftl): enum constants live in
+        // the ordinary file-scope identifier namespace, so a user function/global with the
+        // same generated name must fail early — member/property names stay legal.
+        for (var flag : List.of("GDCC_FLAG_ONREADY_DONE", "GDCC_FLAG_CTOR_COMPLETE", "GDCC_FLAG_HAS_ONREADY")) {
+            registerFileScopeSymbol(symbolSources, flag, "lifecycle flag constant '" + flag + "' (entry.h.ftl)");
+        }
         for (var classDef : module.getClassDefs()) {
             var className = classDef.getName();
+            // The wrapper typedef is an ordinary file-scope identifier (`typedef struct X X`);
+            // registering it makes generated typedef/table/enumerator collisions report both
+            // sources instead of reaching the C compiler.
+            registerFileScopeSymbol(symbolSources, className, "wrapper typedef of '" + className + "'");
             for (var suffix : List.of(
                     "_class_bind_methods", "_class_create_instance", "_class_free_instance",
                     "_class_constructor", "_class_destructor", "_class_notification",
@@ -898,8 +1160,13 @@ public class CCodegen implements Codegen {
                             "static property backing of '" + className + "." + property.getName() + "'");
                 } else {
                     registerFileScopeSymbol(symbolSources,
-                            helper.renderPropertyInitApplyHelperName(classDef, property),
-                            "property-init apply helper of '" + className + "." + property.getName() + "'");
+                            helper.renderPropertyConstructionApplyHelperName(classDef, property),
+                            "property construction apply helper of '" + className + "." + property.getName() + "'");
+                    if (helper.checkOnreadyInitializer(classDef, property)) {
+                        registerFileScopeSymbol(symbolSources,
+                                helper.renderOnreadyApplyHelperName(classDef, property),
+                                "onready apply helper of '" + className + "." + property.getName() + "'");
+                    }
                 }
             }
             if (hasStaticProperties) {
@@ -908,6 +1175,31 @@ public class CCodegen implements Codegen {
                 registerFileScopeSymbol(symbolSources, helper.renderStaticInitializersSymbol(className),
                         "static initializers entry of '" + className + "'");
             }
+            if (helper.onreadyPlan().classPlan(className).chainHasOnreadyInitializer()) {
+                registerFileScopeSymbol(symbolSources,
+                        helper.renderOnreadyChainApplyHelperName(className),
+                        "onready chain apply helper of '" + className + "'");
+                registerFileScopeSymbol(symbolSources,
+                        helper.renderOnreadyRootApplyHelperName(className),
+                        "onready root apply adapter of '" + className + "'");
+                registerFileScopeSymbol(symbolSources,
+                        helper.renderOnreadyReadyHelperName(className),
+                        "onready composite ready helper of '" + className + "'");
+                registerFileScopeSymbol(symbolSources,
+                        helper.renderOnreadyClassNameGetterName(className),
+                        "onready class-name key getter of '" + className + "'");
+            }
+        }
+        for (var rootPlan : helper.onreadyPlan().rootLookupPlans()) {
+            registerFileScopeSymbol(symbolSources,
+                    helper.renderOnreadyLookupEntryTypeName(rootPlan.rootClassName()),
+                    "onready lookup entry typedef of root '" + rootPlan.rootClassName() + "'");
+            registerFileScopeSymbol(symbolSources,
+                    helper.renderOnreadyLookupTableName(rootPlan.rootClassName()),
+                    "onready lookup table of root '" + rootPlan.rootClassName() + "'");
+            registerFileScopeSymbol(symbolSources,
+                    helper.renderOnreadyInitializeHelperName(rootPlan.rootClassName()),
+                    "onready entry-initialization helper of root '" + rootPlan.rootClassName() + "'");
         }
     }
 
@@ -955,6 +1247,8 @@ public class CCodegen implements Codegen {
             var bodyRender = new GenerateRenderFacade(
                     (classDef, func) -> generateFuncBody(classDef, func, usageSession),
                     (classDef, property) -> generatePropertyInitApplyBody(classDef, property, usageSession),
+                    (classDef, property) -> generatePropertyDefaultApplyBody(classDef, property, usageSession),
+                    (classDef, property) -> generateOnreadyApplyBody(classDef, property, usageSession),
                     classDef -> generateStaticDefaultsBody(classDef, usageSession),
                     classDef -> generateStaticInitializersBody(classDef, usageSession),
                     this::generateStaticDeinitializeBody,
@@ -1052,5 +1346,16 @@ public class CCodegen implements Codegen {
         // `() -> Dictionary` binding shape is collected together with user functions.
         this.metadataJsonByClass = CClassMetadataSupport.synthesize(module, ctx, Instant.now()).metadataJsonByClass();
         this.helper = new CGenHelper(ctx, module.getClassDefs());
+        // Freeze the onready plan before `generate` backfills `initFunc` — only a
+        // pre-synthesis snapshot separates source initializers from synthesized defaults.
+        helper.onreadyPlan();
+    }
+
+    /// Delegates to the helper's frozen onready session plan.
+    @NotNull COnreadyPlan onreadyPlan() {
+        if (helper == null) {
+            throw new IllegalStateException("CCodegen not prepared. Call prepare() before onreadyPlan().");
+        }
+        return helper.onreadyPlan();
     }
 }

@@ -1,9 +1,22 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Objects;
+
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import dev.superice.gdparser.frontend.ast.ClassDeclaration;
+import dev.superice.gdparser.frontend.ast.DeclarationKind;
+import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.SourceFile;
+import dev.superice.gdparser.frontend.ast.Statement;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.scope.ClassScope;
-import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendGdAnnotation;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExportAnnotationSupport;
@@ -22,24 +35,12 @@ import gd.script.gdcc.type.GdPackedArrayType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
-import dev.superice.gdparser.frontend.ast.ClassDeclaration;
-import dev.superice.gdparser.frontend.ast.DeclarationKind;
-import dev.superice.gdparser.frontend.ast.Node;
-import dev.superice.gdparser.frontend.ast.SourceFile;
-import dev.superice.gdparser.frontend.ast.Statement;
-import dev.superice.gdparser.frontend.ast.VariableDeclaration;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
-
-import java.nio.file.Path;
-import java.util.List;
-import java.util.Objects;
 
 /// Diagnostics-only annotation placement validator for the currently supported subset.
 ///
-/// Current `@onready` contract stays intentionally small: skeleton retains the annotation, then
-/// this analyzer validates owner-class and staticness placement without introducing runtime
-/// `_ready()` timing semantics.
+/// For `@onready`, skeleton retains the annotation on the property and this analyzer validates
+/// the placement rules (class `var` property, non-static, owner derived from `Node`, no
+/// duplicates). Ready-time execution semantics are owned by the C backend, not this analyzer.
 ///
 /// `@export` is retained by the skeleton for ClassDB usage metadata, but Godot rejects every
 /// export annotation on a static variable (export registers per-instance storage, which a static
@@ -141,11 +142,27 @@ public class FrontendAnnotationUsageAnalyzer {
         }
 
         private void validateOnreadyUsage(@NotNull Node annotatedNode) {
-            var onreadyAnnotation = findAnnotationByName(annotatedNode, "onready");
-            if (onreadyAnnotation == null) {
+            var onreadyAnnotations = findAnnotationsByName(annotatedNode, "onready");
+            if (onreadyAnnotations.isEmpty()) {
                 return;
             }
 
+            validateFirstOnreadyAnnotation(annotatedNode, onreadyAnnotations.getFirst());
+            // Godot rejects every repeat of `@onready` on the same variable ("can only be used
+            // once per variable"); the side table keeps all annotations so each repeat is
+            // diagnosed at its own source range instead of hiding behind the first one.
+            for (var duplicateIndex = 1; duplicateIndex < onreadyAnnotations.size(); duplicateIndex++) {
+                reportInvalidUsage(
+                        onreadyAnnotations.get(duplicateIndex),
+                        "@onready can only be used once per variable"
+                );
+            }
+        }
+
+        private void validateFirstOnreadyAnnotation(
+                @NotNull Node annotatedNode,
+                @NotNull FrontendGdAnnotation onreadyAnnotation
+        ) {
             if (!(annotatedNode instanceof VariableDeclaration variableDeclaration)
                     || variableDeclaration.kind() != DeclarationKind.VAR
                     || !(scopesByAst.get(variableDeclaration) instanceof ClassScope propertyScope)) {
@@ -480,14 +497,6 @@ public class FrontendAnnotationUsageAnalyzer {
                     sourcePath,
                     annotation.range()
             );
-        }
-
-        private @Nullable FrontendGdAnnotation findAnnotationByName(@NotNull Node annotatedNode, @NotNull String name) {
-            return analysisData.annotationsByAst().getOrDefault(annotatedNode, List.of()).stream()
-                    .filter(annotation -> annotation.name().equals(name))
-                    .filter(annotation -> !isDamagedSource(annotation))
-                    .findFirst()
-                    .orElse(null);
         }
 
         private @NotNull List<FrontendGdAnnotation> findAnnotationsByName(@NotNull Node annotatedNode, @NotNull String name) {

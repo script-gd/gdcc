@@ -56,7 +56,7 @@
 - GDCC 子类不保证存在直接 `_object` 字段，任何新代码都不能重新依赖 `self->_object` 作为通用对象指针访问方式。
 - `*_class_create_instance(...)` 构造最近 native ancestor，不构造直接 GDCC 父类。
 - `godot_object_set_instance(...)` 与 `godot_object_set_instance_binding(...)` 只在最派生 GDCC 创建路径执行一次。
-- GDCC->GDCC 转换只允许可证明的上行转换，生成 `_super` 链表达式；不可证明路径必须 fail-fast。
+- GDCC->GDCC 转换只允许可证明的上行转换，生成 `_super` 链表达式；不可证明路径必须 fail-fast。除该链表达式外，受控的 offset-0 数据指针直转仅存在于下列豁免点，均不属于本条款放宽：vtable trampoline 下行（`virtual_override_vtable_implementation.md`）；onready 三处（`onready_class_implementation.md`）——根适配器下行 `(<C>*)root`、`_ready` 入口按需初始化物理根 wrapper `(<Root>*)$self.ptr`、组合 impl 用户 `_ready` 声明 owner `(<Decl>*)self`。
 - `CALL_METHOD` 在 GDCC 子类 receiver 调用 GDCC 父类 owner 方法时，必须复用上述安全上行路径，不能退回裸 C cast。
 - `entry.h` 的 wrapper struct 定义与 `entry.c` 的 ClassDB 注册都按模块继承拓扑 base-before-derived 生成（`inheritanceOrderedClassDefs`），不直接使用原始 `module.classDefs` 顺序；module 顺序由源文件顺序决定，可以是 derived-first。
 
@@ -69,7 +69,7 @@
 - `_super` 字段必须保持首字段位置，不能被调试字段、metadata 字段或当前类字段挤到后面。
 - 根段额外持有两个共享字段（派生类经 `_super` 链访问，不得逐派生类各放一份）：
     - `const void* _vtable`（仅当整个继承层级含至少一个 vtable slot 时存在；见 `virtual_override_vtable_implementation.md`）。
-    - `GDExtensionBool _gdcc_destructed`（恒存在）：热重载 exactly-once 析构守卫，属 extension 内部布局而非对外 ABI；访问经 `_super` 链表达式（`CGenHelper.renderDestructedFlagAccessExpr`，与 vtable 字段访问同一模式），见 §8。
+    - `uint8_t _gdcc_flags`（恒存在）：共享生命周期位域——bit0 为热重载 exactly-once 析构守卫（字面 `1` 读写，`& 1` / `|= 1`），bit1 `GDCC_FLAG_ONREADY_DONE`、bit2 `GDCC_FLAG_CTOR_COMPLETE`、bit3 `GDCC_FLAG_HAS_ONREADY` 为 onready 状态位；访问经 `_super` 链表达式（`CGenHelper.renderGdccFlagsAccessExpr` / `renderDestructedFlagAccessExpr`，与 vtable 字段访问同一模式），见 §8 与 `onready_class_implementation.md`。
 - 当前类字段继续放在当前 wrapper 层；父类字段访问必须通过 `_super` 链或父类 helper。
 - 任何修改 struct 模板的变更都必须同时验证：
   - 多级继承前缀布局仍稳定
@@ -101,7 +101,7 @@
   2. allocate GDCC wrapper
   3. set object pointer through `<Class>_set_object_ptr(...)`
   4. initialize `_vtable` field when the hierarchy carries slots
-  5. explicitly clear the root `_gdcc_destructed` flag（`godot_mem_alloc` 不置零，必须显式置 `false`）
+  5. explicitly init the root `_gdcc_flags` byte（`godot_mem_alloc` 不置零）：链事实为真写 `GDCC_FLAG_HAS_ONREADY`，否则写 `0`
   6. bind extension instance
   7. bind instance binding
   8. send post-initialize notification when required
@@ -112,9 +112,9 @@
 - 每个可创建类（含隐藏的协程状态类——引擎无豁免，缺一整个扩展被禁 reload）必须生成 `<C>_class_recreate_instance(void* p_class_userdata, GDExtensionObjectPtr p_object)` 并填入 creation info 的 `recreate_instance_func`。
 - recreate 语义（引擎 `Object::reset_internal_extension` 将返回值直接赋给 `_extension_instance`）：
     - **必须 `return self`（wrapper 指针）**，禁止 `return p_object`。
-    - 做：分配 wrapper → `<C>_set_object_ptr(self, p_object)` → 写 `_vtable`（与 create 共用 `renderVtableFieldInitExpr`——重绑到本代静态表）→ `_gdcc_destructed = false` → `godot_object_set_instance_binding`（与 create 相同的 library/callbacks）→ `<C>_class_init_fields(self)`。
+    - 做：分配 wrapper → `<C>_set_object_ptr(self, p_object)` → 写 `_vtable`（与 create 共用 `renderVtableFieldInitExpr`——重绑到本代静态表）→ `_gdcc_flags = GDCC_FLAG_CTOR_COMPLETE | GDCC_FLAG_ONREADY_DONE`（链事实为真时加 `GDCC_FLAG_HAS_ONREADY`；不查询类名、不执行 onready 初始化器）→ `godot_object_set_instance_binding`（与 create 相同的 library/callbacks）→ `<C>_class_init_fields(self)`。
     - 不做：不调 `classdb_construct_object2`（Godot 对象存活）；不调 `godot_object_set_instance`（引擎自挂 `_extension`，实例跟踪跨 reload 存活）；不发 POSTINITIALIZE；不做 RefCounted 初始化；不调 `<C>_class_constructor`、不跑 `_init`。
-- `<C>_class_init_fields(<C>* self)`：recreate 专用递归字段初始化 helper——base-first 递归父段后执行本类非 static 属性的 init apply helper；不调 `_init`。constructor 不复用它（`_init` 调用与父递归在 constructor 中交错，无法因式分解）。
+- `<C>_class_init_fields(<C>* self)`：recreate 专用递归字段初始化 helper——base-first 递归父段后执行本类非 static 属性的 init apply helper；非 onready 属性维持真实 initializer apply，onready-with-init 属性只重放类型默认值（真实 initializer 仍推迟到 ready 路径）；不调 `_init`。constructor 不复用它（`_init` 调用与父递归在 constructor 中交错，无法因式分解）。
 - 协程状态类 recreate 采用 RELOADED_SHELL 惰性壳（见 `gdcc_runtime_lib.md` 协程 header 条款）：wrapper 整体 `memset` 置合法默认值 → `gdcc_coro_state_header_init`（新代 descriptor）→ `reloaded_shell = true` → coro token binding（`gdcc_coro_binding_token()`，禁止照抄 class_library）。
 - 属性恢复由引擎在 recreate 后经 property setter 完成；仅在 `_init` 中赋值的字段保持 initializer 值（用户合同）。
 
@@ -171,9 +171,9 @@
 - 正常删除和 reload 均在 `free_instance_func` 析构字段。普通类 PREDELETE 不析构字段：Godot 反向 PREDELETE 先通知 extension，随后 Node 才退树并调用 `_exit_tree`，字段必须保留到这些回调完成。reload 经 `Object::clear_internal_extension` 直接调用 `free_instance_func`，不依赖 PREDELETE。
 - 析构固定拆分为两层（命名不得更改）：
     - `<C>_class_destruct_fields(<C>* self)`：**无守卫**的字段析构链——析构本类 destroyable 非 static 字段后递归 `<super>_class_destruct_fields(&self->_super)`（derived→base）。守卫禁止放在链式函数入口，否则派生类置位后父类段被截断、父类字段全部泄漏。
-    - `<C>_class_destructor(<C>* self)`：**唯一带守卫的入口**——`self == NULL` 或根 `_gdcc_destructed` 已置位则直接返回；否则置位根标志并调用 `<C>_class_destruct_fields(self)`。
-- `<C>_class_free_instance` 先判 `!_gdcc_destructed` 再调 `<C>_class_destructor`，最后 `godot_mem_free(self)`；普通类 notification 不触发字段析构。
-- 根标志由 create（§3）与 recreate 显式置 `false`（`godot_mem_alloc` 不置零）。
+    - `<C>_class_destructor(<C>* self)`：**唯一带守卫的入口**——`self == NULL` 或根 `_gdcc_flags` bit0 已置位（`& 1` 测试）则直接返回；否则 `|= 1` 置位（只改 bit0，不动兄弟 onready 位）并调用 `<C>_class_destruct_fields(self)`。
+- `<C>_class_free_instance` 先判 `!(_gdcc_flags & 1)` 再调 `<C>_class_destructor`，最后 `godot_mem_free(self)`；普通类 notification 不触发字段析构。
+- 根标志由 create（§3）与 recreate 显式初始化（`godot_mem_alloc` 不置零）：create 写 `GDCC_FLAG_HAS_ONREADY`（链事实为真）或 `0`，recreate 写 `GDCC_FLAG_CTOR_COMPLETE | GDCC_FLAG_ONREADY_DONE`（+HAS）——两点的非 destructed 位语义不同，不得互换。
 - 协程状态类**不接入**该标志：其 PREDELETE 只做 cancel（不析构 frame 字段），字段清理由其 `free_instance` 唯一承担，引擎对每条路径恰好各调一次 free_instance，天然 exactly-once。
 - 析构路径不得新增对 `GD_STATIC_S`/`GD_STATIC_SN` 惰性创建的依赖（reload 时 free_instance 在 deinitialize 类注销段内执行，届时 registry 尚未销毁，现有路径可工作，但不得新增依赖以防御未来顺序调整）；字段析构链与协程字段清理**不得依赖 static backing**（static 销毁在类注销段之前，注销段内 free_instance 执行时 static 已销毁——它们只触碰 self 字段）；**Object 字段/capture/参数的释放一律经 `instance_id` → ObjectDB（`gdcc_object_live_ptr`），禁止经 fat ptr 缓存的 GDCC wrapper 取 raw object**——reload 批量 clear 的实例遍历顺序任意，被引用实例的 wrapper 可能已先释放而其 Godot 对象仍因强引用存活，解引用缓存 wrapper 即 UAF（wrapper 生命 ≠ 对象生命）。
 

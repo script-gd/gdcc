@@ -104,6 +104,11 @@ Implementation note:
   - it must not be modeled as a property setter call
   - object-valued apply still follows the unified slot-write core for ptr conversion and ownership consume
   - it skips old-value release because constructor-time property apply is not an overwrite route
+  - the onready construction-time default apply (`<C>_class_apply_property_default_<prop>`) follows the same first-write rule
+- The onready ready-time apply (`<C>_class_apply_onready_init_<prop>`) is the counterpart overwrite route:
+  - it runs only after the field's construction-time first write
+  - it must release/destroy the stored default value and must never degrade back to the first-write path
+  - see `doc/module_impl/backend/onready_class_implementation.md`
 
 ### 3.4 Return Rules
 
