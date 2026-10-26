@@ -4052,7 +4052,7 @@ public class CCodegenTest {
 
     private static @NotNull String extractSection(@NotNull String cCode, @NotNull String sectionHeader) {
         // Match the function definition (header + line break + brace), never its file-top
-        // prototype; the formatter emits CRLF, so the line break is matched with `\R`.
+        // prototype; the line break is matched leniently with `\R`.
         var matcher = Pattern.compile(Pattern.quote(sectionHeader) + "\\R\\{").matcher(cCode);
         assertTrue(matcher.find(), () -> "Missing section: " + sectionHeader);
         var start = matcher.start();
