@@ -54,11 +54,12 @@
   且 String/Vector 等 struct 槽仍依赖该路径）。生成代码不得再出现白名单
   `gdcc_packed_ref.h` helper 之外的 packed struct<->Variant 转换符号。
 - `markTargetInitialized(...)` 与 temp 生命周期仍由调用方控制（未内聚到槽位写入 helper）。
-- constructor-time property initializer apply 当前通过 `CCodegen#generatePropertyInitApplyBody(...)` 调用 direct backing-field helper：
-  - `${Class}_class_apply_property_init_<property>(self)`
-  - 该 helper 明确不是 setter route
-  - object-valued apply 通过 `applyPropertyInitializerFirstWrite(...)` 复用统一 ptr conversion / ownership consume 语义
-  - constructor-time first write 仍不释放旧字段值
+- property initializer apply 当前是双入口：
+  - constructor-time apply（first-write）：普通 initializer 经 `CCodegen#generatePropertyInitApplyBody(...)` 走 `${Class}_class_apply_property_init_<property>(self)`；onready 且有源码 initializer 的 property 经 `generatePropertyDefaultApplyBody(...)` 走 `<C>_class_apply_property_default_<prop>(self)`，只写类型默认值
+  - ready-time apply（overwrite，仅 onready 且有源码 initializer 的 property）：`CCodegen#generateOnreadyApplyBody(...)` 生成 `<C>_class_apply_onready_init_<prop>(self)`，经 `moveOwnedCallIntoSlot(...)` destroy-then-move overwrite
+  - 两类 helper 都是 direct backing-field route，明确不是 setter route
+  - object-valued constructor apply 通过 `applyPropertyInitializerFirstWrite(...)` 复用统一 ptr conversion / ownership consume 语义
+  - constructor-time first write 仍不释放旧字段值；ready-time overwrite 必须销毁旧值，不得退回 first-write 路径
 
 ### 2.2 所有权与值来源模型
 
@@ -72,10 +73,11 @@
 - `callAssign(...)` 将对象返回值按 `OWNED` 路径写入目标槽，避免重复 own
 - constructor/materialization helper 与 property-init helper 这类 fresh object producer 也必须显式走 `OWNED`
 - `generatePropertyInitApplyBody(...)` 也会把 property init helper 的对象返回值标记为 `OWNED`，因为该 helper 语义上返回 fresh value。
-- 当前已审计并绑定到该合同的 backend fresh-object 入口只有三类：
+- 当前已审计并绑定到该合同的 backend fresh-object 入口只有四类：
   - `emitCallResultAssignment(...)`
   - `ConstructInsnGen` 中的 `construct_object`
   - `CCodegen.generatePropertyInitApplyBody(...)`
+  - `CCodegen.generateOnreadyApplyBody(...)`（经 `moveOwnedCallIntoSlot` 消费 `_field_init_<prop>` 的 fresh 返回值）
 - `OwnershipKind` 不是“注释性标记”，而是直接驱动对象槽位写入行为：
   - `emitObjectSlotWrite(...)` 遇到 `BORROWED` rhs 会补发 `own_object` / `try_own_object`
   - 遇到 `OWNED` rhs 则直接 consume，不重复 own
@@ -217,7 +219,7 @@
 ### 7.2 FTL 与 Java 路径演进偏差风险
 
 - 模板层（`entry.c.ftl`）仍保留部分生命周期代码。
-- property initializer constructor-time apply 已通过 Java 侧统一 body generation 收口为单一 apply helper，降低了 class constructor 或模板层继续内联字段写入的漂移风险。
+- property initializer 的 constructor-time apply 与 onready ready-time apply 均已通过 Java 侧统一 body generation 收口，降低了 class constructor、onready 链函数或模板层继续内联字段写入的漂移风险。
 - 后续若 Java 语义继续收敛，需同步审计模板逻辑，避免双轨语义漂移。
 
 ### 7.3 helper 宏可移植性

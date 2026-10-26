@@ -38,9 +38,9 @@ import gd.script.gdcc.type.GdVariantType;
 
 /// Diagnostics-only annotation placement validator for the currently supported subset.
 ///
-/// Current `@onready` contract stays intentionally small: skeleton retains the annotation, then
-/// this analyzer validates owner-class and staticness placement without introducing runtime
-/// `_ready()` timing semantics.
+/// For `@onready`, skeleton retains the annotation on the property and this analyzer validates
+/// the placement rules (class `var` property, non-static, owner derived from `Node`, no
+/// duplicates). Ready-time execution semantics are owned by the C backend, not this analyzer.
 ///
 /// `@export` is retained by the skeleton for ClassDB usage metadata, but Godot rejects every
 /// export annotation on a static variable (export registers per-instance storage, which a static

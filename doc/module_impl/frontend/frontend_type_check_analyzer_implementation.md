@@ -27,6 +27,7 @@
   - `scope_analyzer_implementation.md`
   - `scope_type_resolver_implementation.md`
   - `doc/analysis/frontend_semantic_analyzer_research_report.md`
+  - `doc/module_impl/backend/onready_class_implementation.md`
   - `doc/gdcc_type_system.md`
   - `doc/gdcc_low_ir.md`
 - 明确非目标：
@@ -82,6 +83,7 @@
 - `@onready` 只能用于 class property `var`
 - owner class 必须派生自 `Node`
 - `@onready` 不可用于 `static` property
+- 同一 property 不允许重复 `@onready`
 - `@tool` 只允许顶层 `SourceFile` 上的零参形式
 - `@export*` 家族的 placement（仅 class `var` property）、static 拒绝、参数结构与类型兼容校验（完整合同见 `frontend_annotation_implementation.md` §5）
 
@@ -367,23 +369,22 @@ owner 分工固定为：
 当前 `@onready` 的实现范围需要分层理解：
 
 - skeleton phase 保留 annotation retention
-- `FrontendAnnotationUsageAnalyzer` 做最小 placement validation
-- backend/lowering 目前不消费 `@onready` 的 ready-time 语义
+- `FrontendAnnotationUsageAnalyzer` 做 placement validation
+- ready-time 执行模型由 backend 实现（构造期默认值分流 + ready-time apply 双入口），完整合同见 `doc/module_impl/backend/onready_class_implementation.md`
 
 当前合法性规则固定为：
 
 - 只能用于 class property `var`
 - owner class 必须派生自 `Node`
 - 不可用于 `static` property
+- 同一 property 不允许重复 `@onready`
 
-当前明确未做的事：
+frontend 侧职责边界保持 diagnostics-only：
 
-- `_ready()` timing
-- delayed evaluation
-- dependency ordering
-- 任何额外的 `@onready` lowering / runtime codegen
+- `_ready()` timing、delayed evaluation、dependency ordering 不属于本 analyzer 的语义面
+- frontend 不实现 `@onready` lowering / runtime codegen；这些已由 backend 的 ready-time apply 合同承担
 
-也就是说，当前“已实现”的 `@onready` 只代表 frontend retention + usage validation 已完成，不得被外推成全编译链 ready-time 语义已完成。
+也就是说，frontend 侧合同只覆盖 retention + usage validation；ready-time 执行模型的事实源是 `doc/module_impl/backend/onready_class_implementation.md`。
 
 ---
 
@@ -423,7 +424,6 @@ owner 分工固定为：
 - missing-return / all-path return completeness
 - property-side inference / metadata backfill
 - frontend -> LIR 的 truthiness / condition normalization
-- `@onready` runtime / ready-time lowering
 - parameter default、block-local `const`、class `const` 的正式 body semantics
 - `match` 形状校验已落地；ARRAY / DICTIONARY 的 compile-ready lowering 已闭环（route-A 门闩链，见 `frontend_match_statement_implementation.md`）
 - for-in route-aware type-check 已落地：`handleForStatement(...)` 消费 `FrontendForIterationPlan` 校验 range arity / argument int slot / int shorthand stop / 显式 iterator element conversion，并遍历 for body。已注册 route 的 compile gate / CFG / body lowering 已闭环；`OBJECT_CUSTOM` 仍未注册 lowering contract。完整合同见 `frontend_for_range_loop_implementation.md`
@@ -434,7 +434,7 @@ owner 分工固定为：
 2. slot compatibility 继续只走 `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)`，具体 conversion 支持面继续以 `frontend_implicit_conversion_matrix.md` 为唯一真源。
 3. property initializer boundary 继续保持 upstream owner 单一责任，不把 boundary 错误重新翻译成 type-check 错误。
 4. condition source contract 与 downstream bool-only lowering contract 必须同时写清楚，不允许再次出现“代码 strict bool、文档默认兼容 GDScript、backend 另有要求”的分叉。
-5. `@onready` 的 frontend usage validation 与 runtime semantics 必须继续分层记录，不得混写成“已完成 annotation 就等于已完成 ready-time 语义”。
+5. `@onready` 的 frontend usage validation（本文档 §5）与 ready-time 执行模型（`onready_class_implementation.md`）必须继续分层记录；两层合同分别由 frontend analyzer 与 backend 承担，不得混写。
 
 ---
 

@@ -56,7 +56,7 @@
 - GDCC 子类不保证存在直接 `_object` 字段，任何新代码都不能重新依赖 `self->_object` 作为通用对象指针访问方式。
 - `*_class_create_instance(...)` 构造最近 native ancestor，不构造直接 GDCC 父类。
 - `godot_object_set_instance(...)` 与 `godot_object_set_instance_binding(...)` 只在最派生 GDCC 创建路径执行一次。
-- GDCC->GDCC 转换只允许可证明的上行转换，生成 `_super` 链表达式；不可证明路径必须 fail-fast。除该链表达式外，受控的 offset-0 数据指针直转仅存在于下列豁免点，均不属于本条款放宽：vtable trampoline 下行（`virtual_override_vtable_implementation.md`）；onready 三处（`onready_lowering_implementation.md`）——根适配器下行 `(<C>*)root`、`_ready` 入口按需初始化物理根 wrapper `(<Root>*)$self.ptr`、组合 impl 用户 `_ready` 声明 owner `(<Decl>*)self`。
+- GDCC->GDCC 转换只允许可证明的上行转换，生成 `_super` 链表达式；不可证明路径必须 fail-fast。除该链表达式外，受控的 offset-0 数据指针直转仅存在于下列豁免点，均不属于本条款放宽：vtable trampoline 下行（`virtual_override_vtable_implementation.md`）；onready 三处（`onready_class_implementation.md`）——根适配器下行 `(<C>*)root`、`_ready` 入口按需初始化物理根 wrapper `(<Root>*)$self.ptr`、组合 impl 用户 `_ready` 声明 owner `(<Decl>*)self`。
 - `CALL_METHOD` 在 GDCC 子类 receiver 调用 GDCC 父类 owner 方法时，必须复用上述安全上行路径，不能退回裸 C cast。
 - `entry.h` 的 wrapper struct 定义与 `entry.c` 的 ClassDB 注册都按模块继承拓扑 base-before-derived 生成（`inheritanceOrderedClassDefs`），不直接使用原始 `module.classDefs` 顺序；module 顺序由源文件顺序决定，可以是 derived-first。
 
@@ -69,7 +69,7 @@
 - `_super` 字段必须保持首字段位置，不能被调试字段、metadata 字段或当前类字段挤到后面。
 - 根段额外持有两个共享字段（派生类经 `_super` 链访问，不得逐派生类各放一份）：
     - `const void* _vtable`（仅当整个继承层级含至少一个 vtable slot 时存在；见 `virtual_override_vtable_implementation.md`）。
-    - `uint8_t _gdcc_flags`（恒存在）：共享生命周期位域——bit0 为热重载 exactly-once 析构守卫（字面 `1` 读写，`& 1` / `|= 1`），bit1 `GDCC_FLAG_ONREADY_DONE`、bit2 `GDCC_FLAG_CTOR_COMPLETE`、bit3 `GDCC_FLAG_HAS_ONREADY` 为 onready 状态位；访问经 `_super` 链表达式（`CGenHelper.renderGdccFlagsAccessExpr` / `renderDestructedFlagAccessExpr`，与 vtable 字段访问同一模式），见 §8 与 `onready_lowering_implementation.md`。
+    - `uint8_t _gdcc_flags`（恒存在）：共享生命周期位域——bit0 为热重载 exactly-once 析构守卫（字面 `1` 读写，`& 1` / `|= 1`），bit1 `GDCC_FLAG_ONREADY_DONE`、bit2 `GDCC_FLAG_CTOR_COMPLETE`、bit3 `GDCC_FLAG_HAS_ONREADY` 为 onready 状态位；访问经 `_super` 链表达式（`CGenHelper.renderGdccFlagsAccessExpr` / `renderDestructedFlagAccessExpr`，与 vtable 字段访问同一模式），见 §8 与 `onready_class_implementation.md`。
 - 当前类字段继续放在当前 wrapper 层；父类字段访问必须通过 `_super` 链或父类 helper。
 - 任何修改 struct 模板的变更都必须同时验证：
   - 多级继承前缀布局仍稳定

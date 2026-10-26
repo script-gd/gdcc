@@ -205,7 +205,7 @@ call_method(result, "get_node", receiverTmp, [pathTmp])
 
 ## 6. 已知限制与后续范围
 
-1. **property initializer 与 `@onready`**：Godot 的 `@onready var c = $Child` 依赖 deferred-init 语义；gdcc 的 `@onready` 当前仅 skeleton 保留注解。待 `@onready` 真正实现后重新评估。property initializer 内的未记录 lambda 由既有 root 诊断持有，其中的 `$` / `%` 随之 fail-closed。
+1. **property initializer 与 `@onready`**：`@onready` 的 ready-time 执行模型已由 backend 实现（构造期默认值 + ready-time apply，见 `doc/module_impl/backend/onready_class_implementation.md`），但 `$` / `%` 在 property initializer / onready initializer 中的 compile gate 仍关闭，`@onready var c = $Child` 尚不可编译；解除该 gate 属另行立项的后续工作。property initializer 内的未记录 lambda 由既有 root 诊断持有，其中的 `$` / `%` 随之 fail-closed。
 2. **`isQuotedNodePathLiteral` 的 `$"` 分支**：与 4.5.1 dump 实际编码（`NodePath("")`）不符的 latent defensive code，可独立清理，不在本事实源关键路径。
 3. **`get_node` 缺失节点的运行时行为**：GDCC 忠实转发引擎错误，不额外包装。e2e 用 `get_node_or_null` 覆盖缺失路径，避免环境差异。
 4. **ref 结果槽的 `literal_node_path`**：当前 fail-closed。若未来出现真实需求，需在 gdcc-owned runtime 增加就地初始化 helper。
