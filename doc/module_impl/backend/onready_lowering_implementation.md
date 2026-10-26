@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：Step 1-7 Implemented / Verified / Reviewed；Step 8-10 待实施
+- 状态：Step 1-9 Implemented / Verified / Reviewed；Step 10 待实施
 - 更新时间：2026-10-24
 - 适用范围：
   - `src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java`
@@ -336,39 +336,57 @@
 - [x] golden 断言：入口按需初始化检查顺序（DONE 测试 → CTOR_COMPLETE 测试 → 函数字段非空 → 置位 DONE → 调用）与 `goto entry` 前注入位置（`generateShouldInitializeOnreadyAtSyncReadyEntry`）；声明类无链事实但后代有仍注入（`generateShouldInitializeOnreadyAtInheritedReadyEntry`）；抽象类注入（`generateShouldInitializeOnreadyAtAbstractBaseReadyEntry`）；clean/sibling、static/hidden/wrong-signature/wrong-name 全部不注入（`generateShouldSkipOnreadyEntryInitializationWhenIneligible` + `CGenHelperTest.renderOnreadyEntryInitializationShould*` 含 lambda）；coroutine thunk 唯一注入且先于 `mco_resume`、body 与 shell 无重复（`generateShouldInitializeOnreadyAtCoroutineStartThunkEntry`）；组合 impl 按最派生 owner 转发（`generateShouldForwardCompositeReadyToMostDerivedUserReady`：StepC 自声明 `_ready` 时转发 `StepC__ready` 无 cast，StepB 仍转发 `(StepA*)self` 强转）；
 - [x] `script/run-gradle-targeted-tests.sh --tests CCodegenOnreadyTest,CGenHelperTest,AwaitInsnGenTest,CCoroutineStateClassCodegenTest,CCodegenTest` 通过（297 tests, 0 failures）；`CProjectBuilderIntegrationTest.compileDerivedFirstOnreadyChainModuleWithRealZig` 通过（derived-first 原生编译），日志/XML 存 `tmp/onready-step567/stage7*`；
 - [x] Godot runtime 回归（Step 7 证据，非 Step 9 锚点收口）：`FrontendLoweringToCProjectBuilderIntegrationTest` 两个场景方法——sync（构造期默认值 / 手调入口按需初始化首调应用与 DONE 去重 / 引擎 READY 重放 / request_ready 重新武装 / `_init` 内直调与 `notification(Node.NOTIFICATION_READY)` 双路径 fail-closed / 无用户 `_ready` 类 / **super 场景**：`OnreadySuperChild` 覆写 `_ready` 且 `super._ready()`——vtable 与 super 双入口共享 DONE，链应用一次后 child body `+=10`，引擎重放与 request_ready 均正确 reset 7→17）与 coroutine（thunk入口按需初始化首调、组合 impl→shell→thunk 引擎路径、signal 同步恢复）——均以 fresh runtime project 运行，combined output 存 `tmp/onready-step567/runtime-onready-sync.log` 与 `runtime-onready-coro.log`（stop signal + 场景成功标记、无错误；测试内日志落 `tempDir/godot.log`）；`NOTIFICATION_READY` 采用前端支持的 `Node.NOTIFICATION_READY` 限定常量语法；
-- 已知边界：Step 9 的完整锚点矩阵（super 调用、export override、热重载场景等）未执行，保持未验证。
+- 已知边界（历史记录，已由 Step 9 收口）：Step 9 实施前完整锚点矩阵（super 调用、export override、热重载场景等）未执行；Step 9 已补齐 `runtime/virtual/` 十对锚点与热重载六场景并全部真实执行通过。
 
 ### Step 8：前端补充诊断与保留前缀
 
 **改动**：
-- `FrontendAnnotationUsageAnalyzer.java`：重复 `@onready` 注解报错（category `sema.annotation_usage`），遍历全部同名注解而非 `findFirst`；
-- `FrontendSyntheticPropertyHelperSupport.java`：新增 `_onready_field_default_` 前缀常量、加入 `RESERVED_PREFIXES`、补充对应诊断文案分支。
+- [x] `FrontendAnnotationUsageAnalyzer.java`：重复 `@onready` 注解报错（category `sema.annotation_usage`），遍历全部同名注解而非 `findFirst`；
+- [x] `FrontendSyntheticPropertyHelperSupport.java`：新增 `_onready_field_default_` 前缀常量、加入 `RESERVED_PREFIXES`、补充对应诊断文案分支。
+
+**实施记录**：
+- `validateOnreadyUsage` 改经 `findAnnotationsByName` 取全部同名注解：首注解移交 `validateFirstOnreadyAnnotation`（原三条 placement 校验逐字迁入，early-return 语义不变），其后每个重复注解经 `reportInvalidUsage` 各自上报 `"@onready can only be used once per variable"`（对齐 Godot `onready_annotation` 的 once-per-variable 诊断）；首注解的 placement 失败不吞掉后续重复诊断，重复注解也不会级联重复 placement 错误。不再被调用的 `findAnnotationByName` 一并移除。
+- `FrontendSyntheticPropertyHelperSupport` 新增 `ONREADY_FIELD_DEFAULT_PREFIX` 常量并挂入 `RESERVED_PREFIXES` 末尾；`reservedPrefixDiagnosticMessage` 增加独立分支（`reserved synthetic onready-default prefix '_onready_field_default_'` + compiler-owned 用途说明），避免落入误述为 init/getter/setter 的 default 分支。`FrontendClassSkeletonBuilder` 的调用路径无需改动，signal/property/function 三类成员名统一经既有 helper 收口。
+- skeleton 保留前缀用例实际落点为 `FrontendClassSkeletonTest`（既有 `_field_*`/`_lambda_`/`_default_`/`_gdcc_` 用例所在类），故新用例按同型惯例加入该类而非文档原先设想的 `FrontendClassSkeletonAnnotationTest`。
+
+**验证**：
+- 编译：`./gradlew classes --no-daemon --info --console=plain` 通过。
+- `script/run-gradle-targeted-tests.sh --tests FrontendAnnotationUsageAnalyzerTest,FrontendClassSkeletonTest,FrontendClassSkeletonAnnotationTest` 通过（80 tests，0 failures，0 skipped——FrontendAnnotationUsageAnalyzerTest 27、FrontendClassSkeletonTest 33、FrontendClassSkeletonAnnotationTest 20）。
 
 **验收**：
-- `FrontendAnnotationUsageAnalyzerTest` 新增重复注解用例；既有 onready 三规则用例不变；
-- skeleton 保留前缀用例覆盖新前缀（用户使用 `_onready_field_default_x` 成员被拒且文案正确）；
-- `script/run-gradle-targeted-tests.sh --tests FrontendAnnotationUsageAnalyzerTest,FrontendClassSkeletonAnnotationTest` 通过。
+- [x] `FrontendAnnotationUsageAnalyzerTest` 新增重复注解用例（`analyzeReportsDuplicateOnreadyAnnotationsOnSameProperty`：单注解属性零诊断、2x/3x 重复分别报 1/2 条 once-per-variable、local 变量重复同时命中 placement 与 duplicate 双诊断、范围与 ERROR severity 断言、retention 不丢）；既有 onready 三规则用例不变；
+- [x] skeleton 保留前缀用例覆盖新前缀（`buildRejectsReservedOnreadyFieldDefaultPrefixButKeepsBoundaryNamesAlive`：`_onready_field_default_x` signal/property/function 均被拒且文案正确，`_onready_field_default`/`_onready_field` 边界名保留）；
+- [x] `script/run-gradle-targeted-tests.sh --tests FrontendAnnotationUsageAnalyzerTest,FrontendClassSkeletonTest,FrontendClassSkeletonAnnotationTest` 通过（保留前缀用例落点为 `FrontendClassSkeletonTest`，验收命令已相应扩展）。
 
 ### Step 9：runtime 测试锚点
 
 **前置约束**：property initializer 当前禁止访问 `self`/同类 non-static 成员，`$`/`%` 仍 DEFERRED；所有锚点的初始化表达式必须落在当前 property-init 支持面内（字面量、全局函数调用、`Node.new()` 等），顺序观察用静态计数器实现。
 
 **改动**（`src/test/test_suite/unit_test/script/runtime/` 新增 anchor，同步登记 `GdScriptUnitTestCompileRunnerTest.EXPECTED_SCRIPT_PATHS`、镜像 validation 文件、以及 `GdScriptEngineVirtualOverrideRuntimeTest.SCRIPT_RESOURCE_PATHS`）：
-- `onready_ready_time_init.gd`：`@onready var x = <支持面内 expr>` 在 `_init` 中为类型默认值、在 `_ready` 体中为真实值；
-- `onready_base_before_subclass.gd`：基类 onready 先于子类 onready、均先于最派生用户 `_ready`（对齐 Godot 同名测试）；
-- `onready_without_user_ready.gd`：无 `_ready` 定义时 onready 仍生效；
-- `onready_super_no_replay.gd`：`super._ready()` 不重放父类 onready；
-- `onready_replay_with_request_ready.gd`：移除再入树不重放；`request_ready()` 后再入树重放；重放前字段已持 RefCounted/容器值时旧值正确释放（以可达性/计数观察，不断言内部实现）；
-- `onready_internal_first_call.gd`：构造完成后、入树前的非引擎路径（如方法内 `self._ready()`）首次调用按实例实际类型执行一次 onready，引擎 ready 分发时再经组合 impl overwrite 修正（对齐 Godot `callp` 双次求值形态）；
-- `onready_inherited_ready_derived_onready.gd`：用户 `_ready` 仅在父类声明、子类新增 onready——内部调用经类级查询表应用**子类**完整链（回归 §3.2-7 的实例类型分发）；
-- `onready_ctor_window_fail_closed.gd`：构造期 fail-closed 三子场景——(a) 基类 `_init` 内虚调用 `_ready`、(b) `_init` 内显式 `notification(NOTIFICATION_READY)`：onready 跳过、DONE 不置位、之后真正入树时正常应用；(c) `_init` 内 `add_child` 进已 ready 的父节点：onready 跳过且**构造完成后不自动补执行**（字段保持默认值），`request_ready()` 后再次入树才应用 initializer 值。锚点的用户 `_ready`/`_init` 函数体只允许读已完成 first-write 的祖先槽，不得读派生 onready 字段（该路径上派生槽未初始化，「不崩溃」承诺不覆盖任意用户函数体）；
-- coroutine 锚点：coroutine `_ready` 经内部 direct 调用与 super 调用时 onready 在首次 await 前完成（thunk 入口按需初始化覆盖）；
-- `onready_export_override.gd`（如 export 支持面允许）：ready 前外部写入的值在 ready 后被 initializer 覆盖；
-- 热重载场景：`GodotEditorHotReloadIntegrationTest` 不读 test_suite `.gd`，锚点必须是在该类内新增的 `SourceFileSpec` scenario（约 `:71` 起），分别覆盖：仅 recreate 不做调用（保持默认值 + 恢复值）；recreate 后手动 `_ready()`（DONE 已置位，不补执行、不覆盖恢复值）；recreate 后 `request_ready()`（组合 impl 按新代码重放）；如基础设施允许，混合 super × request_ready/recreate 场景验收「GDCC 链不重放」的差异行为（差异合同见 §7.1）。
+- [x] `onready_ready_time_init.gd`：`@onready var x = <支持面内 expr>` 在 `_init` 中为类型默认值、在 `_ready` 体中为真实值；
+- [x] `onready_base_before_subclass.gd`：基类 onready 先于子类 onready、均先于最派生用户 `_ready`（对齐 Godot 同名测试）；
+- [x] `onready_without_user_ready.gd`：无 `_ready` 定义时 onready 仍生效；
+- [x] `onready_super_no_replay.gd`：`super._ready()` 不重放父类 onready；
+- [x] `onready_replay_with_request_ready.gd`：移除再入树不重放；`request_ready()` 后再入树重放；重放前字段已持 RefCounted/容器值时旧值正确释放（以可达性/计数观察，不断言内部实现）；
+- [x] `onready_internal_first_call.gd`：构造完成后、入树前的非引擎路径（如方法内 `self._ready()`）首次调用按实例实际类型执行一次 onready，引擎 ready 分发时再经组合 impl overwrite 修正（对齐 Godot `callp` 双次求值形态）；
+- [x] `onready_inherited_ready_derived_onready.gd`：用户 `_ready` 仅在父类声明、子类新增 onready——内部调用经类级查询表应用**子类**完整链（回归 §3.2-7 的实例类型分发）；
+- [x] `onready_ctor_window_fail_closed.gd`：构造期 fail-closed 三子场景——(a) 基类 `_init` 内虚调用 `_ready`、(b) `_init` 内显式 `notification(NOTIFICATION_READY)`：onready 跳过、DONE 不置位、之后真正入树时正常应用；(c) `_init` 内 `add_child` 进已 ready 的父节点：onready 跳过且**构造完成后不自动补执行**（字段保持默认值），`request_ready()` 后再次入树才应用 initializer 值。锚点的用户 `_ready`/`_init` 函数体只允许读已完成 first-write 的祖先槽，不得读派生 onready 字段（该路径上派生槽未初始化，「不崩溃」承诺不覆盖任意用户函数体）；
+- [x] coroutine 锚点 `onready_coroutine_entry_init.gd`：coroutine `_ready` 经内部 direct 调用与 super 调用时 onready 在首次 await 前完成（thunk 入口按需初始化覆盖）；
+- [x] `onready_export_override.gd`（如 export 支持面允许）：ready 前外部写入的值在 ready 后被 initializer 覆盖；
+- [x] 热重载场景：`GodotEditorHotReloadIntegrationTest` 不读 test_suite `.gd`，锚点必须是在该类内新增的 `SourceFileSpec` scenario（约 `:71` 起），分别覆盖：仅 recreate 不做调用（保持默认值 + 恢复值）；recreate 后手动 `_ready()`（DONE 已置位，不补执行、不覆盖恢复值）；recreate 后 `request_ready()`（组合 impl 按新代码重放）；如基础设施允许，混合 super × request_ready/recreate 场景验收「GDCC 链不重放」的差异行为（差异合同见 §7.1）。
+
+**实施记录**：
+- 10 对脚本全部落在 `runtime/virtual/`（引擎 READY 分发是这些锚点的共同入口），镜像 validation 使用 `push_error` 失败路径 + `__UNIT_TEST_PASS_MARKER__` 成功契约；`EXPECTED_SCRIPT_PATHS` 与 `SCRIPT_RESOURCE_PATHS` 按字母序登记。
+- 初始化表达式只用已验证支持面：字面量、`Log.stamp`/`Probe.bump` 等**内部类静态方法限定调用**（与 `Worker.make_count()` 类型检查先例同型）、`RefCounted.new()`。顺序/计数观察全部经内部 `RefCounted` 辅助类的 `static var`（共享存储）实现——`Log.entries` 同时给出顺序与次数。
+- `onready_replay_with_request_ready` 的旧值释放以 `is_instance_id_valid(<旧 instance id>)` 观察（不持有旧引用、不断言内部实现）；同脚本区分「再入树不重放」与「request_ready 重放」两臂。
+- `onready_coroutine_entry_init` 首版子类 `_ready` 用非 awaited `super._ready()` 命中 vtable 校验（父协程/子同步 marker 不一致）；改为 `await super._ready()` 后子类同为协程，覆盖更强（super 协程调用 + thunk 入口双 dedup 路径）。
+- 热重载：新增 `OnreadyReloadCase.RECREATE_FRESH`（v2 追加 `@onready var fresh: int = 41`）覆盖「仅 recreate 后新增字段保持类型默认值」，driver 复用既有 manual/request_ready 两臂并加 `HAS_FRESH` 断言；新增 `onreadyMixedScriptSubclassKeepsRestoredValueAfterReload`——在 `prepareProject` 后向项目目录写入解释性 `mixed_sub.gd`（`extends RuntimeHrOnreadyMixed`，无 `class_name`，`@warning_ignore("native_method_override")` 抑制原生覆写告警），锚定 §7.1 差异：request_ready 后脚本 `_ready` 重跑且 `super._ready()` 到达 GDCC 体，但 DONE 已置位故 GDCC 链**不重放**，恢复值保留。
+- 验证：`script/run-gradle-targeted-tests.sh --tests GdScriptEngineVirtualOverrideRuntimeTest` 通过（18 tests，0 skipped，10 个新锚点全部经真实 Zig+Godot 执行）；`GdScriptUnitTestCompileRunnerTest` 首轮 245 中仅 coroutine fixture 编译期 marker 冲突失败，修复后全量重跑通过（245 tests，0 failures，0 skipped）；`GodotEditorHotReloadIntegrationTest` onready 六方法（INITIALIZER_CHANGE/ADDED/REMOVED/ANCESTOR/RECREATE_FRESH/混合 super）全部通过（HR_PHASE1/2 标记 + 编辑器干净退出断言）。
+- 审阅记录（review-expert-c 两轮）：第一轮指出两处锚点缺口——(1) ctor_window 三子场景只验「构造期跳过」，引擎组合 impl 无条件置位 DONE + apply 的路径会掩盖「DONE 被误置位」；(2) coroutine super 入口仅在 child thunk 已置 DONE 后到达，父 thunk 首次合格入口路径未覆盖。整改：三子场景在引擎 attach/replay 前各插入一次非引擎 `manual()` `_ready` 探针（DONE 误置位则 apply 缺失立刻暴露）；coroutine 新增 `call_super_manual()`（`await super._ready()`）并将验证重排为 super-first → dedup → engine replay 序列。第二轮复核确认两项均 RESOLVED 且无新增问题。
 
 **验收**：
-- 上述 anchor 编译通过并产出一致预期输出；engine 相关验收**不得以环境 skip 代替通过**（无 Zig/`GODOT_BIN` 时在验收记录中显式标注为未执行而非通过）；
-- `script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest,GdScriptEngineVirtualOverrideRuntimeTest` 通过。
+- [x] 上述 anchor 编译通过并产出一致预期输出；engine 相关验收**不得以环境 skip 代替通过**（无 Zig/`GODOT_BIN` 时在验收记录中显式标注为未执行而非通过）——本机 `zig 0.16.0` 与 `GODOT_BIN=/home/superice/godot/4.5.2/Godot_v4.5.2-stable_linux.x86_64` 可用，全部 engine 用例真实执行；
+- [x] `script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest,GdScriptEngineVirtualOverrideRuntimeTest` 通过（`GdScriptUnitTestCompileRunnerTest` 245 tests 0 failures 0 skipped，含修复后的 coroutine 锚点；`GdScriptEngineVirtualOverrideRuntimeTest` 18 tests 0 skipped）。
 
 ### Step 10：文档收口
 
@@ -399,13 +417,13 @@
 - [ ] Godot 顺序对照表（§3.3）中每一行均有对应测试或 golden 断言；
 - [ ] `script/run-gradle-targeted-tests.sh --tests CCodegenTest,CGenHelperTest,CVtableCodegenTest,CBodyBuilderPhaseCTest,CCodegenEngineMethodUsageSessionTest,FrontendAnnotationUsageAnalyzerTest,FrontendClassSkeletonAnnotationTest,GdScriptUnitTestCompileRunnerTest,GdScriptEngineVirtualOverrideRuntimeTest` 全量通过（engine 项不得 skip 充过）；
 - [ ] 无用户 `_ready` / 用户 `_ready` 仅在父类 / coroutine `_ready`（引擎与内部双路径）/ 三级继承链（A 有、B 无、C 有）/ 无 initializer onready / derived-first 模块输入 六种形态各有至少一个断言；
-- [ ] 交叉场景：构造期 fail-closed 三子场景（基类 `_init` 虚调用 `_ready` / `_init` 内显式 READY 通知 / `_init` 内 add_child 进已 ready 父节点）、继承用户 `_ready` × 派生独有 onready（类级查询表按实例实际类型分发到派生链）、coroutine × 非引擎入口（thunk入口按需初始化）、recreate × 手调（不补执行）× request_ready（重放）、混合 super × request_ready/recreate（不重放，差异验收）；
-- [ ] re-ready 双形态：移除再入树不重放、`request_ready()` 重放且旧值（含 RefCounted/容器）正确释放；
-- [ ] 双入口一致性：引擎路径（组合 impl）与非引擎首调路径（入口按需初始化）各自只执行一次 onready，super 调用不触发第三次；
+- [x] 交叉场景：构造期 fail-closed 三子场景（基类 `_init` 虚调用 `_ready` / `_init` 内显式 READY 通知 / `_init` 内 add_child 进已 ready 父节点，均由 `onready_ctor_window_fail_closed` 锚定）、继承用户 `_ready` × 派生独有 onready（类级查询表按实例实际类型分发到派生链，`onready_inherited_ready_derived_onready`）、coroutine × 非引擎入口（thunk入口按需初始化，`onready_coroutine_entry_init` 含 super-first 入口）、recreate × 手调（不补执行）× request_ready（重放，热重载 RECREATE_FRESH 等场景）、混合 super × request_ready/recreate（不重放，差异验收，`onreadyMixedScriptSubclassKeepsRestoredValueAfterReload`）；
+- [x] re-ready 双形态：移除再入树不重放、`request_ready()` 重放且旧值（含 RefCounted/容器）正确释放（`onready_replay_with_request_ready`，含 `is_instance_id_valid` 可达性断言）；
+- [x] 双入口一致性：引擎路径（组合 impl）与非引擎首调路径（入口按需初始化）各自只执行一次 onready，super 调用不触发第三次（`onready_super_no_replay`、`onready_internal_first_call`、`onready_coroutine_entry_init`）；
 - [ ] frontend LIR → XML → parse → C codegen 完整链路回归：onready 分流在序列化 roundtrip 后保持不变（annotation map 保真 + 分流判定来自计划快照）；
 - [x] 双 codegen 会话回归：同一 `LirModule` 两次生成，onready 分流与默认 helper 合成结果一致（Step 1 已验证计划事实与既有默认 helper 幂等；Step 2-3 已验证 C 分流与 `_onready_field_default_` helper 跨会话恰一份且 apply body 逐字节一致）；
 - [ ] 无 onready 链的类：不生成链函数/适配器/组合 impl，get_virtual/call_virtual 分发段 golden diff 为空（入口按需初始化注入由本类或后代链事实单独控制，不纳入本条）；flags 位域迁移属全局统一变化，单独断言位运算形态与 destructed 语义不变；
-- [ ] 热重载 recreate 三 scenario（仅 recreate / recreate+手调 / recreate+request_ready）通过（`GodotEditorHotReloadIntegrationTest` 类内锚点）。
+- [x] 热重载 recreate 三 scenario（仅 recreate / recreate+手调 / recreate+request_ready）通过（`GodotEditorHotReloadIntegrationTest` 类内锚点：RECREATE_FRESH 覆盖仅 recreate 的默认值+恢复值保持，driver 两臂覆盖手调与 request_ready，另含混合 super 差异场景）。
 
 ---
 

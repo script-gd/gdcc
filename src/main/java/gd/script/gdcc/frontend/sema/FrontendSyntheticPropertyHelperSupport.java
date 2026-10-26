@@ -1,10 +1,10 @@
 package gd.script.gdcc.frontend.sema;
 
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
-
 import java.util.List;
 import java.util.Objects;
+
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 /// Shared frontend contract for compiler-owned synthetic member names.
 ///
@@ -29,13 +29,19 @@ public final class FrontendSyntheticPropertyHelperSupport {
     /// (`FrontendClassNameContract`): a source member under this prefix would collide with the
     /// synthesized symbol at C codegen and at ClassDB method registration.
     public static final @NotNull String GDCC_INTERNAL_PREFIX = "_gdcc_";
+    /// Compiler-owned namespace for the backend-synthesized onready default-value helper
+    /// (`_onready_field_default_<prop>`), materialized for every `@onready` property that
+    /// carries a source initializer. A source member reusing it would alias the hidden
+    /// `LirFunctionDef` and get the source initializer evaluated at construction time.
+    public static final @NotNull String ONREADY_FIELD_DEFAULT_PREFIX = "_onready_field_default_";
     public static final @NotNull List<String> RESERVED_PREFIXES = List.of(
             PROPERTY_INIT_PREFIX,
             PROPERTY_GETTER_PREFIX,
             PROPERTY_SETTER_PREFIX,
             LAMBDA_FUNCTION_PREFIX,
             PARAMETER_DEFAULT_PREFIX,
-            GDCC_INTERNAL_PREFIX
+            GDCC_INTERNAL_PREFIX,
+            ONREADY_FIELD_DEFAULT_PREFIX
     );
 
     private FrontendSyntheticPropertyHelperSupport() {
@@ -83,6 +89,14 @@ public final class FrontendSyntheticPropertyHelperSupport {
                     + "' and will be skipped; the '"
                     + GDCC_INTERNAL_PREFIX
                     + "' prefix is compiler-owned for synthesized members such as '_gdcc_get_metadata'";
+            case ONREADY_FIELD_DEFAULT_PREFIX -> Objects.requireNonNull(memberKind, "memberKind must not be null")
+                    + " '"
+                    + trimmedName
+                    + "' uses reserved synthetic onready-default prefix '"
+                    + prefix
+                    + "' and will be skipped; the '"
+                    + ONREADY_FIELD_DEFAULT_PREFIX
+                    + "' prefix is compiler-owned for synthesized @onready default-value helpers";
             default -> Objects.requireNonNull(memberKind, "memberKind must not be null")
                     + " '"
                     + trimmedName
