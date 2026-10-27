@@ -219,6 +219,8 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/virtual/onready_export_override.gd",
             "runtime/virtual/onready_inherited_ready_derived_onready.gd",
             "runtime/virtual/onready_internal_first_call.gd",
+            "runtime/virtual/onready_node_literal_lookup.gd",
+            "runtime/virtual/onready_node_literal_replay.gd",
             "runtime/virtual/onready_ready_time_init.gd",
             "runtime/virtual/onready_replay_with_request_ready.gd",
             "runtime/virtual/onready_super_no_replay.gd",

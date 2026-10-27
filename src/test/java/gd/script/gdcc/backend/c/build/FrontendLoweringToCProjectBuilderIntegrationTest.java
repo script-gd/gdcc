@@ -13,6 +13,7 @@ import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -3424,6 +3425,417 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
 
                     print("onready sync lifecycle scenario passed.")
                 """;
+    }
+
+    @Test
+    void lowerFrontendOnreadyNodeLiteralGeneratesC() throws Exception {
+        // Environment-independent gate: real frontend lowering plus `CCodegen.generate()`
+        // only — no Zig toolchain or Godot binary is required, so this test must never be
+        // skipped on missing dependencies. Anchors stay scoped per generated C function
+        // body so same-named temps cannot satisfy another function's expectation.
+        var tempDir = Path.of("tmp/test/onready_node_literal_codegen");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name OnreadyNodeLiteralSmoke
+                extends Node
+                
+                @onready var child: Node = $Child
+                @onready var unique_name: StringName = %Unique.get_name()
+                @onready var child_name: StringName = $Child.name
+                @onready var get_name_callable: Callable = $Child.get_name
+                @onready var renamed_signal: Signal = $Child.renamed
+                """;
+        var module = parseModule(
+                "onready_node_literal_codegen",
+                List.of(new SourceFileSpec(tempDir.resolve("onready_node_literal.gd"), source)),
+                Map.of("OnreadyNodeLiteralSmoke", "RuntimeOnreadyNodeLiteralSmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "onready_node_literal_codegen",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+        var entrySource = codegen.generate().stream()
+                .filter(file -> file.filePath().equals("entry.c"))
+                .findFirst()
+                .map(file -> new String(file.contentWriter(), StandardCharsets.UTF_8))
+                .orElseThrow(() -> new AssertionError("entry.c not found in generated files"));
+
+        // Each source init helper emits the decoded NodePath literal before the pinned
+        // native `Node.get_node` engine call; the leaf lookup needs no liveness guard.
+        var childInit = requireFunctionCBody(entrySource, "RuntimeOnreadyNodeLiteralSmoke__field_init_child");
+        assertOrderedIn(childInit, "godot_new_NodePath_with_utf8_chars", "gdcc_engine_call_node_get_node_");
+        assertFalse(childInit.contains("assert_object_live failed"), childInit);
+
+        // Suffix instructions keep their order after the engine call: the live guard runs
+        // first, then the property read resolves through the `get_name` accessor.
+        var childNameInit = requireFunctionCBody(entrySource, "RuntimeOnreadyNodeLiteralSmoke__field_init_child_name");
+        assertOrderedIn(
+                childNameInit,
+                "godot_new_NodePath_with_utf8_chars",
+                "gdcc_engine_call_node_get_node_",
+                "assert_object_live failed",
+                "gdcc_engine_call_node_get_name_"
+        );
+        var uniqueNameInit = requireFunctionCBody(entrySource, "RuntimeOnreadyNodeLiteralSmoke__field_init_unique_name");
+        assertOrderedIn(
+                uniqueNameInit,
+                "\"%Unique\"",
+                "gdcc_engine_call_node_get_node_",
+                "assert_object_live failed",
+                "gdcc_engine_call_node_get_name_"
+        );
+
+        // Method-reference and signal routes construct their values through the engine
+        // factories after the same guard.
+        var callableInit = requireFunctionCBody(entrySource, "RuntimeOnreadyNodeLiteralSmoke__field_init_get_name_callable");
+        assertOrderedIn(
+                callableInit,
+                "gdcc_engine_call_node_get_node_",
+                "assert_object_live failed",
+                "godot_new_Callable_with_Object_StringName"
+        );
+        var signalInit = requireFunctionCBody(entrySource, "RuntimeOnreadyNodeLiteralSmoke__field_init_renamed_signal");
+        assertOrderedIn(
+                signalInit,
+                "gdcc_engine_call_node_get_node_",
+                "assert_object_live failed",
+                "godot_new_Signal_with_Object_StringName"
+        );
+
+        // Constructor-time default apply must not invoke the source helper; ready-time
+        // apply calls it and writes the backing field directly (the setter route is
+        // deliberately not used for onready initialization).
+        var defaultApply = requireFunctionCBody(
+                entrySource,
+                "RuntimeOnreadyNodeLiteralSmoke_class_apply_property_default_child"
+        );
+        assertTrue(defaultApply.contains("RuntimeOnreadyNodeLiteralSmoke__onready_field_default_child("), defaultApply);
+        assertFalse(defaultApply.contains("RuntimeOnreadyNodeLiteralSmoke__field_init_child("), defaultApply);
+        var readyApply = requireFunctionCBody(
+                entrySource,
+                "RuntimeOnreadyNodeLiteralSmoke_class_apply_onready_init_child"
+        );
+        assertTrue(readyApply.contains("RuntimeOnreadyNodeLiteralSmoke__field_init_child("), readyApply);
+        assertTrue(readyApply.contains("self->child"), readyApply);
+        assertFalse(readyApply.contains("set_child"), readyApply);
+
+        // The ready chain applies every onready initializer in source declaration order,
+        // and the class registers its root adapter in the engine lookup table.
+        var chainBody = requireFunctionCBody(entrySource, "RuntimeOnreadyNodeLiteralSmoke_class_apply_onready_inits");
+        assertOrderedIn(
+                chainBody,
+                "RuntimeOnreadyNodeLiteralSmoke_class_apply_onready_init_child(self);",
+                "RuntimeOnreadyNodeLiteralSmoke_class_apply_onready_init_unique_name(self);",
+                "RuntimeOnreadyNodeLiteralSmoke_class_apply_onready_init_child_name(self);",
+                "RuntimeOnreadyNodeLiteralSmoke_class_apply_onready_init_get_name_callable(self);",
+                "RuntimeOnreadyNodeLiteralSmoke_class_apply_onready_init_renamed_signal(self);"
+        );
+        assertTrue(
+                entrySource.contains(
+                        "{ &RuntimeOnreadyNodeLiteralSmoke__gdcc_onready_class_name, "
+                                + "&RuntimeOnreadyNodeLiteralSmoke__gdcc_onready_apply_root }"
+                ),
+                entrySource
+        );
+    }
+
+    @Test
+    void lowerFrontendOnreadyNodeLiteralBuildsNativeLibraryAndRunsInGodot() throws Exception {
+        if (ZigUtil.findZig() == null || GodotGdextensionTestRunner.findGodotBinaryFromEnv() == null) {
+            Assumptions.abort("Zig or GODOT_BIN not found; skipping onready node literal integration test");
+            return;
+        }
+
+        var tempParent = Path.of("tmp/test");
+        Files.createDirectories(tempParent);
+        var tempDir = Files.createTempDirectory(tempParent, "onready_node_literal_runtime_");
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var runtimeDir = Files.createTempDirectory(tempParent, "onready_node_literal_project_");
+        Files.copy(Path.of("test_project/project.godot"), runtimeDir.resolve("project.godot"));
+        Files.copy(Path.of("test_project/root.gd"), runtimeDir.resolve("root.gd"));
+
+        var probeSource = """
+                class_name OnreadyNodeLiteralProbe
+                extends Node
+                
+                @onready var child_node: Node = $Child
+                @onready var nested_leaf: Node = $Branch/Leaf
+                @onready var quoted_node: Node = $"Name With Space"
+                @onready var unique_node: Node = %Unique
+                @onready var spaced_unique_node: Node = %"Unique Name"
+                @onready var untyped_child = $Child
+                
+                @onready var child_name: StringName = $Child.name
+                @onready var unique_name: StringName = %Unique.get_name()
+                @onready var get_name_callable: Callable = $Child.get_name
+                @onready var renamed_signal: Signal = $Child.renamed
+                
+                @onready var self_name: StringName = $".".get_name()
+                @onready var parent_name: StringName = $Child.get_parent().get_name()
+                
+                var ready_child: Node
+                var ready_name: StringName
+                
+                func _ready() -> void:
+                    ready_child = child_node
+                    ready_name = child_name
+                """;
+        var plainSource = """
+                class_name OnreadyNodeLiteralPlain
+                extends Node
+                
+                @onready var child_node: Node = $Child
+                """;
+        // A narrow second probe keeps the replay swap small: only `Child` and `%Unique`
+        // are re-resolved, so no unrelated lookup can emit a spurious "Node not found".
+        var replaySource = """
+                class_name OnreadyNodeLiteralReplayProbe
+                extends Node
+                
+                @onready var child_node: Node = $Child
+                @onready var unique_node: Node = %Unique
+                """;
+        var module = parseModule(
+                "onready_node_literal_runtime_module",
+                List.of(
+                        new SourceFileSpec(tempDir.resolve("onready_node_literal_probe.gd"), probeSource),
+                        new SourceFileSpec(tempDir.resolve("onready_node_literal_plain.gd"), plainSource),
+                        new SourceFileSpec(tempDir.resolve("onready_node_literal_replay.gd"), replaySource)
+                ),
+                Map.of(
+                        "OnreadyNodeLiteralProbe", "RuntimeOnreadyNodeLiteralProbe",
+                        "OnreadyNodeLiteralPlain", "RuntimeOnreadyNodeLiteralPlain",
+                        "OnreadyNodeLiteralReplayProbe", "RuntimeOnreadyNodeLiteralReplayProbe"
+                )
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+
+        var projectInfo = new CProjectInfo(
+                "onready_node_literal_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+
+        // Empty sceneNodes: the test script creates un-entered instances of the registered
+        // runtime classes itself, checks constructor defaults, prepares children/unique
+        // owners and only then mounts the instances to trigger real engine READY.
+        GodotGdextensionTestRunner.GodotRunResult runResult;
+        try (var runner = new GodotGdextensionTestRunner(runtimeDir)) {
+            runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                    buildResult.artifacts(),
+                    List.of(),
+                    new GodotGdextensionTestRunner.TestScriptSpec(onreadyNodeLiteralTestScript())
+            ));
+            runResult = runner.run(true);
+        }
+        var combinedOutput = runResult.combinedOutput();
+        var godotLog = tempDir.resolve("godot.log");
+        Files.writeString(godotLog, combinedOutput);
+        IO.println("Godot combined output: " + godotLog.toAbsolutePath());
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("onready node literal scenario passed."),
+                () -> "Godot output should confirm the node literal scenario.\nOutput:\n" + combinedOutput
+        );
+        for (var forbidden : List.of(
+                "SCRIPT ERROR",
+                "ERROR",
+                "engine method call failed",
+                "assert_object_live failed",
+                "Node not found"
+        )) {
+            assertFalse(
+                    combinedOutput.contains(forbidden),
+                    () -> "Godot output should not contain \"" + forbidden + "\".\nOutput:\n" + combinedOutput
+            );
+        }
+    }
+
+    /// Node literal scenario contract: constructor defaults (typed `Node` null, untyped
+    /// nil); runtime children created after construction are still found at READY; all
+    /// five lookup forms compare by object identity; the four suffix routes assert exact
+    /// member semantics; `$"."` and `get_parent()` aliases resolve the probe's own name;
+    /// user `_ready` observes initialized fields; a class without user `_ready` still
+    /// applies; swapping children only takes effect through an armed `request_ready()`
+    /// replay, proving the helpers re-evaluate instead of caching.
+    private static @NotNull String onreadyNodeLiteralTestScript() {
+        return """
+                extends Node
+                
+                func _ready() -> void:
+                    var probe = RuntimeOnreadyNodeLiteralProbe.new()
+                    assert(probe.child_node == null, "typed Node field should default to null before tree entry")
+                    assert(probe.untyped_child == null, "untyped field should default to nil before tree entry")
+                    assert(String(probe.child_name) == "", "StringName field should stay default before tree entry")
+                    assert(probe.get_name_callable.is_null(), "Callable field should stay default before tree entry")
+                    assert(probe.renamed_signal.is_null(), "Signal field should stay default before tree entry")
+                
+                    probe.name = "ProbeName"
+                    var child = Node.new()
+                    child.name = "Child"
+                    probe.add_child(child)
+                    var branch = Node.new()
+                    branch.name = "Branch"
+                    probe.add_child(branch)
+                    var leaf = Node.new()
+                    leaf.name = "Leaf"
+                    branch.add_child(leaf)
+                    var spaced = Node.new()
+                    spaced.name = "Name With Space"
+                    probe.add_child(spaced)
+                    var unique = Node.new()
+                    unique.name = "Unique"
+                    probe.add_child(unique)
+                    unique.owner = probe
+                    unique.unique_name_in_owner = true
+                    var spaced_unique = Node.new()
+                    spaced_unique.name = "Unique Name"
+                    probe.add_child(spaced_unique)
+                    spaced_unique.owner = probe
+                    spaced_unique.unique_name_in_owner = true
+                
+                    add_child(probe)
+                    assert(probe.child_node == child, "$Child should resolve to the runtime child")
+                    assert(probe.nested_leaf == leaf, "nested path should resolve to the leaf")
+                    assert(probe.quoted_node == spaced, "quoted form should resolve the spaced name")
+                    assert(probe.unique_node == unique, "%Unique should resolve the unique child")
+                    assert(probe.spaced_unique_node == spaced_unique, "quoted % form should resolve")
+                    assert(probe.untyped_child == child, "untyped slot should hold the child")
+                    assert(probe.child_name == child.name, "property suffix should read the child name")
+                    assert(probe.unique_name == StringName("Unique"), "call suffix should return the unique name")
+                    assert(probe.get_name_callable.get_object() == child, "Callable should bind the child")
+                    assert(probe.get_name_callable.get_method() == StringName("get_name"), "Callable should name get_name")
+                    assert(probe.get_name_callable.call() == child.name, "Callable should invoke get_name")
+                    assert(probe.renamed_signal.get_object() == child, "Signal should bind the child")
+                    assert(probe.renamed_signal.get_name() == StringName("renamed"), "Signal should be renamed")
+                    assert(probe.self_name == probe.name, "$. lookup should resolve the probe name")
+                    assert(probe.parent_name == probe.name, "get_parent suffix should resolve the probe name")
+                    assert(probe.ready_child == child, "user _ready should observe the applied child")
+                    assert(probe.ready_name == child.name, "user _ready should observe the applied suffix")
+                
+                    var plain = RuntimeOnreadyNodeLiteralPlain.new()
+                    var plain_child = Node.new()
+                    plain_child.name = "Child"
+                    plain.add_child(plain_child)
+                    add_child(plain)
+                    assert(plain.child_node == plain_child, "class without user _ready should still apply")
+                
+                    var replay = RuntimeOnreadyNodeLiteralReplayProbe.new()
+                    var old_child = Node.new()
+                    old_child.name = "Child"
+                    replay.add_child(old_child)
+                    var old_unique = Node.new()
+                    old_unique.name = "Unique"
+                    replay.add_child(old_unique)
+                    old_unique.owner = replay
+                    old_unique.unique_name_in_owner = true
+                    add_child(replay)
+                    assert(replay.child_node == old_child, "replay probe should resolve the first child")
+                    assert(replay.unique_node == old_unique, "replay probe should resolve the first unique")
+                
+                    # Swap the children at the same paths while keeping the old nodes alive:
+                    # without an armed replay the fields must keep pointing at the old
+                    # objects even though they are detached from the probe.
+                    remove_child(replay)
+                    replay.remove_child(old_child)
+                    old_unique.unique_name_in_owner = false
+                    replay.remove_child(old_unique)
+                    var new_child = Node.new()
+                    new_child.name = "Child"
+                    replay.add_child(new_child)
+                    var new_unique = Node.new()
+                    new_unique.name = "Unique"
+                    replay.add_child(new_unique)
+                    new_unique.owner = replay
+                    new_unique.unique_name_in_owner = true
+                
+                    add_child(replay)
+                    assert(replay.child_node == old_child, "re-entry without request_ready must not re-evaluate")
+                    assert(replay.unique_node == old_unique, "re-entry must keep the old unique object")
+                
+                    remove_child(replay)
+                    replay.request_ready()
+                    add_child(replay)
+                    assert(replay.child_node == new_child, "armed replay should re-evaluate $Child")
+                    assert(replay.unique_node == new_unique, "armed replay should re-evaluate %Unique")
+                
+                    probe.free()
+                    plain.free()
+                    replay.free()
+                    old_child.free()
+                    old_unique.free()
+                    print("onready node literal scenario passed.")
+                """;
+    }
+
+    /// Extracts one generated C function body by name via brace matching, skipping
+    /// prototypes so anchors stay scoped to the definition.
+    private static @NotNull String requireFunctionCBody(@NotNull String entrySource, @NotNull String cFunctionName) {
+        var searchFromIndex = 0;
+        var signatureIndex = -1;
+        while ((signatureIndex = entrySource.indexOf(cFunctionName + "(", searchFromIndex)) >= 0) {
+            var openBraceIndex = entrySource.indexOf('{', signatureIndex);
+            var semicolonIndex = entrySource.indexOf(';', signatureIndex);
+            if (semicolonIndex < 0 || semicolonIndex > openBraceIndex) {
+                break;
+            }
+            searchFromIndex = semicolonIndex + 1;
+        }
+        assertTrue(signatureIndex >= 0, () -> "C function not found: " + cFunctionName);
+        var openBraceIndex = entrySource.indexOf('{', signatureIndex);
+        assertTrue(openBraceIndex >= 0, () -> "No body for C function: " + cFunctionName);
+        var depth = 0;
+        for (var index = openBraceIndex; index < entrySource.length(); index++) {
+            var current = entrySource.charAt(index);
+            if (current == '{') {
+                depth++;
+            } else if (current == '}' && --depth == 0) {
+                return entrySource.substring(signatureIndex, index + 1);
+            }
+        }
+        throw new AssertionError("Unbalanced braces after C function: " + cFunctionName);
+    }
+
+    /// Every fragment must appear strictly after the previous one (ordered containment).
+    private static void assertOrderedIn(@NotNull String text, @NotNull String... fragmentsInOrder) {
+        var searchFromIndex = 0;
+        for (var fragment : fragmentsInOrder) {
+            var index = text.indexOf(fragment, searchFromIndex);
+            assertTrue(index >= 0, () -> "Missing fragment: " + fragment + "\n" + text);
+            searchFromIndex = index + fragment.length();
+        }
     }
 
     @Test

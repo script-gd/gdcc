@@ -210,6 +210,15 @@ cast 一项复用显式 object cast；不是根据路径自动推导，也不保
 
 容器中的两个 GetNode 按源码顺序各求值一次；条件表达式只执行选中分支，不能把两侧查找或 suffix 指令都提前到前驱 block。带后缀的链在 native `get_node` 调用之后发射对应 suffix 指令（property read / call_method / method-reference / signal），结果经 typed boundary 写回。间接 self 别名用例（`$".".get_name()`、`$Child.get_parent().get_name()`）走完全相同的 NodePath / `get_node` / suffix 管线，不新增 provenance 或 identity-guard 分支；既有 `AssertObjectLiveInsn` 等存活检查照常发射。`%` 与 quoted forms payload 正确；同名脚本方法不参与 shorthand 解析。保留缺 fact / 缺 self 的既有 fail-fast 测试。
 
+**实施状态（2026-10-27）：已完成。** 纯测试步骤，无生产代码改动。`prepareContext(..., true)` 经 `FrontendLoweringAnalysisPass` 驱动真实 `analyzeForCompile`，故所有断言均为 compile-ready 组合证据。在 `FrontendLoweringBodyInsnPassTest` 新增 4 个测试方法（置于既有 GetNode 用例之后）：
+
+- `runLowersOnreadyGetNodeFormsThroughPropertyInitHelpers`：fixture 含同名 `get_node(NodePath)` 脚本 override、五种形态（`$Child`/`$Branch/Leaf`/`$"Name With Space"`/`%Unique`/`%"Wide Name"`）与 untyped 声明。逐 helper 断言 initFunc 合同（`getInitFunc()` 指向 hidden、non-static、单参 owning-class `self`、返回 `Node`）、`seq_0` entry ＋ Goto 目标块为 ReturnInsn 的双块结构、固定三指令（decoded payload、`self`→静态 `Node` receiver assign、`get_node` 单参调用）与 `Node` 结果直接 typed boundary 回 ReturnInsn；leaf 无 `AssertObjectLiveInsn`；untyped helper 保持 Variant 返回，`Node` 结果经 `PackVariantInsn` 回 Return。
+- `runLowersOnreadyGetNodeSuffixRoutesAfterEngineGetNode`：四路由（`.name` property→`AssertObjectLiveInsn`+`LoadPropertyInsn`；`.get_name()` call→guard+`CallMethodInsn`；`.get_name` method-ref→guard+`ConstructCallableInsn`；`.renamed` signal→guard+`ConstructSignalInsn`）均断言 receiver/get_node 结果接线与「get_node→guard→suffix」指令序；`$Child.get_parent().get_name()` 逐级 receiver/双 guard 链接线；`$".".get_name()` 证明 alias 走完全相同管线、无 provenance/identity-guard 指令。
+- `runLowersOnreadyGetNodeContainerOperandsInSourceOrder`：`[$Child, %Unique]` 两个完整三指令组按源码顺序交错、各发射一次，call 参数与对应 literal slot 接线；untyped `Array` 元素经 `PackVariantInsn` 边界，`construct_insn` 按源码顺序消费两个 pack 结果并回 Return。
+- `runLowersOnreadyConditionalGetNodeArmsInsideBranchBlocks`：`$Child if true else %Unique` 与 `$Child.name if true else %Unique.get_name()`——单 `GoIfInsn` 前驱块内无 literal/get_node/guard/suffix 指令（不提前求值）；两臂块各含自己的三指令组与「lookup→guard→suffix」receiver 接线；每臂恰一次 `cfg_merge_*` 写入且 source 为该臂自身结果（get_node / suffix 结果），两臂 Goto 同一 merge 块，merge slot 回 Return。
+
+**验收结果**：`script/run-gradle-targeted-tests.sh --tests <4 个新方法选择器>` 全部 `BUILD SUCCESSFUL`。过程修正一处（fixture 侧）：GDScript 注释为 `#` 而非 `//`，首个 fixture 误用 `//` 导致 parse 失败，已将说明移出 text block 与既有用例风格对齐。缺 fact/缺 self 的既有 fail-fast 用例（`runFailsFastWhenMissingResolvedCallFact...`、GetNode 无 self shell 用例）未改动；`FrontendLoweringFunctionPreparationPassTest`/`FrontendLoweringBuildCfgPassTest` 无需补充（shell/CFG 断言已在 BodyInsn 用例内经 `requireLirModule()`/`requireFrontendCfgGraph()` 覆盖）。
+
 ### 步骤 5：生成 C 与真实 Godot 生命周期验收
 
 **改动**：在 `FrontendLoweringToCProjectBuilderIntegrationTest` 新增两个具名、可单独筛选的测试（均为拟新增方法名）：
@@ -238,6 +247,13 @@ cast 一项复用显式 object cast；不是根据路径自动推导，也不保
 7. probe 首次入树前由 validation 命名（如 `probe.name = "ProbeName"`）并把 Child 挂到 probe 下；`$".".get_name()` 与 `$Child.get_parent().get_name()` 的初始化结果都等于 probe 的实际 name——仅证明合法查找/调用成功，不保证任意 alias 字段依赖安全（间接 self 防御由用户负责）；不构造 unsafe/null/freed 用例，也不把运行错误包装成成功。
 
 Zig/Godot 缺失时 native/Godot 具名测试按现有 assumption 跳过并明确记为“未完成引擎验收”，不能计作通过；`lowerFrontendOnreadyNodeLiteralGeneratesC` 不因环境跳过。仅 validation 保留 pass marker；合法路径配置失败时不得容忍 engine method call failed 等日志。
+
+**实施状态（2026-10-27）：已完成，含真实引擎验收。** 全部改动为测试与 fixture，无生产代码改动。
+
+- `FrontendLoweringToCProjectBuilderIntegrationTest` 新增两个具名测试：`lowerFrontendOnreadyNodeLiteralGeneratesC`（环境无关，经 `CCodegen.generate()` 取 entry.c，按函数体＋有序片段锚定——init helper 内 `godot_new_NodePath_with_utf8_chars`→`gdcc_engine_call_node_get_node_` 实际符号名、四路由的 guard/suffix 调用形态、`class_apply_property_default_` 不调 source helper 而 `class_apply_onready_init_` 调用并直写 `self->` backing field、`class_apply_onready_inits` 声明顺序、`__gdcc_onready_apply_root` lookup row 登记）与 `lowerFrontendOnreadyNodeLiteralBuildsNativeLibraryAndRunsInGodot`（zig＋`GODOT_BIN` assumption；空 `sceneNodes`，内联 validation 自行 `Runtime*.new()` 三个顶层 runtime class：含五形态＋四路由＋alias ＋用户 `_ready` 观察的 Probe、无用户 `_ready` 的 Plain、仅 `$Child`/`%Unique` 的 ReplayProbe；断言构造期默认、identity、suffix 精确语义、alias 名相等、swap 后无 `request_ready` 不重放、armed replay 重新求值，并 forbid `SCRIPT ERROR`/`ERROR`/`engine method call failed`/`assert_object_live failed`/`Node not found`）。新增私有 helper `requireFunctionCBody`（跳 prototype 的括号匹配）与 `assertOrderedIn`，沿用各 C 测试类的本地拷贝惯例。
+- 成对 fixture：`script/runtime/virtual/onready_node_literal_lookup.gd`（外层 harness＋工厂；inner `Probe` 承载五形态、untyped、四路由、`$"."`/`get_parent()` alias 与用户 `_ready` 观察；`Plain` 无 `_ready`；`Stamps` 显式 static receiver 计数器证明父→子 apply 顺序与无重放；`Base`/`Sub` 同模块继承且 `Sub._ready` 记录字段后 `super._ready()`）与 `onready_node_literal_replay.gd`（inner `Probe` 仅 `$Child`/`%Unique`，validation 换同路径 child＋重注册 unique 后验证无 `request_ready` 字段仍指旧对象、armed 后指新对象，旧节点在断言完成前保持存活再分别释放）；validation 顶部带四条 `output_not_contains` 指令，仅成功路径打印 pass marker。登记于 `GdScriptUnitTestCompileRunnerTest.EXPECTED_SCRIPT_PATHS` 与 `GdScriptEngineVirtualOverrideRuntimeTest.SCRIPT_RESOURCE_PATHS`（均按字母序插入）。
+
+**验收结果（本机 zig 与 `GODOT_BIN` 均可用）**：`lowerFrontendOnreadyNodeLiteralGeneratesC` 通过；`lowerFrontendOnreadyNodeLiteralBuildsNativeLibraryAndRunsInGodot` 真实编译 native 库并在 Godot 4.5.2 中运行通过（`godot.log` 落盘）；`listsExpectedBundledUnitScripts`、`virtualRuntimeFixturesRemainBundledAndPaired`、`virtualRuntimeFixturesRelyOnEngineDrivenProcessingOnly` 通过；`compilesAndValidatesVirtualRuntimeScripts` 动态 factory 18/18 通过、0 跳过，两个新 fixture 均在真实引擎中执行。过程修正一处（断言侧）：engine call 的 C 符号为小写类名加签名后缀（`gdcc_engine_call_node_get_node_PN_RL4Node_`），锚点改为稳定小写前缀 `gdcc_engine_call_node_get_node_`/`..._get_name_` 后通过；`"%Unique"` 载荷以 `u8"%Unique"` 字面量锚定。
 
 ### 步骤 6：事实源同步、注释与最终门槛
 
@@ -402,3 +418,9 @@ lead 已对两份审阅报告的全部发现（含 low 级措辞修正）对照�
 ### 9.5 实施轮次（步骤 3 测试加固，2026-10-27）
 
 `review-expert-c` 对步骤 3 的测试 diff 完成审阅，结论 APPROVE（仅限步骤 3 范围）：未发现 blocker/high/medium/low 问题；确认 `[$Broken, = 3]` 与既有 `[1, = 3]` 恢复形态一致、`missing_method()` 的 `DYNAMIC` 为既有回退合同而非想象值、参数遍历与 owner 诊断归属正确、无应翻转而未翻转的既有断言。本轮执行了 Gradle 定向测试（10 个用例选择器 ＋ 7 个测试类整类回归），未运行 Zig 或 Godot；步骤 4–6 仍为计划未实施部分。
+
+### 9.6 实施轮次（步骤 4＋5 CFG/LIR、C 与引擎验收，2026-10-27）
+
+`review-expert-c` 对步骤 4/5 的全部 diff 完成两轮审阅。第一轮 REQUEST_CHANGES（无 blocker/high）：medium×2＋low×1——条件测试未锁定每臂 merge 写入来源、`ConstructContainerLiteralInsn.operands()` 未检查、L1 缺 untyped 返回边界与 `$Branch/Leaf` 嵌套路径。逐条修复：条件用例改为 block 作用域断言（每臂恰一次 merge 写入且 `sourceId` 为该臂 lookup/suffix 结果、两臂 Goto 同一 merge 块、`lookup→guard→suffix` 臂内 receiver 接线）；容器用例补 `requirePackOf` 来源与有序 `VariableOperand` 消费者接线；forms fixture 增 `nested`（入 typed loop）与 `untyped_child`（Variant 返回＋`PackVariantInsn`→Return 边界），entry Goto 断言升级为指向 ReturnInsn 块。修复后 4 个用例重跑通过（untyped `Array` 确认发射 `PackVariantInsn`），`review-expert-c` 复核 APPROVE、无剩余问题。
+
+本轮实际执行：Gradle 定向测试（4 个 lowering 新用例、`FrontendLoweringBodyInsnPassTest`/`FrontendLoweringFunctionPreparationPassTest`/`FrontendLoweringBuildCfgPassTest`/`CCodegenOnreadyTest` 整类、清单与配对检查）、`lowerFrontendOnreadyNodeLiteralGeneratesC`（环境无关）、`lowerFrontendOnreadyNodeLiteralBuildsNativeLibraryAndRunsInGodot` 与既有 sync 生命周期锚点（本机 zig ＋ `GODOT_BIN` 可用，真实 Godot 4.5.2）、`compilesAndValidatesVirtualRuntimeScripts` 动态 factory 18/18（含两个新 fixture）；全部 `BUILD SUCCESSFUL`，引擎验收非 pending。步骤 6（文档事实源同步）仍为计划未实施部分。
