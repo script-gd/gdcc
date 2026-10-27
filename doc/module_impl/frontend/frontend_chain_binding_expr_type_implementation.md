@@ -332,7 +332,7 @@ lowering 折叠为 int literal（细节见 `frontend_enum_implementation.md`）�
 需要补充的稳定 MVP 合同是：
 
 - property initializer subtree 的 published support 主要服务于可发布事实，而不是宣称“当前类实例成员初始化语义已完成”
-- 当前实例层级可达的 non-static property / method / signal / `self` 依赖不属于当前 MVP 的正式支持面
+- 当前实例层级可达的 non-static property / method / signal / `self` 依赖不属于当前 MVP 的正式支持面；唯一例外是合法 `@onready` initializer 内显式表达式 receiver 的实例成员后缀（句法 direct-self 边界，见 `frontend_node_literal_implementation.md` §3.3）
 - 当前已由 T0.5 把这类依赖收口为 explicit boundary：
   - bare identifier / bare callee / `self` 由 top-binding owner 封口并向 expr typing 传播 `BLOCKED`
   - chain suffix 与 current-instance-hierarchy type-meta route 中首个非法依赖由 chain-binding owner 封口并向 expr typing 传播 `UNSUPPORTED`
@@ -343,7 +343,7 @@ lowering 折叠为 int literal（细节见 `frontend_enum_implementation.md`）�
 - 不能把它们伪装成普通 instance property / instance method lookup
 - instance receiver 命中 static method 时，必须保留 resolved call，并单独发调用方式 diagnostic
 - property initializer 若在 static restriction 下命中 instance-only member / method，首个依赖 step 仍需发布带精确 receiver metadata 的 `BLOCKED` member/call；只有更后面的 suffix 才降级为 upstream-blocked 传播
-- 对 instance property initializer 中“命中当前实例层级可达的非静态成员”的情况，不应把上述 static restriction 规则误读成合法支持面的对称扩张；该路径在 MVP 中需要单独 fail-closed
+- 对 instance property initializer 中“命中当前实例层级可达的非静态成员”的情况，不应把上述 static restriction 规则误读成合法支持面的对称扩张；该路径在 MVP 中需要单独 fail-closed（合法 `@onready` 岛内显式表达式 receiver 的实例成员后缀除外，同上）
 
 ### 4.2 表达式类型
 
@@ -375,9 +375,9 @@ lowering 折叠为 int literal（细节见 `frontend_enum_implementation.md`）�
 
 - 普通 class-level `const` initializer 仍不进入正式 body-phase 支持面
 - property initializer 只开放表达式子树，不引入 class-body `:=` backfill 或新的 executable scope
-- 同 class 非静态依赖在 MVP 中仍需显式封口；不要把 property initializer 的 published subtree support 误写成完整实例初始化语义
+- 同 class 非静态依赖在 MVP 中仍需显式封口（合法 `@onready` initializer 内显式表达式 receiver 的实例成员后缀除外，见 `frontend_node_literal_implementation.md` §3.3）；不要把 property initializer 的 published subtree support 误写成完整实例初始化语义
 - 这里的 published support surface 只表示 side-table 可发布；它不自动承诺同 class non-static property / method / signal / `self` 已在 property initializer 中具备稳定语义
-- 当前 MVP 已通过 T0.5 显式收口：property initializer 不支持访问同 class 下的 non-static 内容；这些路径必须 fail-closed，而不是继续假装存在 declaration-order / default-state / cycle-aware 语义
+- 当前 MVP 已通过 T0.5 显式收口：property initializer 不支持访问同 class 下的 non-static 内容；这些路径必须 fail-closed，而不是继续假装存在 declaration-order / default-state / cycle-aware 语义（唯一例外同上：合法 `@onready` 岛的显式 receiver 后缀）
 - `BinaryExpression` 当前已转正；源码运算符 `not in` 也已按复合规则 `not (lhs in rhs)` 进入支持面（sema 在枚举工厂前拦截，不静默当成 `in`），见 `frontend_unary_binary_expr_semantic_implementation.md` §4.4
 
 当前 expression-only 恢复出口也已冻结：
@@ -509,7 +509,7 @@ writable / compatibility 规则为：
 - `AwaitExpression` 已闭环（`frontend_await_implementation.md`）；普通 executable function 与已记录 lambda body 中的合法 signal/dynamic/instance/static-call await 进入 compile-ready surface
 - `PatternBindingExpression`（普通 expr typing 仍 deferred；match pattern 上下文由 pattern-context 分派接管，永不触发该分支）
 
-`GetNodeExpression` **已不在** deferred 集合中：owner hook 按边界分类发布 `RESOLVED(Node)`（Node 派生类非 static 函数体及已记录 lambda）/ `FAILED`（static、非 Node 派生）/ `DEFERRED`（property initializer）；链头经 `fallbackExpressionReceiverResolver` 走普通表达式 typing 管线，`$Foo.name` / `%Foo.get_name()` 自动获得 Node receiver（见 `frontend_node_literal_implementation.md`）。
+`GetNodeExpression` **已不在** deferred 集合中：owner hook 按边界分类发布 `RESOLVED(Node)`（Node 派生类非 static 函数体、已记录 lambda 与合法 `@onready` initializer）/ `FAILED`（static、非 Node 派生）/ `DEFERRED`（其余 property initializer）；链头经 `fallbackExpressionReceiverResolver` 走普通表达式 typing 管线，`$Foo.name` / `%Foo.get_name()` 自动获得 Node receiver（见 `frontend_node_literal_implementation.md`）。
 
 `PreloadExpression` **已不在** deferred 集合中：shared semantic 要求字符串字面量路径并发布 `RESOLVED(Resource)`（非字面量发 `sema.expression_resolution`），body lowering 由专用 opaque processor 改写为 `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` 指令对（见 `gdscript_language_functions_implementation.md` §7）。
 

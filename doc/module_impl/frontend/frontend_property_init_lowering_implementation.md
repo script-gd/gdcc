@@ -49,7 +49,7 @@
 - property initializer 对同 class non-static property / method / signal / `self` 的完整初始化时序语义
 - parameter default lowering
 
-`@onready` property 的 initializer 复用同一 `PROPERTY_INIT` lowering 支持面；backend 在 apply 侧分流：onready 且有源码 initializer 的 property 在 constructor-time 只写类型默认值（first-write），真实 initializer 推迟到 ready-time overwrite apply（完整合同见 `doc/module_impl/backend/onready_class_implementation.md`）。frontend 的 `$`/`%` compile gate 边界不变。
+`@onready` property 的 initializer 复用同一 `PROPERTY_INIT` lowering 支持面；backend 在 apply 侧分流：onready 且有源码 initializer 的 property 在 constructor-time 只写类型默认值（first-write），真实 initializer 推迟到 ready-time overwrite apply（完整合同见 `doc/module_impl/backend/onready_class_implementation.md`）。frontend 侧合法 `@onready` initializer 内的 `$`/`%` 与显式表达式 receiver 实例成员后缀已进入 compile-ready（见 `frontend_node_literal_implementation.md`）；普通 / `static` initializer、direct `self` 与隐式 self 裸成员边界不变。
 
 换言之，当前支持的是“property initializer helper 的 lowering 与实例 property 的 constructor-time apply（含 onready 默认值分流）、static var 的全局 static 初始化写回均已闭合”，不是“完整实例成员初始化语义已经闭合”。
 
@@ -232,7 +232,7 @@ property initializer 当前仍只是 frontend body-phase 的最小支持岛，�
 - “constructor-time apply 已有统一 first-write 语义”
 - “完整实例初始化模型已经完成”
 
-`@onready` 的 ready-time apply 已由 backend 闭合（`onready_class_implementation.md`），但 ready-time 求值可使用的 initializer 表达式支持面仍等于 §2 边界——`$`/`%` node literal、同类实例成员/`self` 访问的 compile gate 均未解除。
+`@onready` 的 ready-time apply 已由 backend 闭合（`onready_class_implementation.md`）；ready-time 求值的 initializer 表达式支持面在 §2 边界之上追加一条句法例外——合法 `@onready` 岛内 `$`/`%` node literal 及显式表达式 receiver 的实例成员后缀已解除 compile gate（见 `frontend_node_literal_implementation.md`），direct `self`、隐式 self 裸成员与同类实例成员的裸访问边界均未改变。
 
 ---
 

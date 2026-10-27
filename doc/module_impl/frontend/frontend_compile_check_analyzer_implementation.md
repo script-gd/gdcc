@@ -152,7 +152,7 @@ initializer subtree；无 initializer 的 declaration 不产生 compile-surface 
 
 当前没有表达式级显式 compile 拦截；所有已识别表达式均由 shared semantic published facts + generic published-fact scan 判定。
 
-`GetNodeExpression` 不属于显式 compile-block 列表：shared semantic 在 Node 派生类非 static 函数体及已记录 lambda 中发布 `RESOLVED(Node)`，generic scan 放行；static / 非 Node 派生的 FAILED 由上游 `sema.expression_resolution` 持有，gate 去重不重复发；property initializer 中的 `$`/`%` 当前为 DEFERRED，由 generic scan 升级为 `Expression remains deferred ...` 形态 compile error（见 `frontend_node_literal_implementation.md`）。
+`GetNodeExpression` 不属于显式 compile-block 列表：shared semantic 在 Node 派生类非 static 函数体、已记录 lambda 与合法 `@onready` property initializer 中发布 `RESOLVED(Node)`，generic scan 放行；static / 非 Node 派生的 FAILED 由上游 `sema.expression_resolution` 持有，gate 去重不重复发；其余 property initializer 中的 `$`/`%` 仍为 DEFERRED，由 generic scan 升级为 `Expression remains deferred ...` 形态 compile error（见 `frontend_node_literal_implementation.md`）。
 
 `PreloadExpression` 不属于当前显式 compile-block 列表：shared semantic 要求字符串字面量路径并发布 `RESOLVED(Resource)`（非字面量由 `sema.expression_resolution` 持有失败事实，generic published-fact scan 自然阻断），CFG/body 经 `OpaqueExprValueItem` 由专用 processor 改写为 `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` 指令对，backend singleton + ENGINE 实例 dispatch 已闭环。类级 `const X = preload(...)` 不在此列：class-constant 工作流整体不在 MVP 范围（见 `frontend_rules.md`），维持既有拦截。
 
@@ -413,7 +413,7 @@ static property initializer subtree 与普通 property initializer 一样递归�
 - `ForStatement`（route-aware compile policy：`ForLoweringContractRegistry` 中已注册的 route 放行并进入 body 重扫；未注册 route 在 statement root 拦截；已注册 route 的 CFG/body lowering 已落地，见 `frontend_for_range_loop_implementation.md`）
 - `PreloadExpression`
 
-`GetNodeExpression` 已从显式 compile-block 列表移除（函数体与已记录 lambda `RESOLVED(Node)` 放行，property-init DEFERRED 边界经 generic scan 升级，见 `frontend_node_literal_implementation.md`）。
+`GetNodeExpression` 已从显式 compile-block 列表移除（函数体、已记录 lambda 与合法 `@onready` initializer 的 `RESOLVED(Node)` 放行，其余 property-init DEFERRED 边界经 generic scan 升级，见 `frontend_node_literal_implementation.md`）。
 `TypeTestExpression` 已从显式 compile-block 列表移除（见 `frontend_is_type_test_implementation.md`）。
 `CastExpression` 已从显式 compile-block 列表移除（见 `frontend_cast_expression_implementation.md`）。
 `ArrayExpression` / `DictionaryExpression` 已从显式 compile-block 列表移除（见 `frontend_container_literal_implementation.md`）。
@@ -431,7 +431,7 @@ static property initializer subtree 与普通 property initializer 一样递归�
 当前 compile gate 的关键行为由以下 targeted tests 锁定：
 
 - `FrontendCompileCheckAnalyzerTest`
-  - 显式 AST compile-block 已清空（GetNode / Preload / Array / Dictionary / Cast / TypeTest / Conditional 均不在 intercept 列表）；GetNode 的剩余边界（property initializer DEFERRED）由 generic published-fact scan 升级
+  - 显式 AST compile-block 已清空（GetNode / Preload / Array / Dictionary / Cast / TypeTest / Conditional 均不在 intercept 列表）；GetNode 的剩余边界（非 `@onready` property initializer DEFERRED）由 generic published-fact scan 升级
   - short-circuit binary 不再被 compile gate 误封口
   - object/nil equality 与 object identity equality 不再触发 compile blocker
   - object/object ordering 继续由上游 `sema.expression_resolution` 阻断，不新增 `sema.compile_check`
@@ -465,7 +465,7 @@ static property initializer subtree 与普通 property initializer 一样递归�
 
 - frontend -> LIR lowering 入口必须强制使用 `analyzeForCompile(...)`
 - lowering 在继续前必须检查 `diagnostics().hasErrors() == false`
-- `GetNodeExpression` 的函数体与已记录 lambda 路径已完成 sema（`RESOLVED(Node)` + static/非 Node `FAILED`）、CFG/body lowering（`literal_node_path` + `self` 上溯 `Node` 的 `assign` + `call_method "get_node"`）与 backend ENGINE dispatch 闭环，compile gate 不再保留表达式级显式拦截（property initializer DEFERRED 边界仍由 generic scan 封口）；`PreloadExpression` 已完成 sema 字面量校验、compile gate 放行、CFG/body lowering（ResourceLoader singleton 调用对改写）与 backend 闭环；`assert` 已完成 compile gate 放行、CFG/body lowering 与 C backend 闭环；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression` 与 `ConditionalExpression` 已完成 shared semantic、CFG/body lowering 与 backend 闭环；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）；已记录 `LambdaExpression` 的 shared semantic、`construct_lambda` lowering 与 C backend 已闭环，compile gate 按 published plan 放行并递归扫描 body
+- `GetNodeExpression` 的函数体与已记录 lambda 路径已完成 sema（`RESOLVED(Node)` + static/非 Node `FAILED`）、CFG/body lowering（`literal_node_path` + `self` 上溯 `Node` 的 `assign` + `call_method "get_node"`）与 backend ENGINE dispatch 闭环，compile gate 不再保留表达式级显式拦截（非 `@onready` property initializer 的 DEFERRED 边界仍由 generic scan 封口）；`PreloadExpression` 已完成 sema 字面量校验、compile gate 放行、CFG/body lowering（ResourceLoader singleton 调用对改写）与 backend 闭环；`assert` 已完成 compile gate 放行、CFG/body lowering 与 C backend 闭环；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression` 与 `ConditionalExpression` 已完成 shared semantic、CFG/body lowering 与 backend 闭环；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）；已记录 `LambdaExpression` 的 shared semantic、`construct_lambda` lowering 与 C backend 已闭环，compile gate 按 published plan 放行并递归扫描 body
 
 若未来需要为 LSP 单独呈现 compile-only blocker，正确方向仍是：
 

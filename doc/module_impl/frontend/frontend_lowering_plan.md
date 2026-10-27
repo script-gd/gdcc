@@ -203,7 +203,7 @@
 
 1. ~~`assert`~~（已完成）
 2. ~~`PreloadExpression`~~（已完成：字符串字面量校验 + ResourceLoader singleton 调用对改写）
-3. ~~`GetNodeExpression`~~（已完成：Node 派生类非 static 函数体与已记录 lambda `RESOLVED(Node)` + `literal_node_path` / `assign` 上溯 / `call_method "get_node"` 三指令 lowering + ENGINE dispatch 闭环；property initializer 中的 `$`/`%` 仍为 DEFERRED 边界，由 generic published-fact scan 封口。见 `frontend_node_literal_implementation.md`）
+3. ~~`GetNodeExpression`~~（已完成：Node 派生类非 static 函数体与已记录 lambda `RESOLVED(Node)` + `literal_node_path` / `assign` 上溯 / `call_method "get_node"` 三指令 lowering + ENGINE dispatch 闭环；合格 `@onready` initializer 中的 `$`/`%` 同样 `RESOLVED(Node)` 并复用同一三指令路径；其余 property initializer 中的 `$`/`%` 仍为 DEFERRED 边界，由 generic published-fact scan 封口。见 `frontend_node_literal_implementation.md`）
 
 说明：
 

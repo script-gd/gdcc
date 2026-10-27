@@ -152,7 +152,7 @@ lowering 只消费 published facts。缺失 / 冲突 fact 必须 fail-fast，禁
 - `resolvedMethodReferenceTrace(...)` 把方法引用发布为 `GdCallableType`。
 - `FrontendAssignmentSemanticSupport` 对 signal 赋值报 read-only。
 - `.emit` / `.connect` / `.disconnect` 经 `reduceInstanceMethodStep` → builtin `Signal` 方法解析；`AttributeCallStep` 无需专用承载。
-- property initializer 中的非静态 signal 访问走 `detailForResolvedSignalBoundary` 拦截。
+- property initializer 中的非静态 signal 访问走 `detailForResolvedSignalBoundary` 拦截；唯一例外是合法 `@onready` initializer 内显式表达式 receiver 上的 signal 后缀（如 `$Child.renamed`），按句法 direct-self 边界放行（见 `frontend_node_literal_implementation.md` §3.3）。
 
 `GdSignalType` 只承载参数签名；声明本体留在 `ScopeValue.declaration()` 的 `SignalDef`。`ClassRegistry` 把类型文本 `"Signal"` 解析成无参 `GdSignalType()`。`EngineMethodAbiCodec` 映射 `GdSignalType` ↔ ABI `'G'`。
 
