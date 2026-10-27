@@ -1970,7 +1970,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
     }
 
     @Test
-    void analyzeResolvesOnreadyGetNodeHeadsWhileSuffixOwnerBoundariesStaySealed() throws Exception {
+    void analyzeResolvesOnreadyGetNodeHeadsAndExplicitReceiverSuffixes() throws Exception {
         var analyzed = analyze(
                 "expr_type_onready_suffix_boundary.gd",
                 """
@@ -1991,16 +1991,18 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                         @onready var renamed_signal: Signal = $Child.renamed
                         @onready var self_name: StringName = $".".get_name()
                         @onready var parent_name: StringName = $Child.get_parent().get_name()
-                        @onready var baseline_blocked := build().payload
+                        @onready var helper_result := build().payload
+                        @onready var cast_name: StringName = ($Child as Node).name
+                        @onready var conditional_name: StringName = $Child.name if true else %Unique.get_name()
                         @onready var mixed := [$Child, payload]
                         """
         );
 
-        // Every get-node head publishes RESOLVED(Node); the receiver type is then checked by the
-        // ordinary suffix rules, so members owned by the current instance hierarchy still seal
-        // through the existing chain boundary (property / call / method-reference / signal).
+        // Every get-node head publishes RESOLVED(Node); because the enclosing island is an
+        // eligible @onready initializer, each explicit receiver suffix then types through the
+        // ordinary resolved-member route instead of sealing at the owner boundary.
         var getNodeExpressions = findNodes(analyzed.ast(), GetNodeExpression.class, ignored -> true);
-        assertEquals(7, getNodeExpressions.size());
+        assertEquals(10, getNodeExpressions.size());
         for (var getNodeExpression : getNodeExpressions) {
             var published = analyzed.analysisData().expressionTypes().get(getNodeExpression);
             assertNotNull(published);
@@ -2009,13 +2011,15 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         }
 
         for (var entry : Map.of(
-                "child_name", "name",
-                "unique_name", "get_name",
-                "get_name_callable", "get_name",
-                "renamed_signal", "renamed",
-                "self_name", "get_name",
-                "parent_name", "get_parent",
-                "baseline_blocked", "payload"
+                "child_name", "StringName",
+                "unique_name", "StringName",
+                "get_name_callable", "Callable",
+                "renamed_signal", "Signal",
+                "self_name", "StringName",
+                "parent_name", "StringName",
+                "helper_result", "int",
+                "cast_name", "StringName",
+                "conditional_name", "StringName"
         ).entrySet()) {
             var declaration = findNode(
                     analyzed.ast(),
@@ -2024,8 +2028,8 @@ class FrontendBodyOwnerProceduresExprTypeTest {
             );
             var chainType = analyzed.analysisData().expressionTypes().get(declaration.value());
             assertNotNull(chainType, entry.getKey());
-            assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, chainType.status(), entry.getKey());
-            assertTrue(chainType.detailReason().contains(entry.getValue()), entry.getKey());
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, chainType.status(), entry.getKey());
+            assertEquals(entry.getValue(), chainType.publishedType().getTypeName(), entry.getKey());
         }
 
         // The ready-time marker does not exempt sibling subtrees: the bare instance property
@@ -2046,12 +2050,14 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         assertNotNull(payloadType);
         assertEquals(FrontendExpressionTypeStatus.BLOCKED, payloadType.status());
         assertTrue(payloadType.detailReason().contains("payload"));
+        var mixedType = analyzed.analysisData().expressionTypes().get(mixedDeclaration.value());
+        assertNotNull(mixedType);
+        assertEquals(FrontendExpressionTypeStatus.BLOCKED, mixedType.status());
 
-        var boundaryDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_chain_route");
-        assertEquals(7, boundaryDiagnostics.size());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_chain_route").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_binding_subtree").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.binding").isEmpty());
-        assertTrue(analyzed.analysisData().diagnostics().hasErrors());
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.call_resolution").isEmpty());
@@ -2075,18 +2081,26 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                         @onready var via_super := super.get_name()
                         @onready var bare_field := payload
                         @onready var bare_call := read()
+                        @onready var bare_method_ref: Callable = get_name
+                        @onready var bare_signal: Signal = renamed
                         @onready var wrapped_self := (self as Node).name
                         @onready var conditional_self := self if true else $Child
+                        @onready var conditional_suffix_self := (self if true else $Child).name
                         @onready var arg_self := $Child.is_ancestor_of(self)
+                        @onready var arg_bare := $Child.set_name(name)
                         """
         );
 
         // Ready-time initializers open only the get-node leaf: `self`, `super`, and implicit-self
         // bare members stay sealed by the same binding/head boundaries as any other initializer,
         // in every syntactic position (chain head, cast operand, conditional arm, call argument).
+        // Releasing the suffix owner boundary does not reopen them: a blocked `self` arm keeps
+        // the conditional head blocked, and a blocked `self`/bare-member argument keeps the
+        // enclosing call blocked before the suffix boundary is even consulted.
         for (var name : List.of(
-                "via_self", "via_super", "bare_field", "bare_call", "wrapped_self",
-                "conditional_self", "arg_self"
+                "via_self", "via_super", "bare_field", "bare_call", "bare_method_ref",
+                "bare_signal", "wrapped_self", "conditional_self", "conditional_suffix_self",
+                "arg_self", "arg_bare"
         )) {
             var declaration = findNode(
                     analyzed.ast(),
@@ -2098,9 +2112,11 @@ class FrontendBodyOwnerProceduresExprTypeTest {
             assertEquals(FrontendExpressionTypeStatus.BLOCKED, rootType.status(), name);
         }
 
-        // `self`/`super` uses seal through the subtree boundary (5 roots contain them). The two
-        // implicit-self bare members hit the same boundary through their blocked binding, which
-        // stays silent at diagnostic level like every bare-member boundary.
+        // `self`/`super` uses seal through the subtree boundary (6 roots contain them). The
+        // implicit-self bare members — including the bare method reference `get_name` and the
+        // bare signal `renamed` — hit the same boundary through their blocked binding, which
+        // stays silent at diagnostic level like every bare-member boundary, so neither they
+        // nor the `name` argument in `arg_bare` add a diagnostic.
         var bareFieldRoot = findNode(
                 analyzed.ast(),
                 VariableDeclaration.class,
@@ -2115,7 +2131,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         assertTrue(analyzed.analysisData().expressionTypes().get(bareCallRoot).detailReason().contains("read"));
 
         var bindingDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_binding_subtree");
-        assertEquals(5, bindingDiagnostics.size());
+        assertEquals(6, bindingDiagnostics.size());
         assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("'self'")));
         assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("'super'")));
         assertTrue(diagnosticsByCategory(analyzed, "sema.binding").isEmpty());

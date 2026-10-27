@@ -1824,30 +1824,50 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileKeepsOnreadySealedBoundariesOwnedByUpstreamDiagnostics() throws Exception {
+    void analyzeForCompileReleasesOnreadySuffixRoutesWhileDirectSelfStaysBlocked() throws Exception {
         var suffixSource = """
-                class_name CompileCheckOnreadySuffixBoundary
+                class_name CompileCheckOnreadySuffixRelease
                 extends Node
                 
                 @onready var child_name: StringName = $Child.name
+                @onready var unique_name: StringName = %Unique.get_name()
                 """;
-        var preparedInput = prepareCompileCheckInput("compile_check_onready_suffix_boundary.gd", suffixSource);
+        var preparedInput = prepareCompileCheckInput("compile_check_onready_suffix_release.gd", suffixSource);
         runCompileCheck(preparedInput);
 
-        var getNode = findNode(preparedInput.unit().ast(), GetNodeExpression.class, ignored -> true);
-        var published = preparedInput.analysisData().expressionTypes().get(getNode);
-        assertNotNull(published);
-        assertEquals(FrontendExpressionTypeStatus.RESOLVED, published.status());
-        // The get-node leaf itself is released onto the compile surface; the remaining compile
-        // failure is owned by the suffix boundary, so no diagnostic anchors on its range.
-        var getNodeRange = FrontendRange.fromAstRange(getNode.range());
+        for (var declarationName : List.of("child_name", "unique_name")) {
+            var declaration = findNode(
+                    preparedInput.unit().ast(),
+                    VariableDeclaration.class,
+                    candidate -> candidate.name().equals(declarationName)
+            );
+            var getNode = findNode(declaration.value(), GetNodeExpression.class, ignored -> true);
+            var published = preparedInput.analysisData().expressionTypes().get(getNode);
+            assertNotNull(published);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, published.status());
+        }
+        // The released suffix steps also publish stable member/call facts, so the generic
+        // compile scan finds nothing left to escalate for the whole initializer.
+        var nameStep = findNode(
+                preparedInput.unit().ast(),
+                AttributePropertyStep.class,
+                step -> step.name().equals("name")
+        );
+        var resolvedName = preparedInput.analysisData().resolvedMembers().get(nameStep);
+        assertNotNull(resolvedName);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedName.status());
+        var getNameStep = findNode(
+                preparedInput.unit().ast(),
+                AttributeCallStep.class,
+                step -> step.name().equals("get_name")
+        );
+        var resolvedGetName = preparedInput.analysisData().resolvedCalls().get(getNameStep);
+        assertNotNull(resolvedGetName);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedGetName.status());
         var diagnostics = preparedInput.analysisData().diagnostics();
-        assertTrue(diagnostics.hasErrors(), diagnostics::toString);
-        assertTrue(diagnostics.asList().stream().noneMatch(diagnostic ->
-                getNodeRange.equals(diagnostic.range())
-        ), diagnostics::toString);
-        assertTrue(diagnosticsByCategory(diagnostics, "sema.unsupported_chain_route").stream()
-                .anyMatch(diagnostic -> diagnostic.message().contains("name")), diagnostics::toString);
+        assertFalse(diagnostics.hasErrors(), diagnostics::toString);
+        assertTrue(diagnosticsByCategory(diagnostics, "sema.unsupported_chain_route").isEmpty());
+        assertTrue(diagnosticsByCategory(diagnostics, "sema.compile_check").isEmpty());
 
         var selfSource = """
                 class_name CompileCheckOnreadySelfBoundary

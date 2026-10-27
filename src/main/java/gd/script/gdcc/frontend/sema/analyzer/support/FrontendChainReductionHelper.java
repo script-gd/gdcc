@@ -760,12 +760,22 @@ public final class FrontendChainReductionHelper {
             return reduceBuiltinPropertyStep(stepIndex, step, incomingReceiver, request.classRegistry(), receiverType);
         }
 
+        // An eligible @onready initializer runs at ready time on the live instance, so explicit
+        // expression receivers may reach instance members whose owner belongs to the current
+        // instance hierarchy; the resolved-member owner boundaries below are skipped for it.
+        var onreadyInitializer = FrontendPropertyInitializerSupport.checkNodeDerivedOnreadyInitializer(
+                request.propertyInitializerContext(),
+                request.analysisData()
+        );
+
         var propertyResult = ScopePropertyResolver.resolveObjectProperty(request.classRegistry(), objectType, step.name());
         if (propertyResult instanceof ScopePropertyResolver.Resolved(var property)) {
-            var boundaryDetail = FrontendPropertyInitializerSupport.detailForResolvedPropertyBoundary(
-                    request.propertyInitializerContext(),
-                    property
-            );
+            var boundaryDetail = onreadyInitializer
+                    ? null
+                    : FrontendPropertyInitializerSupport.detailForResolvedPropertyBoundary(
+                            request.propertyInitializerContext(),
+                            property
+                    );
             if (boundaryDetail != null) {
                 return unsupportedResolvedPropertyTrace(stepIndex, step, incomingReceiver, property, boundaryDetail);
             }
@@ -789,10 +799,12 @@ public final class FrontendChainReductionHelper {
 
         var signalResult = ScopeSignalResolver.resolveInstanceSignal(request.classRegistry(), receiverType, step.name());
         if (signalResult instanceof ScopeSignalResolver.Resolved(var signal)) {
-            var boundaryDetail = FrontendPropertyInitializerSupport.detailForResolvedSignalBoundary(
-                    request.propertyInitializerContext(),
-                    signal
-            );
+            var boundaryDetail = onreadyInitializer
+                    ? null
+                    : FrontendPropertyInitializerSupport.detailForResolvedSignalBoundary(
+                            request.propertyInitializerContext(),
+                            signal
+                    );
             if (boundaryDetail != null) {
                 return unsupportedResolvedSignalTrace(stepIndex, step, incomingReceiver, signal, boundaryDetail);
             }
@@ -833,11 +845,13 @@ public final class FrontendChainReductionHelper {
                 && signalFailed.kind() == ScopeSignalResolver.FailureKind.SIGNAL_MISSING) {
             var methodReference = resolveInstanceMethodReference(request.classRegistry(), receiverType, step.name());
             if (methodReference != null) {
-                var boundaryDetail = FrontendPropertyInitializerSupport.detailForMethodReferenceBoundary(
-                        request.propertyInitializerContext(),
-                        methodReference.ownerClass(),
-                        methodReference.declarationSite().getFirst()
-                );
+                var boundaryDetail = onreadyInitializer
+                        ? null
+                        : FrontendPropertyInitializerSupport.detailForMethodReferenceBoundary(
+                                request.propertyInitializerContext(),
+                                methodReference.ownerClass(),
+                                methodReference.declarationSite().getFirst()
+                        );
                 if (boundaryDetail != null) {
                     return unsupportedMethodReferenceTrace(
                             stepIndex,
@@ -1951,6 +1965,12 @@ public final class FrontendChainReductionHelper {
             @NotNull List<ReductionNote> notes
     ) {
         var propertyInitializerContext = request.propertyInitializerContext();
+        // Same ready-time island release as reducePropertyStep: explicit expression receivers
+        // may reach current-instance-hierarchy members inside an eligible @onready initializer.
+        var onreadyInitializer = FrontendPropertyInitializerSupport.checkNodeDerivedOnreadyInitializer(
+                propertyInitializerContext,
+                request.analysisData()
+        );
         var classRegistry = request.classRegistry();
         var noteSink = request.noteSink();
         var result = ScopeMethodResolver.resolveInstanceMethodWithParameterRank(
@@ -1964,10 +1984,12 @@ public final class FrontendChainReductionHelper {
         return switch (result) {
             case ScopeMethodResolver.Resolved resolved -> {
                 var resolvedMethod = resolved.method();
-                var boundaryDetail = FrontendPropertyInitializerSupport.detailForResolvedMethodBoundary(
-                        propertyInitializerContext,
-                        resolvedMethod
-                );
+                var boundaryDetail = onreadyInitializer
+                        ? null
+                        : FrontendPropertyInitializerSupport.detailForResolvedMethodBoundary(
+                                propertyInitializerContext,
+                                resolvedMethod
+                        );
                 var routeKind = resolvedMethod.isStatic() ? RouteKind.STATIC_METHOD : RouteKind.INSTANCE_METHOD;
                 var callKind = resolvedMethod.isStatic()
                         ? FrontendCallResolutionKind.STATIC_METHOD

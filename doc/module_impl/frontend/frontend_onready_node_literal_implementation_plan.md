@@ -175,6 +175,16 @@ cast 一项复用显式 object cast；不是根据路径自动推导，也不保
 
 **验收**：onready 岛内 property / instance-method / method-reference / signal 四条 suffix 路由在 `Node` owner 成员上解析成功并发布正确 fact，含嵌套链、cast 与条件表达式包装；间接 self 别名表达式（`$".".get_name()`、`$Child.get_parent().get_name()`）作为合法显式表达式被接受，不产生 alias 专用诊断，也不做运行时 identity 拒绝；显式 `self.` / `super.` / 隐式 self 裸成员（字段/方法/方法引用/信号，含继承）以及以 cast/条件/括号包装或作实参的 `self` 仍由原 boundary owner 拒绝——在 `FrontendBodyOwnerProceduresChainBindingTest` 与 `FrontendBodyOwnerProceduresExprTypeTest` 中按方法归属断言 boundary owner 或 generic compile diagnostic，以实际发布事实为准，不假定裸成员错误一律出现 top-binding 诊断；非 onready 的同类/继承 receiver 链（既有 `build().payload` / `read()` / `changed` 负向用例）保持 UNSUPPORTED。
 
+**实施状态（2026-10-27）：已完成。** 生产改动仅 1 个文件：`FrontendChainReductionHelper.reducePropertyStep` 在 object-receiver 分支计算一次 `onreadyInitializer`（复用 `checkNodeDerivedOnreadyInitializer`），其 property/signal/method-reference 三处 boundary 以 `onreadyInitializer ? null : detailFor...` 短路；`reduceInstanceMethodStep` 在 `propertyInitializerContext` 局部变量旁同样预取并短路 `detailForResolvedMethodBoundary`。两处 type-meta 检查（static load/static method）与 head/binding 边界均未触碰；同包调用无需 import。
+
+**测试更新与新增（3 个既有测试类）**：
+
+- `FrontendBodyOwnerProceduresChainBindingTest`：`analyzeSealsOnreadySuffixMembersAtOwnerBoundaryWithResolvedGetNodeHeads` 重写为 `analyzeResolvesOnreadySuffixMembersAcrossExplicitReceiverRoutes`——fixture 扩至 8 个 GetNode leaf（含 `build().payload` helper 结果 receiver、`($Child as Node).name`、条件两臂各带后缀、`$Child.get_parent().get_name()` 嵌套链），断言 property/`Signal`/method-reference(`Callable`) 三条 `resolvedMembers` 与 instance-method `resolvedCalls` 全部 `RESOLVED` 且 binding/resultType 正确，`sema.unsupported_chain_route` 等类别为空、`hasErrors` 为 false；新增 `analyzeKeepsSuffixBoundariesSealedInsideIneligibleOnreadyIslands`——static 与非 Node 岛的 `build().payload` 保持 `UNSUPPORTED` 且 placement 错误归 annotation usage owner。
+- `FrontendBodyOwnerProceduresExprTypeTest`：`analyzeResolvesOnreadyGetNodeHeadsWhileSuffixOwnerBoundariesStaySealed` 重写为 `analyzeResolvesOnreadyGetNodeHeadsAndExplicitReceiverSuffixes`——10 个 leaf `RESOLVED(Node)`、9 条链根 `RESOLVED` 且 `publishedType` 匹配（StringName/Callable/Signal/int），`mixed` 中裸 `payload` 元素与容器根保持静默 `BLOCKED`、全诊断集无 error；`analyzeKeepsDirectSelfBoundariesInsideOnreadyPropertyInitializer` 扩入 `(self if true else $Child).name`、`$Child.set_name(name)` 及审阅后补入的裸方法引用 `get_name`、裸信号 `renamed`——11 个根全部 `BLOCKED`、subtree 诊断 5→6（裸成员/裸成员实参均静默）。
+- `FrontendCompileCheckAnalyzerTest`：`analyzeForCompileKeepsOnreadySealedBoundariesOwnedByUpstreamDiagnostics` 改写为 `analyzeForCompileReleasesOnreadySuffixRoutesWhileDirectSelfStaysBlocked`——`$Child.name` 与 `%Unique.get_name()` 的 leaf/member/call fact 均 `RESOLVED`、无 `sema.unsupported_chain_route`/`sema.compile_check`、无 error；`self.payload` 半段仍断言 `unsupported_binding_subtree`。
+
+**验收结果**：`script/run-gradle-targeted-tests.sh --tests <5 个新增/改写用例 ＋ 4 个非 onready 负向锚点>` 全部通过；随后 6 个测试类整类回归 `BUILD SUCCESSFUL`。间接 self 别名用例（`$".".get_name()`、`$Child.get_parent().get_name()`）作为正向解析，无 alias 专用诊断；blocked `self` 实参使 `$Child.is_ancestor_of(self)`/`set_name(name)` 在后缀 boundary 之前即整体 `BLOCKED`，证明放行不波及 direct-self 边界。
+
 ### 步骤 3：类型、注解与恢复边界回归
 
 **改动**：在 `FrontendExpressionSemanticSupportTest`、`FrontendCompileCheckAnalyzerTest`、`FrontendTypeCheckAnalyzerTest`、`FrontendAnnotationUsageAnalyzerTest`、`FrontendBodyOwnerProceduresChainBindingTest`、`FrontendBodyOwnerProceduresExprTypeTest` 中按职责添加 §5 的 focused cases。
@@ -373,3 +383,7 @@ lead 已对两份审阅报告的全部发现（含 low 级措辞修正）对照�
 ### 9.3 实施轮次（步骤 0＋1 代码实现，2026-10-27）
 
 `review-expert-c` 对步骤 0/1 的代码 diff 完成审阅，结论 APPROVE（仅限步骤 0/1 范围）：未发现 blocker/high/medium 问题，谓词保守性、诊断归属与 leaf/suffix 分离均获确认。唯一 low 级建议——为“损坏 `@onready` 投影不授予能力”补直接覆盖——已采纳并落地为 `analyzeDefersGetNodeLeafBehindDamagedOnreadyAnnotation`（断言 skipped-subtree 成员关系、leaf `DEFERRED`、完好 sibling `RESOLVED`、parser 独占诊断、无 `sema.annotation_usage`），运行通过；修复后全部 6 个相关测试类整类回归 `BUILD SUCCESSFUL`。本轮执行了 Gradle 定向测试，未运行 Zig 或 Godot；步骤 2–6 仍为计划未实施部分。
+
+### 9.4 实施轮次（步骤 2 代码实现，2026-10-27）
+
+`review-expert-c` 对步骤 2 的代码 diff 完成审阅，结论 APPROVE（仅限步骤 2 范围）：未发现 blocker/high/medium 问题，四处接入完整性、谓词短路仅限 ownerClass boundary、type-meta/head/binding 边界不受影响均获确认。唯一 low 级建议——为 N7 补裸方法引用与裸信号的负向锚点——已采纳并落地为 `analyzeKeepsDirectSelfBoundariesInsideOnreadyPropertyInitializer` 中的 `bare_method_ref`/`bare_signal` 用例（11 根 `BLOCKED`、subtree 诊断仍为 6），运行通过；复核再次 APPROVE，无剩余问题。本轮执行了 Gradle 定向测试（9 个用例选择器 ＋ 6 个测试类整类回归），未运行 Zig 或 Godot；步骤 3–6 仍为计划未实施部分。

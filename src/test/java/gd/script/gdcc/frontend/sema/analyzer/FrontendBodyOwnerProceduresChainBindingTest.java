@@ -1020,7 +1020,7 @@ class FrontendBodyOwnerProceduresChainBindingTest {
     }
 
     @Test
-    void analyzeSealsOnreadySuffixMembersAtOwnerBoundaryWithResolvedGetNodeHeads() throws Exception {
+    void analyzeResolvesOnreadySuffixMembersAcrossExplicitReceiverRoutes() throws Exception {
         var analyzed = analyze(
                 "property_initializer_onready_suffix_routes.gd",
                 """
@@ -1036,15 +1036,19 @@ class FrontendBodyOwnerProceduresChainBindingTest {
                         @onready var unique_name: StringName = %Unique.get_name()
                         @onready var get_name_callable: Callable = $Child.get_name
                         @onready var renamed_signal: Signal = $Child.renamed
-                        @onready var baseline_blocked := build().payload
+                        @onready var helper_result := build().payload
+                        @onready var cast_name: StringName = ($Child as Node).name
+                        @onready var conditional_name: StringName = $Child.name if true else %Unique.get_name()
+                        @onready var parent_name: StringName = $Child.get_parent().get_name()
                         """
         );
 
-        // The resolved get-node head stays RESOLVED(Node) while the resolved member/call facts
-        // keep the owner-boundary seal: member-level evidence that the ready-time leaf typing
-        // does not widen suffix access on its own.
+        // Inside an eligible @onready island the get-node leaf resolves to Node and explicit
+        // expression receivers release the four suffix routes, even though the member owners
+        // (Node.name / get_name / renamed and the declaring class's payload) belong to the
+        // current instance hierarchy.
         var getNodeExpressions = findNodes(analyzed.unit().ast(), GetNodeExpression.class, ignored -> true);
-        assertEquals(4, getNodeExpressions.size());
+        assertEquals(8, getNodeExpressions.size());
         for (var getNodeExpression : getNodeExpressions) {
             var headType = analyzed.analysisData().expressionTypes().get(getNodeExpression);
             assertNotNull(headType);
@@ -1072,56 +1076,161 @@ class FrontendBodyOwnerProceduresChainBindingTest {
                 VariableDeclaration.class,
                 declaration -> declaration.name().equals("renamed_signal")
         );
-        var baselineDeclaration = findNode(
+        var helperResultDeclaration = findNode(
                 analyzed.unit().ast(),
                 VariableDeclaration.class,
-                declaration -> declaration.name().equals("baseline_blocked")
+                declaration -> declaration.name().equals("helper_result")
+        );
+        var castNameDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("cast_name")
+        );
+        var conditionalNameDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("conditional_name")
+        );
+        var parentNameDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("parent_name")
         );
         var nameStep = findNode(childNameDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("name"));
         var getNameCallStep = findNode(uniqueNameDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("get_name"));
         var getNameReferenceStep = findNode(getNameCallableDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("get_name"));
         var renamedStep = findNode(renamedSignalDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("renamed"));
-        var payloadStep = findNode(baselineDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
+        var payloadStep = findNode(helperResultDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
+        var castNameStep = findNode(castNameDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("name"));
+        var conditionalNameStep = findNode(conditionalNameDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("name"));
+        var conditionalGetNameCallStep = findNode(conditionalNameDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("get_name"));
+        var getParentCallStep = findNode(parentNameDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("get_parent"));
+        var parentGetNameCallStep = findNode(parentNameDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("get_name"));
 
-        var unsupportedName = analyzed.analysisData().resolvedMembers().get(nameStep);
-        assertNotNull(unsupportedName);
-        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, unsupportedName.status());
-        assertEquals(FrontendBindingKind.PROPERTY, unsupportedName.bindingKind());
-        assertEquals(FrontendReceiverKind.INSTANCE, unsupportedName.receiverKind());
+        var resolvedName = analyzed.analysisData().resolvedMembers().get(nameStep);
+        assertNotNull(resolvedName);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedName.status());
+        assertEquals(FrontendBindingKind.PROPERTY, resolvedName.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedName.receiverKind());
+        assertEquals("StringName", resolvedName.resultType().getTypeName());
 
-        var unsupportedRenamed = analyzed.analysisData().resolvedMembers().get(renamedStep);
-        assertNotNull(unsupportedRenamed);
-        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, unsupportedRenamed.status());
-        assertEquals(FrontendBindingKind.SIGNAL, unsupportedRenamed.bindingKind());
-        assertEquals(FrontendReceiverKind.INSTANCE, unsupportedRenamed.receiverKind());
+        var resolvedRenamed = analyzed.analysisData().resolvedMembers().get(renamedStep);
+        assertNotNull(resolvedRenamed);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedRenamed.status());
+        assertEquals(FrontendBindingKind.SIGNAL, resolvedRenamed.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedRenamed.receiverKind());
+        assertInstanceOf(GdSignalType.class, resolvedRenamed.resultType());
 
-        var unsupportedGetNameReference = analyzed.analysisData().resolvedMembers().get(getNameReferenceStep);
-        assertNotNull(unsupportedGetNameReference);
-        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, unsupportedGetNameReference.status());
-        assertEquals(FrontendBindingKind.METHOD, unsupportedGetNameReference.bindingKind());
-        assertEquals(FrontendReceiverKind.INSTANCE, unsupportedGetNameReference.receiverKind());
+        var resolvedGetNameReference = analyzed.analysisData().resolvedMembers().get(getNameReferenceStep);
+        assertNotNull(resolvedGetNameReference);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedGetNameReference.status());
+        assertEquals(FrontendBindingKind.METHOD, resolvedGetNameReference.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedGetNameReference.receiverKind());
+        assertInstanceOf(GdCallableType.class, resolvedGetNameReference.resultType());
 
-        var unsupportedPayload = analyzed.analysisData().resolvedMembers().get(payloadStep);
-        assertNotNull(unsupportedPayload);
-        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, unsupportedPayload.status());
-        assertEquals(FrontendBindingKind.PROPERTY, unsupportedPayload.bindingKind());
-        assertEquals(FrontendReceiverKind.INSTANCE, unsupportedPayload.receiverKind());
+        var resolvedGetNameCall = analyzed.analysisData().resolvedCalls().get(getNameCallStep);
+        assertNotNull(resolvedGetNameCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedGetNameCall.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedGetNameCall.callKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedGetNameCall.receiverKind());
+        assertEquals("StringName", resolvedGetNameCall.returnType().getTypeName());
 
-        var unsupportedGetNameCall = analyzed.analysisData().resolvedCalls().get(getNameCallStep);
-        assertNotNull(unsupportedGetNameCall);
-        assertEquals(FrontendCallResolutionStatus.UNSUPPORTED, unsupportedGetNameCall.status());
-        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, unsupportedGetNameCall.callKind());
-        assertEquals(FrontendReceiverKind.INSTANCE, unsupportedGetNameCall.receiverKind());
+        // The static helper call result is an explicit expression receiver too: `.payload`
+        // resolves although the declaring class itself is the member owner.
+        var resolvedPayload = analyzed.analysisData().resolvedMembers().get(payloadStep);
+        assertNotNull(resolvedPayload);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedPayload.status());
+        assertEquals(FrontendBindingKind.PROPERTY, resolvedPayload.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedPayload.receiverKind());
+        assertEquals("int", resolvedPayload.resultType().getTypeName());
 
-        var unsupportedDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route");
-        assertEquals(5, unsupportedDiagnostics.size());
-        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("name")));
-        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("get_name")));
-        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("renamed")));
-        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("payload")));
+        var resolvedCastName = analyzed.analysisData().resolvedMembers().get(castNameStep);
+        assertNotNull(resolvedCastName);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedCastName.status());
+        assertEquals(FrontendBindingKind.PROPERTY, resolvedCastName.bindingKind());
+        assertEquals("StringName", resolvedCastName.resultType().getTypeName());
+
+        var resolvedConditionalName = analyzed.analysisData().resolvedMembers().get(conditionalNameStep);
+        assertNotNull(resolvedConditionalName);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedConditionalName.status());
+        var resolvedConditionalGetNameCall = analyzed.analysisData().resolvedCalls().get(conditionalGetNameCallStep);
+        assertNotNull(resolvedConditionalGetNameCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedConditionalGetNameCall.status());
+
+        var resolvedGetParentCall = analyzed.analysisData().resolvedCalls().get(getParentCallStep);
+        assertNotNull(resolvedGetParentCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedGetParentCall.status());
+        assertEquals("Node", resolvedGetParentCall.returnType().getTypeName());
+        var resolvedParentGetNameCall = analyzed.analysisData().resolvedCalls().get(parentGetNameCallStep);
+        assertNotNull(resolvedParentGetNameCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedParentGetNameCall.status());
+        assertEquals("StringName", resolvedParentGetNameCall.returnType().getTypeName());
+
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+    }
+
+    @Test
+    void analyzeKeepsSuffixBoundariesSealedInsideIneligibleOnreadyIslands() throws Exception {
+        // A static or non-Node `@onready` declaration is not a ready-time island: the suffix
+        // owner boundary keeps sealing the same explicit-receiver chain that the eligible
+        // island releases, while the annotation usage owner reports the placement error.
+        var nonNodeAnalyzed = analyze(
+                "property_initializer_onready_suffix_non_node.gd",
+                """
+                        class_name PropertyInitializerOnreadySuffixNonNode
+                        extends RefCounted
+                        
+                        var payload: int = 1
+                        
+                        static func build() -> PropertyInitializerOnreadySuffixNonNode:
+                            return null
+                        
+                        @onready var leaked := build().payload
+                        """
+        );
+        var nonNodePayloadStep = findNode(
+                nonNodeAnalyzed.unit().ast(),
+                AttributePropertyStep.class,
+                step -> step.name().equals("payload")
+        );
+        var nonNodePayload = nonNodeAnalyzed.analysisData().resolvedMembers().get(nonNodePayloadStep);
+        assertNotNull(nonNodePayload);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, nonNodePayload.status());
+        assertTrue(diagnosticsByCategory(nonNodeAnalyzed.analysisData(), "sema.unsupported_chain_route").stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("payload")));
+        assertTrue(diagnosticsByCategory(nonNodeAnalyzed.analysisData(), "sema.annotation_usage").stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("inherits from Node")));
+
+        var staticAnalyzed = analyze(
+                "property_initializer_onready_suffix_static.gd",
+                """
+                        class_name PropertyInitializerOnreadySuffixStatic
+                        extends Node
+                        
+                        var payload: int = 1
+                        
+                        static func build() -> PropertyInitializerOnreadySuffixStatic:
+                            return null
+                        
+                        @onready static var leaked := build().payload
+                        """
+        );
+        var staticPayloadStep = findNode(
+                staticAnalyzed.unit().ast(),
+                AttributePropertyStep.class,
+                step -> step.name().equals("payload")
+        );
+        var staticPayload = staticAnalyzed.analysisData().resolvedMembers().get(staticPayloadStep);
+        assertNotNull(staticPayload);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, staticPayload.status());
+        assertTrue(diagnosticsByCategory(staticAnalyzed.analysisData(), "sema.unsupported_chain_route").stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("payload")));
+        assertTrue(diagnosticsByCategory(staticAnalyzed.analysisData(), "sema.annotation_usage").stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("static property 'leaked'")));
     }
 
     @Test
