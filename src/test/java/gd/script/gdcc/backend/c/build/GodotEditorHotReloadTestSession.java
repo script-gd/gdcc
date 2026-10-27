@@ -136,6 +136,7 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
         publishedLibraryFileName = hashedLibraryFileName(buildFileName, publishedContentHash);
         Files.copy(v1Library, binDir.resolve(publishedLibraryFileName), StandardCopyOption.REPLACE_EXISTING);
         writeGdextensionFile();
+        writeExtensionListFile();
         Files.writeString(projectDir.resolve(DRIVER_FILE_NAME), driverSource, StandardCharsets.UTF_8);
     }
 
@@ -285,6 +286,19 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
 
     private void writeSwapFlag() throws IOException {
         Files.writeString(projectDir.resolve(SWAP_FLAG_FILE_NAME), "swap\n", StandardCharsets.UTF_8);
+    }
+
+    /// Preloads the editor's extension cache so startup registers the extension directly.
+    /// Without it the first filesystem scan discovers the `.gdextension` later and emits
+    /// `extensions_reloaded`, whose deferred doc regeneration can race the headless quit
+    /// (upstream godotengine/godot#111048).
+    private void writeExtensionListFile() throws IOException {
+        Files.createDirectories(projectDir.resolve(".godot"));
+        Files.writeString(
+                projectDir.resolve(".godot").resolve("extension_list.cfg"),
+                GDEXTENSION_RESOURCE_PATH + "\n",
+                StandardCharsets.UTF_8
+        );
     }
 
     /// Inserts `-<contentHash>` before the last extension so changed content loads from a distinct

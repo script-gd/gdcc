@@ -1902,9 +1902,12 @@ didClose 的意义是停止客户端后续的 didChange 维护流量并释放客
   `settingsCatalogContainsOnlyAddonPropertyNames` 保护设置名称专用目录边界）。
 - `EditorAddonDiagnosticsFixtureTest`：Java 侧钉死引擎测试所用 fixture 的前端诊断事实
   ——路径式 `extends` 报 `sema.class_skeleton`（ERROR，锚定 `class_name` 行）；
-  `@onready var camera = $Camera3D` 报 `sema.deferred_expression_resolution`
-  （WARNING）+ `sema.compile_check`（ERROR）配对（4 行 23 列）且 `includeLowering=false`
-  时后者不出现；两 fixture 同模块单轮齐报；同名文件经 displayPath 独立键控。
+  显式类型普通 get-node 初始化器（`@warning_ignore_start/_restore("get_node_default_without_onready")`
+  区域标注包裹 `var camera: Node = $Camera3D`；gdcc 忽略区域标注故不产生额外诊断）
+  报 `sema.deferred_expression_resolution`
+  （WARNING）+ `sema.compile_check`（ERROR）配对（5 行 20 列）且 `includeLowering=false`
+  时后者不出现；显式类型 `@onready var camera: Node = $Camera3D` 为正例（lowering
+  成功且无诊断）；两 fixture 同模块单轮齐报；同名文件经 displayPath 独立键控。
 - 服务端/后端锚点：`RpcServerShutdownTest`（`server.shutdown` 三层时序合同，§2.8）、
   `ApiModuleCopyTest`（复制保真、运行态重置、-32001/-32000、源忙门等待、副本编译、
   源续写不污染副本）、`JsonRpcDispatcherTest`（路由数与错误码）、`RpcJsonCodecTest`

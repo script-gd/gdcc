@@ -1267,7 +1267,7 @@ class EditorAddonScriptLanguageEngineTest {
                     var child_path := "res://diag_path_child.gd3"
                     var child_src := "class_name DiagPathChild\\nextends \\"res://diag_base.gd\\"\\n"
                     var lowering_path := "res://diag_lowering.gd3"
-                    var lowering_src := "class_name DiagLowering\\nextends Node\\n\\n@onready var camera = $Camera3D\\n"
+                    var lowering_src := "class_name DiagLowering\\nextends Node\\n\\n@warning_ignore_start(\\"get_node_default_without_onready\\")\\nvar camera: Node = $Camera3D\\n@warning_ignore_restore(\\"get_node_default_without_onready\\")\\n"
                     var dup_a_path := "res://dup_a/same.gd3"
                     var dup_a_src := "class_name DupA\\nextends \\"res://diag_base.gd\\"\\n"
                     var dup_b_path := "res://dup_b/same.gd3"
@@ -1319,7 +1319,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("validate_gdcc_error", child_ok, str(child_result))
                 
                     # includeLowering=true surfaces the compile-only error AND the deferred
-                    # warning as a pair on the same 1-based anchor (line 4, column 23).
+                    # warning as a pair on the same 1-based anchor (line 5, column 20).
                     var lower_result: Dictionary = lang._validate(lowering_src, lowering_path, true, true, true, true)
                     var lower_errors: Array = lower_result.get("errors", [])
                     var lower_warnings: Array = lower_result.get("warnings", [])
@@ -1327,7 +1327,7 @@ class EditorAddonScriptLanguageEngineTest {
                     var error_found := false
                     for e in lower_errors:
                         if str(e.get("message", "")).begins_with("[gdcc sema.compile_check]") \
-                                and int(e.get("line", -1)) == 4 and int(e.get("column", -1)) == 23:
+                                and int(e.get("line", -1)) == 5 and int(e.get("column", -1)) == 20:
                             error_found = true
                     lower_ok = lower_ok and error_found
                     var warning_found := false
@@ -1337,7 +1337,7 @@ class EditorAddonScriptLanguageEngineTest {
                             if not w.has(key):
                                 five_keys = false
                         if five_keys and str(w.get("string_code", "")) == "sema.deferred_expression_resolution" \
-                                and int(w.get("start_line", -1)) == 4 and int(w.get("end_line", -1)) == 4 \
+                                and int(w.get("start_line", -1)) == 5 and int(w.get("end_line", -1)) == 5 \
                                 and int(w.get("code", -1)) == 0 \
                                 and str(w.get("message", "")).begins_with("[gdcc sema.deferred_expression_resolution]"):
                             warning_found = true
@@ -3605,7 +3605,7 @@ class EditorAddonScriptLanguageEngineTest {
                     # by the editor itself with the BUFFER text, so a driver-side `_validate` with
                     # divergent text would be rolled back by the next editor-driven validation
                     # (version churn starves the merge — the revalidate mode drives set_text too).
-                    var edited_src := "class_name Gd3Phase7Subject\\nextends Node\\n\\n@onready var camera = $Camera3D\\n"
+                    var edited_src := "class_name Gd3Phase7Subject\\nextends Node\\n\\n@warning_ignore_start(\\"get_node_default_without_onready\\")\\nvar camera: Node = $Camera3D\\n@warning_ignore_restore(\\"get_node_default_without_onready\\")\\n"
                     if code_edit != null:
                         code_edit.set_text(edited_src)
                         _last_text_change_msec = Time.get_ticks_msec()
@@ -3620,7 +3620,7 @@ class EditorAddonScriptLanguageEngineTest {
                     for e in edit_result.get("errors", []):
                         var msg := str(e.get("message", ""))
                         if msg.begins_with("[gdcc sema.compile_check]") \\
-                                and int(e.get("line", -1)) == 4 and int(e.get("column", -1)) == 23:
+                                and int(e.get("line", -1)) == 5 and int(e.get("column", -1)) == 20:
                             saw_compile_error = true
                         if msg.contains("hides a native class"):
                             pair_ok = false

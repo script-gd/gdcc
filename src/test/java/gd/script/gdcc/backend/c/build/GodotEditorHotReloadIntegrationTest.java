@@ -538,8 +538,10 @@ public class GodotEditorHotReloadIntegrationTest {
 
             // Custom assertions (not assertEditorRunClean): the driver deliberately triggers the
             // engine's standard invalid-call SCRIPT ERROR as the pinned stale-signature behavior.
+            // Await exit first so trailing crash/diagnostic output is captured in the snapshot.
+            var exitCode = session.awaitExit();
             var combinedOutput = session.combinedOutput();
-            assertEquals(0, session.awaitExit(), () -> "Godot editor exited abnormally. Output:\n" + combinedOutput);
+            assertEquals(0, exitCode, () -> "Godot editor exited abnormally. Output:\n" + combinedOutput);
             assertTrue(session.failLines().isEmpty(), () -> "Driver reported failures: " + session.failLines() + "\n" + combinedOutput);
             assertTrue(
                     combinedOutput.contains("Invalid call to function 'pair_sum")
