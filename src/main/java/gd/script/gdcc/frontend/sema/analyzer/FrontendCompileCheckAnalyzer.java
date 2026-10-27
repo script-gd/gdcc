@@ -1,78 +1,21 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
-import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
-import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
-import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
-import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
-import gd.script.gdcc.frontend.diagnostic.FrontendRange;
-import gd.script.gdcc.frontend.lowering.ForLoweringContractRegistry;
-import gd.script.gdcc.frontend.scope.BlockScope;
-import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
-import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
-import gd.script.gdcc.frontend.sema.FrontendBinding;
-import gd.script.gdcc.frontend.sema.FrontendBindingKind;
-import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
-import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
-import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
-import gd.script.gdcc.frontend.sema.FrontendExpressionType;
-import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
-import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
-import gd.script.gdcc.frontend.sema.FrontendForIterationRoute;
-import gd.script.gdcc.frontend.sema.FrontendLambdaPlan;
-import gd.script.gdcc.frontend.sema.FrontendMatchPlan;
-import gd.script.gdcc.frontend.sema.FrontendMatchSupport;
-import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
-import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
-import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
-import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
-import gd.script.gdcc.lir.LirFunctionDef;
-import gd.script.gdcc.scope.GdScriptEnumGroup;
-import gd.script.gdcc.scope.ScopeOwnerKind;
-import gd.script.gdcc.type.GdDictionaryType;
-import gd.script.gdcc.type.GdType;
-import gd.script.gdcc.scope.Scope;
-import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
-import dev.superice.gdparser.frontend.ast.ASTWalker;
-import dev.superice.gdparser.frontend.ast.ArrayExpression;
-import dev.superice.gdparser.frontend.ast.AssignmentExpression;
-import dev.superice.gdparser.frontend.ast.AttributeCallStep;
-import dev.superice.gdparser.frontend.ast.AttributeExpression;
-import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
-import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
-import dev.superice.gdparser.frontend.ast.AssertStatement;
-import dev.superice.gdparser.frontend.ast.AwaitExpression;
-import dev.superice.gdparser.frontend.ast.Block;
-import dev.superice.gdparser.frontend.ast.CallExpression;
-import dev.superice.gdparser.frontend.ast.CastExpression;
-import dev.superice.gdparser.frontend.ast.ClassDeclaration;
-import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
-import dev.superice.gdparser.frontend.ast.DeclarationKind;
-import dev.superice.gdparser.frontend.ast.DictionaryExpression;
-import dev.superice.gdparser.frontend.ast.ElifClause;
-import dev.superice.gdparser.frontend.ast.Expression;
-import dev.superice.gdparser.frontend.ast.ExpressionStatement;
-import dev.superice.gdparser.frontend.ast.ForStatement;
-import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
-import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
-import dev.superice.gdparser.frontend.ast.IdentifierExpression;
-import dev.superice.gdparser.frontend.ast.IfStatement;
-import dev.superice.gdparser.frontend.ast.LambdaExpression;
-import dev.superice.gdparser.frontend.ast.MatchStatement;
-import dev.superice.gdparser.frontend.ast.Node;
-import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
-import dev.superice.gdparser.frontend.ast.ReturnStatement;
-import dev.superice.gdparser.frontend.ast.SelfExpression;
-import dev.superice.gdparser.frontend.ast.SourceFile;
-import dev.superice.gdparser.frontend.ast.Statement;
-import dev.superice.gdparser.frontend.ast.TypeTestExpression;
-import dev.superice.gdparser.frontend.ast.VariableDeclaration;
-import dev.superice.gdparser.frontend.ast.WhileStatement;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
-
 import java.nio.file.Path;
 import java.util.*;
 import java.util.function.Predicate;
+
+import org.jetbrains.annotations.*;
+
+import dev.superice.gdparser.frontend.ast.*;
+import gd.script.gdcc.frontend.diagnostic.*;
+import gd.script.gdcc.frontend.lowering.ForLoweringContractRegistry;
+import gd.script.gdcc.frontend.scope.BlockScope;
+import gd.script.gdcc.frontend.sema.*;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
+import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.scope.*;
+import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdType;
 
 /// Compile-only final frontend gate that runs after the shared semantic pipeline.
 ///
@@ -718,9 +661,10 @@ public class FrontendCompileCheckAnalyzer {
                 // PreloadExpression: compile-ready — sema publishes RESOLVED(Resource) for string
                 // literals and FAILED otherwise, so the generic published-fact scan gates it;
                 // lowering rewrites it to the ResourceLoader singleton call pair.
-                // GetNodeExpression: compile-ready inside supported executable bodies and
-                // recorded lambdas — sema publishes RESOLVED(Node). Property-initializer
-                // uses stay DEFERRED so the generic published-fact scan gates them.
+                // GetNodeExpression: compile-ready inside supported executable bodies, recorded
+                // lambdas, and eligible `@onready` property initializers — sema publishes
+                // RESOLVED(Node). Other property-initializer uses stay DEFERRED so the generic
+                // published-fact scan gates them.
                 case AwaitExpression awaitExpression -> walkAwaitExpression(awaitExpression);
                 default -> {
                     markCompileSurfaceNode(expression);

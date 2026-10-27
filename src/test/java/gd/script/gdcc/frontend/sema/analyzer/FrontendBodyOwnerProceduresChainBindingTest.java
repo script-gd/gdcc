@@ -1,61 +1,20 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
-import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
-import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
-import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
-import gd.script.gdcc.frontend.diagnostic.FrontendRange;
-import gd.script.gdcc.frontend.parse.FrontendModule;
-import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
-import gd.script.gdcc.frontend.parse.GdScriptParserService;
-import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
-import gd.script.gdcc.frontend.sema.FrontendBindingKind;
-import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
-import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
-import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
-import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
-import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
-import gd.script.gdcc.gdextension.ExtensionAPI;
-import gd.script.gdcc.gdextension.ExtensionApiLoader;
-import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
-import gd.script.gdcc.gdextension.ExtensionEnumValue;
-import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
-import gd.script.gdcc.gdextension.ExtensionGdClass;
-import gd.script.gdcc.scope.ClassRegistry;
-import gd.script.gdcc.scope.PropertyDef;
-import gd.script.gdcc.scope.ScopeOwnerKind;
-import gd.script.gdcc.type.GdCallableType;
-import gd.script.gdcc.type.GdObjectType;
-import gd.script.gdcc.type.GdType;
-import gd.script.gdcc.type.GdVariantType;
-import dev.superice.gdparser.frontend.ast.AttributeExpression;
-import dev.superice.gdparser.frontend.ast.AttributeCallStep;
-import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
-import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
-import dev.superice.gdparser.frontend.ast.CallExpression;
-import dev.superice.gdparser.frontend.ast.ExpressionStatement;
-import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
-import dev.superice.gdparser.frontend.ast.GetNodeExpression;
-import dev.superice.gdparser.frontend.ast.IdentifierExpression;
-import dev.superice.gdparser.frontend.ast.Node;
-import dev.superice.gdparser.frontend.ast.VariableDeclaration;
-import org.jetbrains.annotations.NotNull;
-import org.junit.jupiter.api.Test;
-
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.function.Predicate;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.jetbrains.annotations.NotNull;
+import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+
+import dev.superice.gdparser.frontend.ast.*;
+import gd.script.gdcc.frontend.diagnostic.*;
+import gd.script.gdcc.frontend.parse.*;
+import gd.script.gdcc.frontend.sema.*;
+import gd.script.gdcc.gdextension.*;
+import gd.script.gdcc.scope.*;
+import gd.script.gdcc.type.*;
 
 class FrontendBodyOwnerProceduresChainBindingTest {
     @Test
@@ -1056,6 +1015,111 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("changed")));
         assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("read")));
         assertFalse(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("helper")));
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeSealsOnreadySuffixMembersAtOwnerBoundaryWithResolvedGetNodeHeads() throws Exception {
+        var analyzed = analyze(
+                "property_initializer_onready_suffix_routes.gd",
+                """
+                        class_name PropertyInitializerOnreadySuffixRoutes
+                        extends Node
+                        
+                        var payload: int = 1
+                        
+                        static func build() -> PropertyInitializerOnreadySuffixRoutes:
+                            return null
+                        
+                        @onready var child_name: StringName = $Child.name
+                        @onready var unique_name: StringName = %Unique.get_name()
+                        @onready var get_name_callable: Callable = $Child.get_name
+                        @onready var renamed_signal: Signal = $Child.renamed
+                        @onready var baseline_blocked := build().payload
+                        """
+        );
+
+        // The resolved get-node head stays RESOLVED(Node) while the resolved member/call facts
+        // keep the owner-boundary seal: member-level evidence that the ready-time leaf typing
+        // does not widen suffix access on its own.
+        var getNodeExpressions = findNodes(analyzed.unit().ast(), GetNodeExpression.class, ignored -> true);
+        assertEquals(4, getNodeExpressions.size());
+        for (var getNodeExpression : getNodeExpressions) {
+            var headType = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+            assertNotNull(headType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, headType.status());
+            assertEquals(new GdObjectType("Node"), headType.publishedType());
+        }
+
+        var childNameDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("child_name")
+        );
+        var uniqueNameDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("unique_name")
+        );
+        var getNameCallableDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("get_name_callable")
+        );
+        var renamedSignalDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("renamed_signal")
+        );
+        var baselineDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("baseline_blocked")
+        );
+        var nameStep = findNode(childNameDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("name"));
+        var getNameCallStep = findNode(uniqueNameDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("get_name"));
+        var getNameReferenceStep = findNode(getNameCallableDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("get_name"));
+        var renamedStep = findNode(renamedSignalDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("renamed"));
+        var payloadStep = findNode(baselineDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
+
+        var unsupportedName = analyzed.analysisData().resolvedMembers().get(nameStep);
+        assertNotNull(unsupportedName);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, unsupportedName.status());
+        assertEquals(FrontendBindingKind.PROPERTY, unsupportedName.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, unsupportedName.receiverKind());
+
+        var unsupportedRenamed = analyzed.analysisData().resolvedMembers().get(renamedStep);
+        assertNotNull(unsupportedRenamed);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, unsupportedRenamed.status());
+        assertEquals(FrontendBindingKind.SIGNAL, unsupportedRenamed.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, unsupportedRenamed.receiverKind());
+
+        var unsupportedGetNameReference = analyzed.analysisData().resolvedMembers().get(getNameReferenceStep);
+        assertNotNull(unsupportedGetNameReference);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, unsupportedGetNameReference.status());
+        assertEquals(FrontendBindingKind.METHOD, unsupportedGetNameReference.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, unsupportedGetNameReference.receiverKind());
+
+        var unsupportedPayload = analyzed.analysisData().resolvedMembers().get(payloadStep);
+        assertNotNull(unsupportedPayload);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, unsupportedPayload.status());
+        assertEquals(FrontendBindingKind.PROPERTY, unsupportedPayload.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, unsupportedPayload.receiverKind());
+
+        var unsupportedGetNameCall = analyzed.analysisData().resolvedCalls().get(getNameCallStep);
+        assertNotNull(unsupportedGetNameCall);
+        assertEquals(FrontendCallResolutionStatus.UNSUPPORTED, unsupportedGetNameCall.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, unsupportedGetNameCall.callKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, unsupportedGetNameCall.receiverKind());
+
+        var unsupportedDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route");
+        assertEquals(5, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("name")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("get_name")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("renamed")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("payload")));
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
     }

@@ -153,11 +153,21 @@ cast 一项复用显式 object cast；不是根据路径自动推导，也不保
 
 **验收**：确认失败来自 GetNode DEFERRED 传播 / compile blocker 或（resolved-head 基线的）既有 suffix boundary，不是 parse、annotation attachment 或测试元数据缺失。记录命令和日志；不改 build/config，不运行 clean 或全套测试。
 
+**实施状态（2026-10-27）：已完成。** 新增 12 个测试方法，分布在 5 个既有测试类中（未新增测试文件）：`FrontendExpressionSemanticSupportTest`（`analyzeResolvesGetNodeLeafsInsideOnreadyPropertyInitializer`、`analyzeDefersGetNodeInsideStaticAndNonNodeOnreadyInitializers`、`analyzeResolvesOnreadyGetNodeFromDeclaringClassInsideInnerClass`、`analyzeResolvesDuplicateOnreadyGetNodeLeafWhileUsageKeepsDuplicateError`、审阅后补入的 `analyzeDefersGetNodeLeafBehindDamagedOnreadyAnnotation`）、`FrontendBodyOwnerProceduresExprTypeTest`（`analyzeResolvesOnreadyGetNodeHeadsWhileSuffixOwnerBoundariesStaySealed`、`analyzeKeepsDirectSelfBoundariesInsideOnreadyPropertyInitializer`，并为 GetNode 补一条 import）、`FrontendBodyOwnerProceduresChainBindingTest`（`analyzeSealsOnreadySuffixMembersAtOwnerBoundaryWithResolvedGetNodeHeads`）、`FrontendCompileCheckAnalyzerTest`（`analyzeForCompileReleasesOnreadyGetNodeLeafsWhileNonOnreadyStaysBlocked`、`analyzeForCompileKeepsNonEligibleAndSealedOnreadyBoundariesBlocked`、`analyzeForCompileKeepsOnreadySealedBoundariesOwnedByUpstreamDiagnostics`、`analyzeForCompileKeepsGetNodeInsideUnrecordedOnreadyInitializerLambdaSilent`）、`FrontendTypeCheckAnalyzerTest`（`analyzeChecksOnreadyGetNodeInitializerAgainstDeclaredSlotType`）。
+
+其中 7 个用例在当前基线上失败，失败原因均为 leaf `DEFERRED` 沿链传播或由其引起的 deferred warning / compile blocker——例如 `expected: <RESOLVED> but was: <DEFERRED>`（leaf fact）、`expected: <1> but was: <4>`（3 个 onready leaf 各自产生 deferred warning）及 `arg_self` 根 `DEFERRED`（blocked `self` 实参与 deferred 链头并存时链头状态取胜）；未出现 parse、annotation attachment 或测试元数据类失败。后缀用例断言“leaf RESOLVED ＋ 既有 owner boundary 仍封口”的双层合同（含 resolved-head 基线 `build().payload` 与间接 self 别名 `$".".get_name()`、`$Child.get_parent().get_name()`），其在步骤 2 前的失败是预期记录。4 个负向/锚定用例（static、非 Node、direct-self 边界、未记录 lambda）在基线上即通过，证明这些既有边界不被本阶段诉求触碰。运行命令：`script/run-gradle-targeted-tests.sh --tests <上述 12 个方法选择器>`（两次调用；首次运行发现一个 selector 与方法名 `...WhileSuffixOwnerBoundariesStaySealed` 不一致导致该用例未执行，已更正重跑；未改 build/config，未跑全套）。
+
 ### 步骤 1：定向放行 GetNode leaf typing
 
 **改动**：实现 §3.1：在 `FrontendPropertyInitializerSupport` 新增 `checkNodeDerivedOnreadyInitializer`，`resolveGetNodeExpressionType` 的 property 分支复用它。更新原“所有 initializer 都在入树前执行”的过宽注释，说明普通初始化与 ready-time initializer 的区别。
 
 **验收**：shared `analyze(...)` 中合法 onready 的每个 GetNode leaf fact 是 `RESOLVED(Node)`，没有对应 deferred warning；`analyzeForCompile(...)` 无该 GetNode blocker。`$Child.name` 此时仍可因 suffix boundary 失败，由步骤 2 解决。普通 initializer 仍 shared warning / compile error，普通函数及已记录 lambda 行为不变。
+
+**实施状态（2026-10-27）：已完成。** 生产改动共 3 个文件：`FrontendPropertyInitializerSupport` 新增 `checkNodeDerivedOnreadyInitializer(context, analysisData)` 谓词（非 static 声明 ＋ 经 parser-damage 过滤的 `onready` 注解 ＋ declaring class `checkAssignable(Node)`；仅作执行时机闸门，placement/重复诊断仍归 usage analyzer）及 `FrontendAnalysisData`/`FrontendGdAnnotation`/`java.util.List` 三条 import；`FrontendBodyOwnerProcedures.resolveGetNodeExpressionType` 的 property 分支在谓词为真时返回 `RESOLVED(Node)`，否则保留原 `DEFERRED` 路径，并把“所有 initializer 都在入树前执行”的过宽注释改写为区分 ready-time 与普通初始化；`FrontendCompileCheckAnalyzer` 中“property-initializer uses stay DEFERRED”注释更新为“eligible `@onready` initializers resolve，其余仍由 published-fact scan 门控”。无 parser、lowering、runtime 或新诊断类别改动。
+
+**验收结果**：定向批次 `script/run-gradle-targeted-tests.sh --tests <18 个选择器>`（步骤 0 新增 12 个用例 ＋ 既有锚定 `analyzeDefersGetNodeExpressionInsidePropertyInitializer`、`analyzeResolvesGetNodeExpressionToNodeInsideNodeDerivedInstanceFunction`、`analyzeBlocksGetNodeExpressionInsideUnrecordedLambdaWithinRecordedPropertyInitializer`、`analyzeSealsPropertyInitializerSuffixesOnCurrentInstanceHierarchyBoundaries`、`analyzeForCompileUpgradesDeferredWarningsIntoCompileBlockingErrors` 及 `FrontendAnnotationUsageAnalyzerTest` 整类）全部 `BUILD SUCCESSFUL`；随后以 6 个测试类整类重跑作回归网亦全部通过。证据要点：合格 onready leaf 发布 `RESOLVED(Node)` 且无 `sema.deferred_expression_resolution`/`sema.compile_check`；普通、static、非 Node 岛仍 `DEFERRED`/compile-blocked；`$Child.name` 等后缀仍由 `sema.unsupported_chain_route` 封口（leaf 已 RESOLVED）；direct self/super 各产 1 条 `sema.unsupported_binding_subtree`、裸成员按既有合同静默 `BLOCKED`（`sema.binding` 为空）；`analyzeChecksOnreadyGetNodeInitializerAgainstDeclaredSlotType` 确认 `Node` 标注与 leaf 类型相容且不引入额外 type_check 诊断。
+
+**过程修正（测试侧，不改合同）**：① 后缀用例 leaf 计数由 8 更正为 7（`$"."` 计 1 个 GetNodeExpression）；② 两个用例的裸成员边界断言从 `unsupported_binding_subtree`/`sema.binding` 计数修正为与既有合同一致——裸成员边界仅静默 `BLOCKED`（无诊断），`self`/`super` 才是 subtree 诊断来源（5 条）。
 
 ### 步骤 2：放行 onready 岛显式 receiver 后缀
 
@@ -359,3 +369,7 @@ lead 已对两份审阅报告的全部发现（含 low 级措辞修正）对照�
 | C | 第三轮全量 diff | 复核通过（APPROVE） |
 
 第三轮验收记录（2026-10-26）：两位原审阅者复核通过本轮全部修订，无未解决问题；本轮未执行 Gradle、Zig 或 Godot，无运行时测试证据，不能据此声称 baseline 或引擎验收通过；间接 self 防御确认为用户责任（§7.1），功能整体仍待实施。
+
+### 9.3 实施轮次（步骤 0＋1 代码实现，2026-10-27）
+
+`review-expert-c` 对步骤 0/1 的代码 diff 完成审阅，结论 APPROVE（仅限步骤 0/1 范围）：未发现 blocker/high/medium 问题，谓词保守性、诊断归属与 leaf/suffix 分离均获确认。唯一 low 级建议——为“损坏 `@onready` 投影不授予能力”补直接覆盖——已采纳并落地为 `analyzeDefersGetNodeLeafBehindDamagedOnreadyAnnotation`（断言 skipped-subtree 成员关系、leaf `DEFERRED`、完好 sibling `RESOLVED`、parser 独占诊断、无 `sema.annotation_usage`），运行通过；修复后全部 6 个相关测试类整类回归 `BUILD SUCCESSFUL`。本轮执行了 Gradle 定向测试，未运行 Zig 或 Godot；步骤 2–6 仍为计划未实施部分。

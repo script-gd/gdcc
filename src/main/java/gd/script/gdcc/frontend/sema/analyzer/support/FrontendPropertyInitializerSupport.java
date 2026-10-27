@@ -1,29 +1,18 @@
 package gd.script.gdcc.frontend.sema.analyzer.support;
 
-import gd.script.gdcc.frontend.scope.ClassScope;
-import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
-import gd.script.gdcc.frontend.sema.FrontendBindingKind;
-import gd.script.gdcc.scope.ClassDef;
-import gd.script.gdcc.scope.FunctionDef;
-import gd.script.gdcc.scope.ResolveRestriction;
-import gd.script.gdcc.scope.Scope;
-import gd.script.gdcc.scope.ScopeTypeMeta;
-import gd.script.gdcc.scope.ScopeValue;
-import gd.script.gdcc.scope.ScopeValueKind;
-import gd.script.gdcc.scope.resolver.ScopeResolvedMethod;
-import gd.script.gdcc.scope.resolver.ScopeResolvedProperty;
-import gd.script.gdcc.scope.resolver.ScopeResolvedSignal;
-import gd.script.gdcc.type.GdObjectType;
-import gd.script.gdcc.type.GdType;
-import dev.superice.gdparser.frontend.ast.IdentifierExpression;
-import dev.superice.gdparser.frontend.ast.Node;
-import dev.superice.gdparser.frontend.ast.SelfExpression;
-import dev.superice.gdparser.frontend.ast.DeclarationKind;
-import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import java.util.List;
+import java.util.Objects;
+
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.Objects;
+import dev.superice.gdparser.frontend.ast.*;
+import gd.script.gdcc.frontend.scope.ClassScope;
+import gd.script.gdcc.frontend.sema.*;
+import gd.script.gdcc.scope.*;
+import gd.script.gdcc.scope.resolver.*;
+import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdType;
 
 /// Freezes the minimal body-phase support island for class property initializer subtrees.
 ///
@@ -99,6 +88,39 @@ public final class FrontendPropertyInitializerSupport {
 
     public static boolean isInsidePropertyInitializer(@Nullable PropertyInitializerContext context) {
         return context != null;
+    }
+
+    /// Capability check for ready-time initializer islands: the context must point to a
+    /// non-static property that carries a syntactically intact `onready` annotation inside a
+    /// Node-derived declaring class. This is only an execution-timing gate — placement and
+    /// duplicate diagnostics stay with the annotation usage analyzer, so a `true` result does
+    /// not imply the annotation itself is fully valid.
+    public static boolean checkNodeDerivedOnreadyInitializer(
+            @Nullable PropertyInitializerContext context,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+        Objects.requireNonNull(analysisData, "analysisData must not be null");
+        if (context == null || context.declaration().isStatic()) {
+            return false;
+        }
+        var hasOnreadyAnnotation = analysisData.annotationsByAst()
+                .getOrDefault(context.declaration(), List.<FrontendGdAnnotation>of())
+                .stream()
+                .filter(annotation -> annotation.name().equals("onready"))
+                // Same parser-damage filter as the usage analyzer: a damaged annotation keeps
+                // only its parser diagnostic and cannot grant the ready-time capability.
+                .anyMatch(annotation -> {
+                    var sourceStatement = annotation.sourceStatement();
+                    return sourceStatement == null
+                            || !analysisData.skippedSubtreeRoots().containsKey(sourceStatement);
+                });
+        if (!hasOnreadyAnnotation) {
+            return false;
+        }
+        return context.declaringClassScope().getClassRegistry().checkAssignable(
+                new GdObjectType(context.declaringClass().getName()),
+                new GdObjectType("Node")
+        );
     }
 
     /// Reuses the published binding kind to decide whether this use site should be fail-closed by

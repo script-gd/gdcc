@@ -1,73 +1,21 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
-import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
-import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
-import gd.script.gdcc.frontend.diagnostic.FrontendRange;
-import gd.script.gdcc.frontend.parse.FrontendModule;
-import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
-import gd.script.gdcc.frontend.parse.GdScriptParserService;
-import gd.script.gdcc.frontend.scope.BlockScope;
-import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
-import gd.script.gdcc.frontend.sema.FrontendBindingKind;
-import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
-import gd.script.gdcc.frontend.sema.FrontendExpressionType;
-import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
-import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
-import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
-import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
-import gd.script.gdcc.gdextension.ExtensionAPI;
-import gd.script.gdcc.gdextension.ExtensionApiLoader;
-import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
-import gd.script.gdcc.gdextension.ExtensionGdClass;
-import gd.script.gdcc.scope.ClassRegistry;
-import gd.script.gdcc.type.GdccForRangeIterType;
-import gd.script.gdcc.type.GdFloatType;
-import gd.script.gdcc.type.GdIntType;
-import dev.superice.gdparser.frontend.ast.AttributeCallStep;
-import dev.superice.gdparser.frontend.ast.AttributeExpression;
-import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
-import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
-import dev.superice.gdparser.frontend.ast.AssignmentExpression;
-import dev.superice.gdparser.frontend.ast.CallExpression;
-import dev.superice.gdparser.frontend.ast.CastExpression;
-import dev.superice.gdparser.frontend.ast.ConditionalExpression;
-import dev.superice.gdparser.frontend.ast.ExpressionStatement;
-import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
-import dev.superice.gdparser.frontend.ast.IdentifierExpression;
-import dev.superice.gdparser.frontend.ast.LiteralExpression;
-import dev.superice.gdparser.frontend.ast.Node;
-import dev.superice.gdparser.frontend.ast.ReturnStatement;
-import dev.superice.gdparser.frontend.ast.SelfExpression;
-import dev.superice.gdparser.frontend.ast.SourceFile;
-import dev.superice.gdparser.frontend.ast.SubscriptExpression;
-import dev.superice.gdparser.frontend.ast.VariableDeclaration;
-import gd.script.gdcc.type.GdArrayType;
-import gd.script.gdcc.type.GdCallableType;
-import gd.script.gdcc.type.GdSignalType;
-import gd.script.gdcc.type.GdVoidType;
-import gd.script.gdcc.type.GdVariantType;
-import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
-import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
-import org.jetbrains.annotations.NotNull;
-import org.junit.jupiter.api.Test;
-
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.function.Predicate;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.jetbrains.annotations.NotNull;
+import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+
+import dev.superice.gdparser.frontend.ast.*;
+import gd.script.gdcc.frontend.diagnostic.*;
+import gd.script.gdcc.frontend.parse.*;
+import gd.script.gdcc.frontend.scope.BlockScope;
+import gd.script.gdcc.frontend.sema.*;
+import gd.script.gdcc.gdextension.*;
+import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.*;
 
 @SuppressWarnings("DataFlowIssue")
 class FrontendBodyOwnerProceduresExprTypeTest {
@@ -2019,6 +1967,162 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         assertTrue(boundaryDiagnostics.getFirst().message().contains("Property initializer"));
         assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+    }
+
+    @Test
+    void analyzeResolvesOnreadyGetNodeHeadsWhileSuffixOwnerBoundariesStaySealed() throws Exception {
+        var analyzed = analyze(
+                "expr_type_onready_suffix_boundary.gd",
+                """
+                        class_name ExprTypeOnreadySuffixBoundary
+                        extends Node
+                        
+                        var payload: int = 1
+                        
+                        func read() -> int:
+                            return 1
+                        
+                        static func build() -> ExprTypeOnreadySuffixBoundary:
+                            return null
+                        
+                        @onready var child_name: StringName = $Child.name
+                        @onready var unique_name: StringName = %Unique.get_name()
+                        @onready var get_name_callable: Callable = $Child.get_name
+                        @onready var renamed_signal: Signal = $Child.renamed
+                        @onready var self_name: StringName = $".".get_name()
+                        @onready var parent_name: StringName = $Child.get_parent().get_name()
+                        @onready var baseline_blocked := build().payload
+                        @onready var mixed := [$Child, payload]
+                        """
+        );
+
+        // Every get-node head publishes RESOLVED(Node); the receiver type is then checked by the
+        // ordinary suffix rules, so members owned by the current instance hierarchy still seal
+        // through the existing chain boundary (property / call / method-reference / signal).
+        var getNodeExpressions = findNodes(analyzed.ast(), GetNodeExpression.class, ignored -> true);
+        assertEquals(7, getNodeExpressions.size());
+        for (var getNodeExpression : getNodeExpressions) {
+            var published = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+            assertNotNull(published);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, published.status());
+            assertEquals("Node", published.publishedType().getTypeName());
+        }
+
+        for (var entry : Map.of(
+                "child_name", "name",
+                "unique_name", "get_name",
+                "get_name_callable", "get_name",
+                "renamed_signal", "renamed",
+                "self_name", "get_name",
+                "parent_name", "get_parent",
+                "baseline_blocked", "payload"
+        ).entrySet()) {
+            var declaration = findNode(
+                    analyzed.ast(),
+                    VariableDeclaration.class,
+                    candidate -> candidate.name().equals(entry.getKey())
+            );
+            var chainType = analyzed.analysisData().expressionTypes().get(declaration.value());
+            assertNotNull(chainType, entry.getKey());
+            assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, chainType.status(), entry.getKey());
+            assertTrue(chainType.detailReason().contains(entry.getValue()), entry.getKey());
+        }
+
+        // The ready-time marker does not exempt sibling subtrees: the bare instance property
+        // element inside the container keeps its own binding boundary. Like every bare-member
+        // boundary this seal is silent — BLOCKED at fact level without a subtree diagnostic,
+        // which is reserved for `self`/`super` roots.
+        var mixedDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                candidate -> candidate.name().equals("mixed")
+        );
+        var payloadElement = findNode(
+                mixedDeclaration.value(),
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("payload")
+        );
+        var payloadType = analyzed.analysisData().expressionTypes().get(payloadElement);
+        assertNotNull(payloadType);
+        assertEquals(FrontendExpressionTypeStatus.BLOCKED, payloadType.status());
+        assertTrue(payloadType.detailReason().contains("payload"));
+
+        var boundaryDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_chain_route");
+        assertEquals(7, boundaryDiagnostics.size());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_binding_subtree").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.binding").isEmpty());
+        assertTrue(analyzed.analysisData().diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.call_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeKeepsDirectSelfBoundariesInsideOnreadyPropertyInitializer() throws Exception {
+        var analyzed = analyze(
+                "expr_type_onready_direct_self_boundary.gd",
+                """
+                        class_name ExprTypeOnreadyDirectSelfBoundary
+                        extends Node
+                        
+                        var payload: int = 1
+                        
+                        func read() -> int:
+                            return 1
+                        
+                        @onready var via_self := self.payload
+                        @onready var via_super := super.get_name()
+                        @onready var bare_field := payload
+                        @onready var bare_call := read()
+                        @onready var wrapped_self := (self as Node).name
+                        @onready var conditional_self := self if true else $Child
+                        @onready var arg_self := $Child.is_ancestor_of(self)
+                        """
+        );
+
+        // Ready-time initializers open only the get-node leaf: `self`, `super`, and implicit-self
+        // bare members stay sealed by the same binding/head boundaries as any other initializer,
+        // in every syntactic position (chain head, cast operand, conditional arm, call argument).
+        for (var name : List.of(
+                "via_self", "via_super", "bare_field", "bare_call", "wrapped_self",
+                "conditional_self", "arg_self"
+        )) {
+            var declaration = findNode(
+                    analyzed.ast(),
+                    VariableDeclaration.class,
+                    candidate -> candidate.name().equals(name)
+            );
+            var rootType = analyzed.analysisData().expressionTypes().get(declaration.value());
+            assertNotNull(rootType, name);
+            assertEquals(FrontendExpressionTypeStatus.BLOCKED, rootType.status(), name);
+        }
+
+        // `self`/`super` uses seal through the subtree boundary (5 roots contain them). The two
+        // implicit-self bare members hit the same boundary through their blocked binding, which
+        // stays silent at diagnostic level like every bare-member boundary.
+        var bareFieldRoot = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                candidate -> candidate.name().equals("bare_field")
+        ).value();
+        var bareCallRoot = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                candidate -> candidate.name().equals("bare_call")
+        ).value();
+        assertTrue(analyzed.analysisData().expressionTypes().get(bareFieldRoot).detailReason().contains("payload"));
+        assertTrue(analyzed.analysisData().expressionTypes().get(bareCallRoot).detailReason().contains("read"));
+
+        var bindingDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_binding_subtree");
+        assertEquals(5, bindingDiagnostics.size());
+        assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("'self'")));
+        assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("'super'")));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.binding").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_chain_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(analyzed.analysisData().diagnostics().hasErrors());
     }
 
     @Test

@@ -2165,10 +2165,19 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         /// Successful resolution fixes the static type at native `Node`, mirroring Godot's
         /// `reduce_get_node`: no scene-file-based concrete type inference is attempted.
         private @NotNull FrontendExpressionType resolveGetNodeExpressionType() {
+            var nodeType = new GdObjectType("Node");
             if (context.propertyInitializerContext() != null) {
-                // Deferred rather than failed: this is a frontend capability boundary (the
-                // initializer runs before the node enters the scene tree), not a source error.
-                // The compile gate escalates the deferred warning into a compile-mode error.
+                // Ready-time (`@onready`) initializers execute after the node enters the scene
+                // tree, so their get-node leafs resolve like ordinary bodies. Every other
+                // property initializer still runs before tree entry: keep it deferred — a
+                // frontend capability boundary, not a source error — and let the compile gate
+                // escalate the deferred warning into a compile-mode error.
+                if (FrontendPropertyInitializerSupport.checkNodeDerivedOnreadyInitializer(
+                        context.propertyInitializerContext(),
+                        context.analysisData()
+                )) {
+                    return FrontendExpressionType.resolved(nodeType);
+                }
                 return FrontendExpressionType.deferred(
                         "Get-node expression is not supported inside property initializers"
                 );
@@ -2181,7 +2190,6 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         "Get-node expression is not supported inside parameter defaults"
                 );
             }
-            var nodeType = new GdObjectType("Node");
             if (context.callableOwner() instanceof LambdaExpression lambdaExpression) {
                 // The capture plan is the single source of truth for whether the enclosing
                 // instance receiver is reachable (static / owning-class decisions are already

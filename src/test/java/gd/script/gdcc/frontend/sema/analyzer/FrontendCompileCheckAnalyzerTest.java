@@ -1,73 +1,21 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
-import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
-import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
-import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
-import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
-import gd.script.gdcc.frontend.diagnostic.FrontendRange;
-import gd.script.gdcc.frontend.parse.FrontendModule;
-import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
-import gd.script.gdcc.frontend.parse.GdScriptParserService;
-import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
-import gd.script.gdcc.frontend.sema.FrontendBinding;
-import gd.script.gdcc.frontend.sema.FrontendBindingKind;
-import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
-import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
-import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
-import gd.script.gdcc.frontend.sema.FrontendExpressionType;
-import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
-import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
-import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
-import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.function.Predicate;
+
+import org.jetbrains.annotations.NotNull;
+import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+
+import dev.superice.gdparser.frontend.ast.*;
+import gd.script.gdcc.frontend.diagnostic.*;
+import gd.script.gdcc.frontend.parse.*;
+import gd.script.gdcc.frontend.sema.*;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ScopeOwnerKind;
-import gd.script.gdcc.type.GdObjectType;
-import gd.script.gdcc.type.GdSignalType;
-import gd.script.gdcc.type.GdVariantType;
-import gd.script.gdcc.type.GdVoidType;
-import dev.superice.gdparser.frontend.ast.AssignmentExpression;
-import dev.superice.gdparser.frontend.ast.AttributeCallStep;
-import dev.superice.gdparser.frontend.ast.AttributeExpression;
-import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
-import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
-import dev.superice.gdparser.frontend.ast.CallExpression;
-import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
-import dev.superice.gdparser.frontend.ast.CastExpression;
-import dev.superice.gdparser.frontend.ast.ConditionalExpression;
-import dev.superice.gdparser.frontend.ast.ExpressionStatement;
-import dev.superice.gdparser.frontend.ast.ForStatement;
-import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
-import dev.superice.gdparser.frontend.ast.GetNodeExpression;
-import dev.superice.gdparser.frontend.ast.IdentifierExpression;
-import dev.superice.gdparser.frontend.ast.LambdaExpression;
-import dev.superice.gdparser.frontend.ast.LiteralExpression;
-import dev.superice.gdparser.frontend.ast.MatchStatement;
-import dev.superice.gdparser.frontend.ast.Node;
-import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
-import dev.superice.gdparser.frontend.ast.SelfExpression;
-import dev.superice.gdparser.frontend.ast.Statement;
-import dev.superice.gdparser.frontend.ast.TypeTestExpression;
-import dev.superice.gdparser.frontend.ast.VariableDeclaration;
-import org.jetbrains.annotations.NotNull;
-import org.junit.jupiter.api.Test;
-
-import java.nio.file.Path;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.function.Predicate;
-
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import gd.script.gdcc.type.*;
 
 class FrontendCompileCheckAnalyzerTest {
     @Test
@@ -1803,6 +1751,118 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeForCompileReleasesOnreadyGetNodeLeafsWhileNonOnreadyStaysBlocked() throws Exception {
+        var source = """
+                class_name CompileCheckOnreadyGetNode
+                extends Node
+                
+                @onready var child: Node = $Child
+                @onready var unique: Node = %Unique
+                @onready var nested: Node = $Branch/Leaf
+                var plain = $Other
+                """;
+
+        var shared = analyzeShared("compile_check_onready_get_node.gd", source);
+        assertFalse(shared.diagnostics().hasErrors());
+        // Only the non-onready initializer still defers; every ready-time leaf publishes a
+        // stable `Node` fact, so no deferred warning is emitted for them.
+        var deferredWarnings = diagnosticsByCategory(shared.diagnostics(), "sema.deferred_expression_resolution");
+        assertEquals(1, deferredWarnings.size());
+        assertTrue(diagnosticsByCategory(shared.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_onready_get_node.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertEquals(1, compileDiagnostics.size(), () -> compiled.diagnostics().asList().toString());
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+        ));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("remains deferred")
+                        && diagnostic.message().contains("Get-node expression")
+        ));
+    }
+
+    @Test
+    void analyzeForCompileKeepsNonEligibleAndSealedOnreadyBoundariesBlocked() throws Exception {
+        var staticSource = """
+                class_name CompileCheckStaticOnreadyGetNode
+                extends Node
+                
+                @onready static var child: Node = $Child
+                """;
+        var nonNodeSource = """
+                class_name CompileCheckNonNodeOnreadyGetNode
+                extends RefCounted
+                
+                @onready var child: Node = $Child
+                """;
+
+        // Static and non-Node `@onready` declarations are not eligible ready-time islands: the
+        // leaf stays deferred and the compile gate still escalates it alongside the
+        // usage-analyzer placement error.
+        var compiledStatic = analyzeForCompile("compile_check_static_onready_get_node.gd", staticSource);
+        var staticCompileDiagnostics = diagnosticsByCategory(compiledStatic.diagnostics(), "sema.compile_check");
+        assertEquals(1, staticCompileDiagnostics.size(), () -> compiledStatic.diagnostics().asList().toString());
+        assertTrue(staticCompileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Get-node expression")
+        ));
+        assertTrue(compiledStatic.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(compiledStatic.diagnostics(), "sema.annotation_usage").stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("static property 'child'")));
+
+        var compiledNonNode = analyzeForCompile("compile_check_non_node_onready_get_node.gd", nonNodeSource);
+        var nonNodeCompileDiagnostics = diagnosticsByCategory(compiledNonNode.diagnostics(), "sema.compile_check");
+        assertEquals(1, nonNodeCompileDiagnostics.size(), () -> compiledNonNode.diagnostics().asList().toString());
+        assertTrue(nonNodeCompileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Get-node expression")
+        ));
+        assertTrue(compiledNonNode.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(compiledNonNode.diagnostics(), "sema.annotation_usage").stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("inherits from Node")));
+    }
+
+    @Test
+    void analyzeForCompileKeepsOnreadySealedBoundariesOwnedByUpstreamDiagnostics() throws Exception {
+        var suffixSource = """
+                class_name CompileCheckOnreadySuffixBoundary
+                extends Node
+                
+                @onready var child_name: StringName = $Child.name
+                """;
+        var preparedInput = prepareCompileCheckInput("compile_check_onready_suffix_boundary.gd", suffixSource);
+        runCompileCheck(preparedInput);
+
+        var getNode = findNode(preparedInput.unit().ast(), GetNodeExpression.class, ignored -> true);
+        var published = preparedInput.analysisData().expressionTypes().get(getNode);
+        assertNotNull(published);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, published.status());
+        // The get-node leaf itself is released onto the compile surface; the remaining compile
+        // failure is owned by the suffix boundary, so no diagnostic anchors on its range.
+        var getNodeRange = FrontendRange.fromAstRange(getNode.range());
+        var diagnostics = preparedInput.analysisData().diagnostics();
+        assertTrue(diagnostics.hasErrors(), diagnostics::toString);
+        assertTrue(diagnostics.asList().stream().noneMatch(diagnostic ->
+                getNodeRange.equals(diagnostic.range())
+        ), diagnostics::toString);
+        assertTrue(diagnosticsByCategory(diagnostics, "sema.unsupported_chain_route").stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("name")), diagnostics::toString);
+
+        var selfSource = """
+                class_name CompileCheckOnreadySelfBoundary
+                extends Node
+                
+                var payload: int = 1
+                @onready var copy := self.payload
+                """;
+        var compiledSelf = analyzeForCompile("compile_check_onready_self_boundary.gd", selfSource);
+        assertTrue(compiledSelf.diagnostics().hasErrors(), compiledSelf.diagnostics()::toString);
+        assertTrue(diagnosticsByCategory(compiledSelf.diagnostics(), "sema.unsupported_binding_subtree").stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("self")));
+    }
+
+    @Test
     void analyzeForCompileKeepsStaticGetNodeFailureOnUpstreamErrorWithoutDuplicateCompileCheck() throws Exception {
         var source = """
                 class_name CompileCheckStaticGetNode
@@ -2432,6 +2492,41 @@ class FrontendCompileCheckAnalyzerTest {
         // traversal prunes before entering the lambda body, so the nested get-node publishes no
         // expression type and draws no nested diagnostic of its own — the unrecorded-lambda root
         // diagnostic holds the failure, and the gate adds no compile_check.
+        assertFalse(preparedInput.analysisData().lambdaPlans().containsKey(lambda));
+        assertNull(preparedInput.analysisData().expressionTypes().get(getNode));
+        var diagnostics = preparedInput.analysisData().diagnostics();
+        assertTrue(diagnostics.hasErrors(), diagnostics::toString);
+        assertTrue(diagnostics.asList().stream().noneMatch(diagnostic ->
+                diagnostic.range().equals(getNodeRange)
+        ), diagnostics::toString);
+        assertTrue(diagnosticsByCategory(diagnostics, "sema.compile_check").isEmpty(), diagnostics::toString);
+        assertTrue(diagnosticsByCategory(diagnostics, "sema.unsupported_expression_route").stream()
+                        .anyMatch(diagnostic -> diagnostic.range().equals(lambdaRange)
+                                && diagnostic.message().contains("Lambda expression")),
+                diagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileKeepsGetNodeInsideUnrecordedOnreadyInitializerLambdaSilent() throws Exception {
+        var source = """
+                class_name CompileCheckOnreadyInitLambdaGetNode
+                extends Node
+                
+                @onready var cb = func():
+                    return $Camera3D
+                """;
+
+        var preparedInput = prepareCompileCheckInput("compile_check_onready_init_lambda_get_node.gd", source);
+        runCompileCheck(preparedInput);
+
+        var lambda = findNode(preparedInput.unit().ast(), LambdaExpression.class, ignored -> true);
+        var getNode = findNode(preparedInput.unit().ast(), GetNodeExpression.class, ignored -> true);
+        var lambdaRange = FrontendRange.fromAstRange(lambda.range());
+        var getNodeRange = FrontendRange.fromAstRange(getNode.range());
+
+        // The ready-time marker does not widen the unrecorded-lambda boundary: the lambda body
+        // still publishes no plan, the nested get-node publishes no expression type and draws no
+        // nested diagnostic of its own, and the gate adds no compile_check.
         assertFalse(preparedInput.analysisData().lambdaPlans().containsKey(lambda));
         assertNull(preparedInput.analysisData().expressionTypes().get(getNode));
         var diagnostics = preparedInput.analysisData().diagnostics();
