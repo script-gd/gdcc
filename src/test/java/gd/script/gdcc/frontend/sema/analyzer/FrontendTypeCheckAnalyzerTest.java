@@ -886,6 +886,7 @@ class FrontendTypeCheckAnalyzerTest {
                 extends Node
                 
                 @onready var child: Node = $Child
+                @onready var holder: Object = $Child
                 @onready var camera: Camera3D = $Camera
                 @onready var camera_cast: Camera3D = $Camera as Camera3D
                 @onready var inferred = $Child
@@ -898,7 +899,7 @@ class FrontendTypeCheckAnalyzerTest {
                 preparedInput.diagnosticManager()
         );
 
-        for (var name : List.of("child", "camera", "camera_cast", "inferred", "inferred_typed")) {
+        for (var name : List.of("child", "holder", "camera", "camera_cast", "inferred", "inferred_typed")) {
             assertEquals(
                     FrontendExpressionTypeStatus.RESOLVED,
                     requireInitializerType(preparedInput.unit().ast(), name, preparedInput).status(),
@@ -907,9 +908,9 @@ class FrontendTypeCheckAnalyzerTest {
         }
 
         var diagnostics = preparedInput.diagnosticManager().snapshot();
-        // The stable `Node` fact now reaches slot compatibility: assigning it to a `Camera3D`
-        // slot is an ordinary type error with no path-based downcast, while the explicit
-        // `as Camera3D` form stays clean.
+        // The stable `Node` fact now reaches slot compatibility: an `Object` slot accepts it
+        // as an ordinary upcast, assigning it to a `Camera3D` slot is an ordinary type error
+        // with no path-based downcast, while the explicit `as Camera3D` form stays clean.
         var typeCheckDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_check");
         assertEquals(1, typeCheckDiagnostics.size());
         var typeCheckDiagnostic = typeCheckDiagnostics.getFirst();

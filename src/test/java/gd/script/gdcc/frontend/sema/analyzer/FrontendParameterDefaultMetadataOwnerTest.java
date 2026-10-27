@@ -311,23 +311,27 @@ class FrontendParameterDefaultMetadataOwnerTest {
                 class_name GetNodeDefault
                 extends Node
                 
-                func ping(child = $Camera3D):
+                func ping(child = $Camera3D, unique = %Unique):
                     return child
                 """);
 
         var ping = findFunction(input.unit().ast(), "ping");
+        // Both shorthand forms stay fail-closed inside the parameter-default island: the owner
+        // emits one diagnostic per offending parameter and the leaf stays silently BLOCKED.
         var ownerDiagnostics = diagnosticsByCategory(input.diagnostics().snapshot(), UNSUPPORTED_DEFAULT_CATEGORY);
-        assertEquals(1, ownerDiagnostics.size(), ownerDiagnostics::toString);
+        assertEquals(2, ownerDiagnostics.size(), ownerDiagnostics::toString);
         assertTrue(diagnosticsByCategory(input.diagnostics().snapshot(), "sema.deferred_expression_resolution").isEmpty());
-        var getNode = findNode(
-                ping.parameters().getLast().defaultValue(),
-                GetNodeExpression.class,
-                candidate -> true
-        );
-        var getNodeType = input.analysisData().expressionTypes().get(getNode);
-        assertNotNull(getNodeType);
-        assertEquals(FrontendExpressionTypeStatus.BLOCKED, getNodeType.status());
-        assertNull(requireParameterDef(input, "GetNodeDefault", "ping", "child").getDefaultValueFunc());
+        for (var parameter : ping.parameters()) {
+            var getNode = findNode(
+                    parameter.defaultValue(),
+                    GetNodeExpression.class,
+                    candidate -> true
+            );
+            var getNodeType = input.analysisData().expressionTypes().get(getNode);
+            assertNotNull(getNodeType);
+            assertEquals(FrontendExpressionTypeStatus.BLOCKED, getNodeType.status());
+            assertNull(requireParameterDef(input, "GetNodeDefault", "ping", parameter.name()).getDefaultValueFunc());
+        }
     }
 
     @Test

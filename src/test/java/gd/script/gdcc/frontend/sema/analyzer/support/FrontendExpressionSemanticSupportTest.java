@@ -2078,6 +2078,70 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
+    void analyzeResolvesGetNodeLeafBehindIndirectNodeBase() throws Exception {
+        var analyzed = analyze(
+                "get_node_sema_indirect_node_base.gd",
+                """
+                        class_name GetNodeSemaIndirectNodeBase
+                        extends Camera3D
+                        
+                        @onready var child: Node = $Child
+                        """
+        );
+
+        // `Camera3D -> Node3D -> Node` is assignable to Node through two hops, so the
+        // ready-time capability does not require the declaring class to name Node directly.
+        var getNode = findNode(analyzed.ast(), GetNodeExpression.class, ignored -> true);
+        var published = analyzed.analysisData().expressionTypes().get(getNode);
+        assertNotNull(published);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, published.status());
+        assertEquals(new GdObjectType("Node"), published.publishedType());
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+    }
+
+    @Test
+    void analyzeSkipsGetNodeLeafInsideDamagedInitializerWhileSiblingResolves() throws Exception {
+        var analyzed = analyze(
+                "get_node_sema_damaged_initializer.gd",
+                """
+                        class_name GetNodeSemaDamagedInitializer
+                        extends Node
+                        
+                        @onready var broken = [$Broken, = 3]
+                        @onready var sibling: Node = $Sibling
+                        """
+        );
+
+        // The damaged initializer makes the whole `broken` declaration a skipped subtree root:
+        // its initializer is never typed, so no fact is fabricated for the get-node leaf inside
+        // it, while the intact sibling still resolves through the ready-time island.
+        var brokenDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                candidate -> candidate.name().equals("broken")
+        );
+        assertTrue(analyzed.analysisData().skippedSubtreeRoots().containsKey(brokenDeclaration));
+        var brokenGetNode = findNode(brokenDeclaration.value(), GetNodeExpression.class, ignored -> true);
+        assertNull(analyzed.analysisData().expressionTypes().get(brokenGetNode));
+
+        var siblingDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                candidate -> candidate.name().equals("sibling")
+        );
+        var siblingGetNode = findNode(siblingDeclaration.value(), GetNodeExpression.class, ignored -> true);
+        var siblingPublished = analyzed.analysisData().expressionTypes().get(siblingGetNode);
+        assertNotNull(siblingPublished);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, siblingPublished.status());
+        assertEquals(new GdObjectType("Node"), siblingPublished.publishedType());
+
+        var diagnostics = analyzed.analysisData().diagnostics().asList();
+        assertTrue(diagnostics.stream().anyMatch(diagnostic -> diagnostic.category().startsWith("parse.")));
+        assertTrue(diagnostics.stream().noneMatch(diagnostic -> diagnostic.category().equals("sema.annotation_usage")));
+        assertTrue(diagnostics.stream().noneMatch(diagnostic -> diagnostic.category().equals("sema.deferred_expression_resolution")));
+    }
+
+    @Test
     void analyzeResolvesGetNodeExpressionInsideNodeDerivedInstanceLambda() throws Exception {
         var analyzed = analyze(
                 "get_node_sema_lambda_instance.gd",

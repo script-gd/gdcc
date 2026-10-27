@@ -191,6 +191,17 @@ cast 一项复用显式 object cast；不是根据路径自动推导，也不保
 
 **验收**：typed `Node`、object 上转、无类型 Variant/type hint、显式 cast、无隐式下转均符合既有合同；static/非 Node/重复/错误位置仍有正确 owner 的错误；损坏注解与未记录 lambda 不制造新的事实；同 module 的合法 sibling 仍解析成功；alias 路径上的对象存活/空值/类型检查照常发布，不因间接 self 责任划分而削弱。
 
+**实施状态（2026-10-27）：已完成。** 纯测试步骤，无生产代码改动。先由探索代理对六类现有用例与 §5 矩阵逐行盘点，按真实缺口补入；N6 的 `%` 形式按职责落在 `FrontendParameterDefaultMetadataOwnerTest`（计划所列六类之外的参数默认值 owner 测试）。新增/扩展共 7 个测试方法、4 处 fixture 扩展，分布在 6 个文件：
+
+- `FrontendExpressionSemanticSupportTest`：新增 `analyzeResolvesGetNodeLeafBehindIndirectNodeBase`（S2，`extends Camera3D` 两跳间接基类 → leaf `RESOLVED(Node)`、无 error）与 `analyzeSkipsGetNodeLeafInsideDamagedInitializerWhileSiblingResolves`（N4，`@onready var broken = [$Broken, = 3]` 损坏 initializer → 整个声明成为 skipped root、内部 `$Broken` 无 fact、合法 sibling `RESOLVED`、无 usage/deferred 诊断）。
+- `FrontendBodyOwnerProceduresChainBindingTest`：正向 fixture 扩入 `Node.new().name`（S8 构造对象结果 receiver → CONSTRUCTOR call 与 `.name` 成员均 `RESOLVED`）；新增 `analyzeFailsMissingMembersOnOnreadyExplicitReceiver`——`$Child.does_not_exist` 成员 `FAILED` ＋ `sema.member_resolution`，`$Child.missing_method()` 走既有 `DYNAMIC` 运行时回退（与函数体行为一致，非实现错误），无 `unsupported_chain_route`。
+- `FrontendCompileCheckAnalyzerTest`：`analyzeForCompileReleasesOnreadySuffixRoutesWhileDirectSelfStaysBlocked` 扩入 method-reference（`$Child.get_name`→`METHOD`）与 signal（`$Child.renamed`→`SIGNAL`）两路由的 compile 层 `RESOLVED` 断言；新增 `analyzeForCompileKeepsBlockedSiblingInsideOnreadyContainerBlocked`（S5，`[$Child, payload]` 的 leaf `RESOLVED` 但裸成员元素保持 compile blocker 且不锚定 leaf range）与 `analyzeForCompileKeepsDuplicateOnreadyErrorOwnedByUsageAnalyzer`（N3，重复 `@onready` leaf 仍 `RESOLVED`、compile gate 零升级、重复错误归 usage owner）。
+- `FrontendTypeCheckAnalyzerTest`：`analyzeChecksOnreadyGetNodeInitializerAgainstDeclaredSlotType` 扩入 `holder: Object = $Child`（S3 object 上转合法，`sema.type_check` 仍为恰 1 条）。
+- `FrontendAnnotationUsageAnalyzerTest`：新增 `analyzeReportsOnreadyOnConstPlacement`（N3，`@onready const` → `class properties declared with 'var'` usage error）。
+- `FrontendParameterDefaultMetadataOwnerTest`：`getNodeDefaultIsRejected` 扩入 `%Unique` 形参默认值（N6，两个 leaf 均静默 `BLOCKED`、owner 诊断各 1 条、`defaultValueFunc` 均为 null）。
+
+**验收结果**：`script/run-gradle-targeted-tests.sh --tests <10 个用例选择器>` 全部通过；随后 7 个测试类（六类 ＋ ParameterDefaultMetadataOwnerTest）整类回归 `BUILD SUCCESSFUL`。过程修正仅一处（测试侧，不改合同）：`missing_method()` 初始断言 `FAILED`，实测为既有 `DYNAMIC` 运行时回退合同，断言已按真实发布事实修正并复核根因——实例方法 miss 在函数体内同样走 dynamic fallback，与放行无关。await 边界不新增用例：其 `awaitFailClosedBoundaryReason` 与 GetNode 放行正交且已有单元级覆盖。
+
 ### 步骤 4：锁定 PROPERTY_INIT 的 CFG/LIR 组合
 
 **改动**：主要在 `FrontendLoweringBodyInsnPassTest` 新增使用真实 compile analysis 的 onready cases；如需要更精确 shell/graph 断言，再补 `FrontendLoweringFunctionPreparationPassTest` / `FrontendLoweringBuildCfgPassTest`，不复制 lowering 实现。
@@ -387,3 +398,7 @@ lead 已对两份审阅报告的全部发现（含 low 级措辞修正）对照�
 ### 9.4 实施轮次（步骤 2 代码实现，2026-10-27）
 
 `review-expert-c` 对步骤 2 的代码 diff 完成审阅，结论 APPROVE（仅限步骤 2 范围）：未发现 blocker/high/medium 问题，四处接入完整性、谓词短路仅限 ownerClass boundary、type-meta/head/binding 边界不受影响均获确认。唯一 low 级建议——为 N7 补裸方法引用与裸信号的负向锚点——已采纳并落地为 `analyzeKeepsDirectSelfBoundariesInsideOnreadyPropertyInitializer` 中的 `bare_method_ref`/`bare_signal` 用例（11 根 `BLOCKED`、subtree 诊断仍为 6），运行通过；复核再次 APPROVE，无剩余问题。本轮执行了 Gradle 定向测试（9 个用例选择器 ＋ 6 个测试类整类回归），未运行 Zig 或 Godot；步骤 3–6 仍为计划未实施部分。
+
+### 9.5 实施轮次（步骤 3 测试加固，2026-10-27）
+
+`review-expert-c` 对步骤 3 的测试 diff 完成审阅，结论 APPROVE（仅限步骤 3 范围）：未发现 blocker/high/medium/low 问题；确认 `[$Broken, = 3]` 与既有 `[1, = 3]` 恢复形态一致、`missing_method()` 的 `DYNAMIC` 为既有回退合同而非想象值、参数遍历与 owner 诊断归属正确、无应翻转而未翻转的既有断言。本轮执行了 Gradle 定向测试（10 个用例选择器 ＋ 7 个测试类整类回归），未运行 Zig 或 Godot；步骤 4–6 仍为计划未实施部分。

@@ -1831,11 +1831,13 @@ class FrontendCompileCheckAnalyzerTest {
                 
                 @onready var child_name: StringName = $Child.name
                 @onready var unique_name: StringName = %Unique.get_name()
+                @onready var get_name_callable: Callable = $Child.get_name
+                @onready var renamed_signal: Signal = $Child.renamed
                 """;
         var preparedInput = prepareCompileCheckInput("compile_check_onready_suffix_release.gd", suffixSource);
         runCompileCheck(preparedInput);
 
-        for (var declarationName : List.of("child_name", "unique_name")) {
+        for (var declarationName : List.of("child_name", "unique_name", "get_name_callable", "renamed_signal")) {
             var declaration = findNode(
                     preparedInput.unit().ast(),
                     VariableDeclaration.class,
@@ -1864,6 +1866,25 @@ class FrontendCompileCheckAnalyzerTest {
         var resolvedGetName = preparedInput.analysisData().resolvedCalls().get(getNameStep);
         assertNotNull(resolvedGetName);
         assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedGetName.status());
+        // The method-reference and signal routes land on the same released member surface.
+        var getNameReferenceStep = findNode(
+                preparedInput.unit().ast(),
+                AttributePropertyStep.class,
+                step -> step.name().equals("get_name")
+        );
+        var resolvedGetNameReference = preparedInput.analysisData().resolvedMembers().get(getNameReferenceStep);
+        assertNotNull(resolvedGetNameReference);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedGetNameReference.status());
+        assertEquals(FrontendBindingKind.METHOD, resolvedGetNameReference.bindingKind());
+        var renamedStep = findNode(
+                preparedInput.unit().ast(),
+                AttributePropertyStep.class,
+                step -> step.name().equals("renamed")
+        );
+        var resolvedRenamed = preparedInput.analysisData().resolvedMembers().get(renamedStep);
+        assertNotNull(resolvedRenamed);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedRenamed.status());
+        assertEquals(FrontendBindingKind.SIGNAL, resolvedRenamed.bindingKind());
         var diagnostics = preparedInput.analysisData().diagnostics();
         assertFalse(diagnostics.hasErrors(), diagnostics::toString);
         assertTrue(diagnosticsByCategory(diagnostics, "sema.unsupported_chain_route").isEmpty());
@@ -1880,6 +1901,58 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(compiledSelf.diagnostics().hasErrors(), compiledSelf.diagnostics()::toString);
         assertTrue(diagnosticsByCategory(compiledSelf.diagnostics(), "sema.unsupported_binding_subtree").stream()
                 .anyMatch(diagnostic -> diagnostic.message().contains("self")));
+    }
+
+    @Test
+    void analyzeForCompileKeepsBlockedSiblingInsideOnreadyContainerBlocked() throws Exception {
+        var source = """
+                class_name CompileCheckOnreadyBlockedSibling
+                extends Node
+                
+                var payload: int = 1
+                @onready var mixed := [$Child, payload]
+                """;
+
+        var preparedInput = prepareCompileCheckInput("compile_check_onready_blocked_sibling.gd", source);
+        runCompileCheck(preparedInput);
+
+        // The ready-time marker releases only the get-node leaf: the bare `payload` sibling
+        // element stays silently blocked, and the compile gate still escalates it.
+        var leaf = findNode(preparedInput.unit().ast(), GetNodeExpression.class, ignored -> true);
+        var leafPublished = preparedInput.analysisData().expressionTypes().get(leaf);
+        assertNotNull(leafPublished);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, leafPublished.status());
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        assertFalse(compileDiagnostics.isEmpty());
+        assertTrue(preparedInput.analysisData().diagnostics().hasErrors());
+        var leafRange = FrontendRange.fromAstRange(leaf.range());
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> leafRange.equals(diagnostic.range())));
+        assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.unsupported_chain_route").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileKeepsDuplicateOnreadyErrorOwnedByUsageAnalyzer() throws Exception {
+        var source = """
+                class_name CompileCheckDuplicateOnready
+                extends Node
+                
+                @onready @onready var child: Node = $Child
+                """;
+
+        var preparedInput = prepareCompileCheckInput("compile_check_duplicate_onready.gd", source);
+        runCompileCheck(preparedInput);
+
+        // A duplicated marker still grants the ready-time capability, so the leaf is stable
+        // and the compile gate escalates nothing; the duplicate stays owned by the usage
+        // analyzer, which is what keeps the property out of lowering.
+        var leaf = findNode(preparedInput.unit().ast(), GetNodeExpression.class, ignored -> true);
+        var leafPublished = preparedInput.analysisData().expressionTypes().get(leaf);
+        assertNotNull(leafPublished);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, leafPublished.status());
+        assertTrue(preparedInput.analysisData().diagnostics().hasErrors(), () -> preparedInput.analysisData().diagnostics().toString());
+        assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.annotation_usage").stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("can only be used once")));
+        assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check").isEmpty());
     }
 
     @Test

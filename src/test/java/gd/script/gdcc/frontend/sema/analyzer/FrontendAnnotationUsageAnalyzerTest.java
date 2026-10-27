@@ -170,6 +170,29 @@ class FrontendAnnotationUsageAnalyzerTest {
         assertEquals("", findProperty(classDef, "triple").getAnnotations().get("onready"));
     }
 
+    /// `@onready` requires `var` storage: a class-level `const` carries no per-instance field
+    /// to initialize at ready time, so the placement check rejects it with the same
+    /// class-property message used for local variables.
+    @Test
+    void analyzeReportsOnreadyOnConstPlacement() throws Exception {
+        var analyzedModule = analyze("""
+                class_name OnreadyConstPlacement
+                extends Node
+                
+                @onready const CHILD = 1
+                """);
+
+        var annotationUsageDiagnostics = diagnosticsByCategory(
+                analyzedModule.analysisData().diagnostics().asList(),
+                "sema.annotation_usage"
+        );
+        assertEquals(1, annotationUsageDiagnostics.size());
+        var diagnostic = annotationUsageDiagnostics.getFirst();
+        assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());
+        assertTrue(diagnostic.message().contains("class properties declared with 'var'"));
+        assertNotNull(diagnostic.range());
+    }
+
     /// `@export` on a static var is rejected (Godot parity: export registers per-instance
     /// storage, which a static property never has). Retention in the property metadata is kept
     /// so the diagnostic stays the single source of truth for the rejection.

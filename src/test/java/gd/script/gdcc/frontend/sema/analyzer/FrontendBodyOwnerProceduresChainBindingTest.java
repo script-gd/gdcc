@@ -1037,6 +1037,7 @@ class FrontendBodyOwnerProceduresChainBindingTest {
                         @onready var get_name_callable: Callable = $Child.get_name
                         @onready var renamed_signal: Signal = $Child.renamed
                         @onready var helper_result := build().payload
+                        @onready var ctor_name: StringName = Node.new().name
                         @onready var cast_name: StringName = ($Child as Node).name
                         @onready var conditional_name: StringName = $Child.name if true else %Unique.get_name()
                         @onready var parent_name: StringName = $Child.get_parent().get_name()
@@ -1086,6 +1087,11 @@ class FrontendBodyOwnerProceduresChainBindingTest {
                 VariableDeclaration.class,
                 declaration -> declaration.name().equals("cast_name")
         );
+        var ctorNameDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("ctor_name")
+        );
         var conditionalNameDeclaration = findNode(
                 analyzed.unit().ast(),
                 VariableDeclaration.class,
@@ -1101,6 +1107,8 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         var getNameReferenceStep = findNode(getNameCallableDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("get_name"));
         var renamedStep = findNode(renamedSignalDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("renamed"));
         var payloadStep = findNode(helperResultDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
+        var ctorNewStep = findNode(ctorNameDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("new"));
+        var ctorNameStep = findNode(ctorNameDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("name"));
         var castNameStep = findNode(castNameDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("name"));
         var conditionalNameStep = findNode(conditionalNameDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("name"));
         var conditionalGetNameCallStep = findNode(conditionalNameDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("get_name"));
@@ -1143,6 +1151,18 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         assertEquals(FrontendBindingKind.PROPERTY, resolvedPayload.bindingKind());
         assertEquals(FrontendReceiverKind.INSTANCE, resolvedPayload.receiverKind());
         assertEquals("int", resolvedPayload.resultType().getTypeName());
+
+        // A constructed object is likewise an explicit expression receiver: the constructor
+        // call resolves first, then `.name` resolves on its Node result.
+        var resolvedCtorNew = analyzed.analysisData().resolvedCalls().get(ctorNewStep);
+        assertNotNull(resolvedCtorNew);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCtorNew.status());
+        assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedCtorNew.callKind());
+        var resolvedCtorName = analyzed.analysisData().resolvedMembers().get(ctorNameStep);
+        assertNotNull(resolvedCtorName);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedCtorName.status());
+        assertEquals(FrontendBindingKind.PROPERTY, resolvedCtorName.bindingKind());
+        assertEquals("StringName", resolvedCtorName.resultType().getTypeName());
 
         var resolvedCastName = analyzed.analysisData().resolvedMembers().get(castNameStep);
         assertNotNull(resolvedCastName);
@@ -1231,6 +1251,58 @@ class FrontendBodyOwnerProceduresChainBindingTest {
                 .anyMatch(diagnostic -> diagnostic.message().contains("payload")));
         assertTrue(diagnosticsByCategory(staticAnalyzed.analysisData(), "sema.annotation_usage").stream()
                 .anyMatch(diagnostic -> diagnostic.message().contains("static property 'leaked'")));
+    }
+
+    @Test
+    void analyzeFailsMissingMembersOnOnreadyExplicitReceiver() throws Exception {
+        var analyzed = analyze(
+                "property_initializer_onready_missing_member.gd",
+                """
+                        class_name PropertyInitializerOnreadyMissingMember
+                        extends Node
+                        
+                        @onready var missing_prop = $Child.does_not_exist
+                        @onready var missing_call = $Child.missing_method()
+                        """
+        );
+
+        // Releasing the owner boundary does not waive ordinary resolution: a property miss on
+        // the explicit get-node receiver still fails through the member-resolution owner, and
+        // a method miss takes the same dynamic fallback as inside bodies — neither is swept
+        // under the ready-time release.
+        var missingPropDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("missing_prop")
+        );
+        var missingCallDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("missing_call")
+        );
+        for (var getNodeExpression : findNodes(analyzed.unit().ast(), GetNodeExpression.class, ignored -> true)) {
+            var headType = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+            assertNotNull(headType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, headType.status());
+        }
+
+        var missingStep = findNode(missingPropDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("does_not_exist"));
+        var missingMember = analyzed.analysisData().resolvedMembers().get(missingStep);
+        assertNotNull(missingMember);
+        assertEquals(FrontendMemberResolutionStatus.FAILED, missingMember.status());
+        var memberDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution");
+        assertEquals(1, memberDiagnostics.size());
+        assertTrue(memberDiagnostics.getFirst().message().contains("does_not_exist"));
+
+        // A missing instance method is not a static failure anywhere: the ordinary resolver
+        // falls back to runtime-dynamic dispatch here exactly as it does inside bodies.
+        var missingCallStep = findNode(missingCallDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("missing_method"));
+        var missingCall = analyzed.analysisData().resolvedCalls().get(missingCallStep);
+        assertNotNull(missingCall);
+        assertEquals(FrontendCallResolutionStatus.DYNAMIC, missingCall.status());
+
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
     }
 
     @Test
