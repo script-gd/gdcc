@@ -146,7 +146,7 @@ compile-check 以 `Array/Dictionary literal is ... temporarily blocked` 失败�
 
 - `$` / `%` 的接收槽静态类型固定上溯为 `Node`（GDCC 子类的同名 `get_node` override 不参与 `$` 解析），与 Godot compiler 的 `Node.get_node` 原生绑定语义一致
 - `$` 对缺失路径的运行时报错行为（Godot `get_node` 引擎错误）不在该 fixture 中触发，避免环境差异
-- 已记录 lambda 体内的 `$` / `%` 已 compile-ready（经隐式 `self` capture）；独立覆盖见 `get_node_lambda_flow_scene.gd` 与 `get_node_lambda_await_scene.gd`。property initializer 中的 `$` / `%` 仍为 DEFERRED 边界（见 `doc/module_impl/frontend/frontend_node_literal_implementation.md`）
+- 已记录 lambda 体内的 `$` / `%` 已 compile-ready（经隐式 `self` capture）；独立覆盖见 `get_node_lambda_flow_scene.gd` 与 `get_node_lambda_await_scene.gd`。合法 `@onready` initializer 中的 `$` / `%` 已 compile-ready（成对 fixture 见 `runtime/virtual/onready_node_literal_*.gd`），其余 property initializer 中的 `$` / `%` 仍为 DEFERRED 边界（见 `doc/module_impl/frontend/frontend_node_literal_implementation.md`）
 ## 11. 已记录：headless editor 热重载集成测试的引擎侧限制（Godot 4.5.2）
 
 `GodotEditorHotReloadIntegrationTest` / `GodotRuntimeDirectPathIntegrationTest`（见

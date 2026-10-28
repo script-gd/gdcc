@@ -10599,6 +10599,515 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersOnreadyGetNodeFormsThroughPropertyInitHelpers() throws Exception {
+        // The fixture also declares a same-name `get_node(NodePath)` script method: the
+        // shorthand must still take the native `Node.get_node` route because its receiver
+        // temp is statically pinned to `Node`, not the script class.
+        var prepared = prepareContext(
+                "body_insn_onready_get_node_init.gd",
+                """
+                        class_name BodyInsnOnreadyGetNodeInit
+                        extends Node
+                        
+                        func get_node(path: NodePath) -> Node:
+                            return self
+                        
+                        @onready var child: Node = $Child
+                        @onready var nested: Node = $Branch/Leaf
+                        @onready var spaced: Node = $"Name With Space"
+                        @onready var unique: Node = %Unique
+                        @onready var unique_spaced: Node = %"Wide Name"
+                        @onready var untyped_child = $Child
+                        """,
+                Map.of("BodyInsnOnreadyGetNodeInit", "RuntimeBodyInsnOnreadyGetNodeInit"),
+                true
+        );
+        var contexts = prepared.context().requireFunctionLoweringContexts();
+        var classDef = prepared.context().requireLirModule().getClassDefs().stream()
+                .filter(candidate -> candidate.getName().equals("RuntimeBodyInsnOnreadyGetNodeInit"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing RuntimeBodyInsnOnreadyGetNodeInit class def"));
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var expectedPayloads = Map.of(
+                "child", "Child",
+                "nested", "Branch/Leaf",
+                "spaced", "Name With Space",
+                "unique", "%Unique",
+                "unique_spaced", "%Wide Name"
+        );
+        assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString);
+        for (var entry : expectedPayloads.entrySet()) {
+            var propertyName = entry.getKey();
+            var initContext = requireContext(
+                    contexts,
+                    FunctionLoweringContext.Kind.PROPERTY_INIT,
+                    "RuntimeBodyInsnOnreadyGetNodeInit",
+                    "_field_init_" + propertyName
+            );
+            var initFunction = initContext.targetFunction();
+            var literalInsn = requireOnlyInstruction(initFunction, LiteralNodePathInsn.class);
+            var assignInsn = requireOnlyInstruction(initFunction, AssignInsn.class);
+            var callInsn = requireOnlyInstruction(initFunction, CallMethodInsn.class);
+            var returnInsn = requireOnlyReturnInsn(initFunction);
+            var orderedInsns = allInstructions(initFunction);
+            var initProperty = classDef.getProperties().stream()
+                    .filter(candidate -> candidate.getName().equals(propertyName))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("Missing property " + propertyName));
+            var entryBlock = requireBlock(initFunction, initFunction.getEntryBlockId());
+            var entryGoto = assertInstanceOf(GotoInsn.class, entryBlock.getTerminator());
+
+            assertAll(
+                    // The initFunc contract: a hidden, non-static helper that takes the
+                    // owning-class `self` and returns the property type.
+                    () -> assertEquals("_field_init_" + propertyName, initProperty.getInitFunc()),
+                    () -> assertTrue(initFunction.isHidden()),
+                    () -> assertFalse(initFunction.isStatic()),
+                    () -> assertEquals("Node", initFunction.getReturnType().getTypeName()),
+                    () -> assertEquals(1, initFunction.getParameterCount()),
+                    () -> assertEquals("self", initFunction.getParameter(0).name()),
+                    () -> assertEquals(
+                            "RuntimeBodyInsnOnreadyGetNodeInit",
+                            initFunction.getParameter(0).type().getTypeName()
+                    ),
+                    // Real CFG materialization: the entry sequence block forwards to the
+                    // RETURN stop block.
+                    () -> assertEquals("seq_0", initFunction.getEntryBlockId()),
+                    () -> assertEquals(2, initFunction.getBasicBlockCount()),
+                    () -> assertInstanceOf(
+                            ReturnInsn.class,
+                            requireBlock(initFunction, entryGoto.targetBbId()).getTerminator()
+                    ),
+                    // The fixed get_node triple: decoded payload, `self` upcast into a
+                    // Node-typed receiver (the script override above cannot shadow it),
+                    // single-argument call, then direct typed boundary to the return.
+                    () -> assertEquals(entry.getValue(), literalInsn.value()),
+                    () -> assertEquals("self", assignInsn.sourceId()),
+                    () -> assertEquals(
+                            new GdObjectType("Node"),
+                            requireVariableType(initFunction, assignInsn.resultId())
+                    ),
+                    () -> assertEquals("get_node", callInsn.methodName()),
+                    () -> assertEquals(assignInsn.resultId(), callInsn.objectId()),
+                    () -> assertEquals(literalInsn.resultId(), onlyVariableOperandId(callInsn.args())),
+                    () -> assertEquals(
+                            new GdObjectType("Node"),
+                            requireVariableType(initFunction, callInsn.resultId())
+                    ),
+                    () -> assertEquals(callInsn.resultId(), returnInsn.returnValueId()),
+                    () -> assertTrue(orderedInsns.indexOf(literalInsn) < orderedInsns.indexOf(callInsn)),
+                    () -> assertTrue(orderedInsns.indexOf(assignInsn) < orderedInsns.indexOf(callInsn)),
+                    // A leaf lookup has no explicit receiver suffix, so no liveness guard.
+                    () -> assertEquals(0, countInstructions(orderedInsns, AssertObjectLiveInsn.class))
+            );
+        }
+
+        // The untyped helper keeps a Variant return type: the `Node` get_node result is
+        // packed once at the existing Variant boundary and the pack result is returned.
+        var untypedContext = requirePropertyInitContext(
+                contexts,
+                "RuntimeBodyInsnOnreadyGetNodeInit",
+                "_field_init_untyped_child"
+        );
+        var untypedFunction = untypedContext.targetFunction();
+        var untypedCall = requireCallNamed(untypedFunction, "get_node");
+        var untypedPack = requirePackOf(untypedFunction, untypedCall.resultId());
+        var untypedInsns = allInstructions(untypedFunction);
+        assertAll(
+                () -> assertTrue(untypedFunction.isHidden()),
+                () -> assertFalse(untypedFunction.isStatic()),
+                () -> assertInstanceOf(GdVariantType.class, untypedFunction.getReturnType()),
+                () -> assertEquals(
+                        "Child",
+                        requireOnlyInstruction(untypedFunction, LiteralNodePathInsn.class).value()
+                ),
+                () -> assertTrue(untypedInsns.indexOf(untypedCall) < untypedInsns.indexOf(untypedPack)),
+                () -> assertEquals(untypedPack.resultId(), requireOnlyReturnInsn(untypedFunction).returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersOnreadyGetNodeSuffixRoutesAfterEngineGetNode() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_onready_get_node_suffix.gd",
+                """
+                        class_name BodyInsnOnreadyGetNodeSuffix
+                        extends Node
+                        
+                        @onready var child_name: StringName = $Child.name
+                        @onready var unique_name: StringName = %Unique.get_name()
+                        @onready var name_callable: Callable = $Child.get_name
+                        @onready var renamed_signal: Signal = $Child.renamed
+                        @onready var parent_name: StringName = $Child.get_parent().get_name()
+                        @onready var self_name: StringName = $".".get_name()
+                        """,
+                Map.of("BodyInsnOnreadyGetNodeSuffix", "RuntimeBodyInsnOnreadyGetNodeSuffix"),
+                true
+        );
+        var contexts = prepared.context().requireFunctionLoweringContexts();
+        var childNameContext = requirePropertyInitContext(contexts, "RuntimeBodyInsnOnreadyGetNodeSuffix", "_field_init_child_name");
+        var uniqueNameContext = requirePropertyInitContext(contexts, "RuntimeBodyInsnOnreadyGetNodeSuffix", "_field_init_unique_name");
+        var callableContext = requirePropertyInitContext(contexts, "RuntimeBodyInsnOnreadyGetNodeSuffix", "_field_init_name_callable");
+        var signalContext = requirePropertyInitContext(contexts, "RuntimeBodyInsnOnreadyGetNodeSuffix", "_field_init_renamed_signal");
+        var parentNameContext = requirePropertyInitContext(contexts, "RuntimeBodyInsnOnreadyGetNodeSuffix", "_field_init_parent_name");
+        var selfNameContext = requirePropertyInitContext(contexts, "RuntimeBodyInsnOnreadyGetNodeSuffix", "_field_init_self_name");
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString);
+
+        // Property read route: get_node -> assert_object_live -> load_property.
+        var childNameFunction = childNameContext.targetFunction();
+        var childNameInsns = allInstructions(childNameFunction);
+        var childNameGetNode = requireCallNamed(childNameFunction, "get_node");
+        var childNameLive = requireOnlyInstruction(childNameFunction, AssertObjectLiveInsn.class);
+        var childNameLoad = requireOnlyInstruction(childNameFunction, LoadPropertyInsn.class);
+        assertAll(
+                () -> assertEquals("Child", requireOnlyInstruction(childNameFunction, LiteralNodePathInsn.class).value()),
+                () -> assertEquals(childNameGetNode.resultId(), childNameLive.objectId()),
+                () -> assertEquals(childNameGetNode.resultId(), childNameLoad.objectId()),
+                () -> assertEquals("name", childNameLoad.propertyName()),
+                () -> assertEquals(childNameLoad.resultId(), requireOnlyReturnInsn(childNameFunction).returnValueId()),
+                () -> assertTrue(childNameInsns.indexOf(childNameGetNode) < childNameInsns.indexOf(childNameLive)),
+                () -> assertTrue(childNameInsns.indexOf(childNameLive) < childNameInsns.indexOf(childNameLoad))
+        );
+
+        // Instance call route: get_node -> assert_object_live -> call_method.
+        var uniqueNameFunction = uniqueNameContext.targetFunction();
+        var uniqueNameInsns = allInstructions(uniqueNameFunction);
+        var uniqueNameGetNode = requireCallNamed(uniqueNameFunction, "get_node");
+        var uniqueNameLive = requireOnlyInstruction(uniqueNameFunction, AssertObjectLiveInsn.class);
+        var uniqueNameCall = requireCallNamed(uniqueNameFunction, "get_name");
+        assertAll(
+                () -> assertEquals("%Unique", requireOnlyInstruction(uniqueNameFunction, LiteralNodePathInsn.class).value()),
+                () -> assertEquals(uniqueNameGetNode.resultId(), uniqueNameLive.objectId()),
+                () -> assertEquals(uniqueNameGetNode.resultId(), uniqueNameCall.objectId()),
+                () -> assertTrue(uniqueNameCall.args().isEmpty()),
+                () -> assertEquals(uniqueNameCall.resultId(), requireOnlyReturnInsn(uniqueNameFunction).returnValueId()),
+                () -> assertTrue(uniqueNameInsns.indexOf(uniqueNameGetNode) < uniqueNameInsns.indexOf(uniqueNameLive)),
+                () -> assertTrue(uniqueNameInsns.indexOf(uniqueNameLive) < uniqueNameInsns.indexOf(uniqueNameCall))
+        );
+
+        // Method-reference route: get_node -> assert_object_live -> construct_callable.
+        var callableFunction = callableContext.targetFunction();
+        var callableInsns = allInstructions(callableFunction);
+        var callableGetNode = requireCallNamed(callableFunction, "get_node");
+        var callableLive = requireOnlyInstruction(callableFunction, AssertObjectLiveInsn.class);
+        var callableConstruct = requireOnlyInstruction(callableFunction, ConstructCallableInsn.class);
+        assertAll(
+                () -> assertEquals(callableGetNode.resultId(), callableLive.objectId()),
+                () -> assertEquals(callableGetNode.resultId(), callableConstruct.receiverVarId()),
+                () -> assertEquals("get_name", callableConstruct.methodName()),
+                () -> assertEquals(callableConstruct.resultId(), requireOnlyReturnInsn(callableFunction).returnValueId()),
+                () -> assertTrue(callableInsns.indexOf(callableGetNode) < callableInsns.indexOf(callableLive)),
+                () -> assertTrue(callableInsns.indexOf(callableLive) < callableInsns.indexOf(callableConstruct))
+        );
+
+        // Signal route: get_node -> assert_object_live -> construct_signal.
+        var signalFunction = signalContext.targetFunction();
+        var signalInsns = allInstructions(signalFunction);
+        var signalGetNode = requireCallNamed(signalFunction, "get_node");
+        var signalLive = requireOnlyInstruction(signalFunction, AssertObjectLiveInsn.class);
+        var signalConstruct = requireOnlyInstruction(signalFunction, ConstructSignalInsn.class);
+        assertAll(
+                () -> assertEquals(signalGetNode.resultId(), signalLive.objectId()),
+                () -> assertEquals(signalGetNode.resultId(), signalConstruct.receiverVarId()),
+                () -> assertEquals("renamed", signalConstruct.signalName()),
+                () -> assertEquals(signalConstruct.resultId(), requireOnlyReturnInsn(signalFunction).returnValueId()),
+                () -> assertTrue(signalInsns.indexOf(signalGetNode) < signalInsns.indexOf(signalLive)),
+                () -> assertTrue(signalInsns.indexOf(signalLive) < signalInsns.indexOf(signalConstruct))
+        );
+
+        // Nested chain: each hop re-enters the same receiver pipeline (live guard then
+        // call), so `get_parent()` may return self at runtime without any special-casing.
+        var parentNameFunction = parentNameContext.targetFunction();
+        var parentNameInsns = allInstructions(parentNameFunction);
+        var parentNameCalls = parentNameInsns.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .toList();
+        var parentNameLives = parentNameInsns.stream()
+                .filter(AssertObjectLiveInsn.class::isInstance)
+                .map(AssertObjectLiveInsn.class::cast)
+                .toList();
+        assertAll(
+                () -> assertEquals(
+                        List.of("get_node", "get_parent", "get_name"),
+                        parentNameCalls.stream().map(CallMethodInsn::methodName).toList()
+                ),
+                () -> assertEquals(2, parentNameLives.size()),
+                () -> assertEquals(parentNameCalls.get(0).resultId(), parentNameCalls.get(1).objectId()),
+                () -> assertEquals(parentNameCalls.get(1).resultId(), parentNameCalls.get(2).objectId()),
+                () -> assertEquals(parentNameCalls.get(0).resultId(), parentNameLives.get(0).objectId()),
+                () -> assertEquals(parentNameCalls.get(1).resultId(), parentNameLives.get(1).objectId()),
+                () -> assertEquals(parentNameCalls.get(2).resultId(), requireOnlyReturnInsn(parentNameFunction).returnValueId())
+        );
+
+        // `$"."` aliases self at runtime, yet it is an explicit expression receiver, so it
+        // takes the identical literal -> assign -> call -> guard -> suffix pipeline with no
+        // provenance or identity-guard instructions.
+        var selfNameFunction = selfNameContext.targetFunction();
+        var selfNameInsns = allInstructions(selfNameFunction);
+        var selfNameGetNode = requireCallNamed(selfNameFunction, "get_node");
+        var selfNameLive = requireOnlyInstruction(selfNameFunction, AssertObjectLiveInsn.class);
+        var selfNameCall = requireCallNamed(selfNameFunction, "get_name");
+        assertAll(
+                () -> assertEquals(".", requireOnlyInstruction(selfNameFunction, LiteralNodePathInsn.class).value()),
+                () -> assertEquals(selfNameGetNode.resultId(), selfNameLive.objectId()),
+                () -> assertEquals(selfNameGetNode.resultId(), selfNameCall.objectId()),
+                () -> assertEquals(selfNameCall.resultId(), requireOnlyReturnInsn(selfNameFunction).returnValueId()),
+                () -> assertTrue(selfNameInsns.indexOf(selfNameGetNode) < selfNameInsns.indexOf(selfNameLive)),
+                () -> assertTrue(selfNameInsns.indexOf(selfNameLive) < selfNameInsns.indexOf(selfNameCall))
+        );
+    }
+
+    @Test
+    void runLowersOnreadyGetNodeContainerOperandsInSourceOrder() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_onready_get_node_container.gd",
+                """
+                        class_name BodyInsnOnreadyGetNodeContainer
+                        extends Node
+                        
+                        @onready var pair: Array = [$Child, %Unique]
+                        """,
+                Map.of("BodyInsnOnreadyGetNodeContainer", "RuntimeBodyInsnOnreadyGetNodeContainer"),
+                true
+        );
+        var pairContext = requirePropertyInitContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                "RuntimeBodyInsnOnreadyGetNodeContainer",
+                "_field_init_pair"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var pairFunction = pairContext.targetFunction();
+        var pairInsns = allInstructions(pairFunction);
+        var literals = pairInsns.stream()
+                .filter(LiteralNodePathInsn.class::isInstance)
+                .map(LiteralNodePathInsn.class::cast)
+                .toList();
+        var getNodeCalls = pairInsns.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("get_node"))
+                .toList();
+        var constructInsn = requireOnlyInstruction(pairFunction, ConstructContainerLiteralInsn.class);
+        // Untyped `Array` elements cross the Variant boundary: each get_node result is
+        // packed once and the packs feed the constructor in source order.
+        var firstPack = requirePackOf(pairFunction, getNodeCalls.get(0).resultId());
+        var secondPack = requirePackOf(pairFunction, getNodeCalls.get(1).resultId());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                // Each operand lowers its own lookup once, strictly in source order.
+                () -> assertEquals(List.of("Child", "%Unique"), literals.stream().map(LiteralNodePathInsn::value).toList()),
+                () -> assertEquals(2, getNodeCalls.size()),
+                () -> assertEquals(
+                        literals.get(0).resultId(),
+                        onlyVariableOperandId(getNodeCalls.get(0).args())
+                ),
+                () -> assertEquals(
+                        literals.get(1).resultId(),
+                        onlyVariableOperandId(getNodeCalls.get(1).args())
+                ),
+                () -> assertTrue(pairInsns.indexOf(getNodeCalls.get(0)) < pairInsns.indexOf(literals.get(1))),
+                () -> assertTrue(pairInsns.indexOf(literals.get(1)) < pairInsns.indexOf(getNodeCalls.get(1))),
+                () -> assertTrue(pairInsns.indexOf(firstPack) < pairInsns.indexOf(constructInsn)),
+                () -> assertTrue(pairInsns.indexOf(secondPack) < pairInsns.indexOf(constructInsn)),
+                () -> assertEquals(
+                        List.of(
+                                new LirInstruction.VariableOperand(firstPack.resultId()),
+                                new LirInstruction.VariableOperand(secondPack.resultId())
+                        ),
+                        constructInsn.operands()
+                ),
+                () -> assertEquals(constructInsn.resultId(), requireOnlyReturnInsn(pairFunction).returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersOnreadyConditionalGetNodeArmsInsideBranchBlocks() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_onready_get_node_conditional.gd",
+                """
+                        class_name BodyInsnOnreadyGetNodeConditional
+                        extends Node
+                        
+                        @onready var selected: Node = $Child if true else %Unique
+                        @onready var selected_name: StringName = $Child.name if true else %Unique.get_name()
+                        """,
+                Map.of("BodyInsnOnreadyGetNodeConditional", "RuntimeBodyInsnOnreadyGetNodeConditional"),
+                true
+        );
+        var contexts = prepared.context().requireFunctionLoweringContexts();
+        var selectedContext = requirePropertyInitContext(contexts, "RuntimeBodyInsnOnreadyGetNodeConditional", "_field_init_selected");
+        var selectedNameContext = requirePropertyInitContext(contexts, "RuntimeBodyInsnOnreadyGetNodeConditional", "_field_init_selected_name");
+        var selectedMergeValueId = requireSingleMergeValueId(selectedContext.requireFrontendCfgGraph());
+        var selectedNameMergeValueId = requireSingleMergeValueId(selectedNameContext.requireFrontendCfgGraph());
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString);
+
+        // Both lookups stay inside their arm blocks: the unselected arm is never evaluated,
+        // so nothing may be hoisted into the branch block.
+        var selectedFunction = selectedContext.targetFunction();
+        var selectedBranch = requireSingleGoIfBlock(selectedFunction);
+        var selectedGoIf = (GoIfInsn) selectedBranch.getTerminator();
+        var selectedTrueBlock = requireBlock(selectedFunction, selectedGoIf.trueBbId());
+        var selectedFalseBlock = requireBlock(selectedFunction, selectedGoIf.falseBbId());
+        var selectedMergeSlot = "cfg_merge_" + selectedMergeValueId;
+        var selectedTrueGetNode = requireGetNodeCall(selectedTrueBlock);
+        var selectedFalseGetNode = requireGetNodeCall(selectedFalseBlock);
+        var selectedTrueWrites = mergeSlotWrites(selectedTrueBlock, selectedMergeSlot);
+        var selectedFalseWrites = mergeSlotWrites(selectedFalseBlock, selectedMergeSlot);
+        assertAll(
+                () -> assertTrue(selectedBranch.getInstructions().stream()
+                        .noneMatch(LiteralNodePathInsn.class::isInstance)),
+                () -> assertTrue(selectedBranch.getInstructions().stream()
+                        .noneMatch(insn -> insn instanceof CallMethodInsn call && call.methodName().equals("get_node"))),
+                () -> assertTrue(selectedBranch.getInstructions().stream()
+                        .noneMatch(AssertObjectLiveInsn.class::isInstance)),
+                () -> assertEquals(List.of("Child"), literalNodePathValues(selectedTrueBlock)),
+                () -> assertEquals(List.of("%Unique"), literalNodePathValues(selectedFalseBlock)),
+                // Each arm writes its own get_node result into the shared merge slot once,
+                // then both arms fall through to the same merge block on the return path.
+                () -> assertEquals(1, selectedTrueWrites.size()),
+                () -> assertEquals(1, selectedFalseWrites.size()),
+                () -> assertEquals(selectedTrueGetNode.resultId(), selectedTrueWrites.getFirst().sourceId()),
+                () -> assertEquals(selectedFalseGetNode.resultId(), selectedFalseWrites.getFirst().sourceId()),
+                () -> assertEquals(gotoTarget(selectedTrueBlock), gotoTarget(selectedFalseBlock)),
+                () -> assertEquals(selectedMergeSlot, requireOnlyReturnInsn(selectedFunction).returnValueId())
+        );
+
+        // Suffix instructions obey the same laziness: each arm keeps its own get_node,
+        // liveness guard and suffix instructions inside its block.
+        var selectedNameFunction = selectedNameContext.targetFunction();
+        var selectedNameBranch = requireSingleGoIfBlock(selectedNameFunction);
+        var selectedNameGoIf = (GoIfInsn) selectedNameBranch.getTerminator();
+        var selectedNameTrueBlock = requireBlock(selectedNameFunction, selectedNameGoIf.trueBbId());
+        var selectedNameFalseBlock = requireBlock(selectedNameFunction, selectedNameGoIf.falseBbId());
+        var selectedNameMergeSlot = "cfg_merge_" + selectedNameMergeValueId;
+        var selectedNameTrueGetNode = requireGetNodeCall(selectedNameTrueBlock);
+        var selectedNameFalseGetNode = requireGetNodeCall(selectedNameFalseBlock);
+        var selectedNameTrueLive = requireOnlyBlockInstruction(selectedNameTrueBlock, AssertObjectLiveInsn.class);
+        var selectedNameFalseLive = requireOnlyBlockInstruction(selectedNameFalseBlock, AssertObjectLiveInsn.class);
+        var selectedNameTrueLoad = requireOnlyBlockInstruction(selectedNameTrueBlock, LoadPropertyInsn.class);
+        var selectedNameFalseCall = requireCallNamed(selectedNameFalseBlock, "get_name");
+        var selectedNameTrueWrites = mergeSlotWrites(selectedNameTrueBlock, selectedNameMergeSlot);
+        var selectedNameFalseWrites = mergeSlotWrites(selectedNameFalseBlock, selectedNameMergeSlot);
+        assertAll(
+                () -> assertTrue(selectedNameBranch.getInstructions().stream()
+                        .noneMatch(insn -> insn instanceof CallMethodInsn call
+                                && (call.methodName().equals("get_node") || call.methodName().equals("get_name")))),
+                () -> assertTrue(selectedNameBranch.getInstructions().stream()
+                        .noneMatch(LoadPropertyInsn.class::isInstance)),
+                () -> assertTrue(selectedNameBranch.getInstructions().stream()
+                        .noneMatch(AssertObjectLiveInsn.class::isInstance)),
+                () -> assertEquals(List.of("Child"), literalNodePathValues(selectedNameTrueBlock)),
+                () -> assertEquals(List.of("%Unique"), literalNodePathValues(selectedNameFalseBlock)),
+                // Each arm wires its own lookup -> guard -> suffix chain on the arm's
+                // get_node result, then merges that suffix result.
+                () -> assertEquals(selectedNameTrueGetNode.resultId(), selectedNameTrueLive.objectId()),
+                () -> assertEquals(selectedNameTrueGetNode.resultId(), selectedNameTrueLoad.objectId()),
+                () -> assertEquals(selectedNameFalseGetNode.resultId(), selectedNameFalseLive.objectId()),
+                () -> assertEquals(selectedNameFalseGetNode.resultId(), selectedNameFalseCall.objectId()),
+                () -> assertEquals(1, selectedNameTrueWrites.size()),
+                () -> assertEquals(1, selectedNameFalseWrites.size()),
+                () -> assertEquals(selectedNameTrueLoad.resultId(), selectedNameTrueWrites.getFirst().sourceId()),
+                () -> assertEquals(selectedNameFalseCall.resultId(), selectedNameFalseWrites.getFirst().sourceId()),
+                () -> assertEquals(gotoTarget(selectedNameTrueBlock), gotoTarget(selectedNameFalseBlock)),
+                () -> assertEquals(selectedNameMergeSlot, requireOnlyReturnInsn(selectedNameFunction).returnValueId())
+        );
+    }
+
+    private static @NotNull FunctionLoweringContext requirePropertyInitContext(
+            @NotNull List<FunctionLoweringContext> contexts,
+            @NotNull String owningClassName,
+            @NotNull String functionName
+    ) {
+        return requireContext(contexts, FunctionLoweringContext.Kind.PROPERTY_INIT, owningClassName, functionName);
+    }
+
+    private static @NotNull CallMethodInsn requireCallNamed(
+            @NotNull LirFunctionDef function,
+            @NotNull String methodName
+    ) {
+        var matches = allInstructions(function).stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals(methodName))
+                .toList();
+        assertEquals(1, matches.size(), () -> "Expected exactly one call_method named " + methodName);
+        return matches.getFirst();
+    }
+
+    private static @NotNull LirBasicBlock requireSingleGoIfBlock(@NotNull LirFunctionDef function) {
+        var matches = new ArrayList<LirBasicBlock>();
+        for (var block : function) {
+            if (block.getTerminator() instanceof GoIfInsn) {
+                matches.add(block);
+            }
+        }
+        assertEquals(1, matches.size(), "Expected exactly one GoIf-terminated basic block");
+        return matches.getFirst();
+    }
+
+    private static @NotNull CallMethodInsn requireCallNamed(
+            @NotNull LirBasicBlock block,
+            @NotNull String methodName
+    ) {
+        var matches = block.getInstructions().stream()
+                .filter(insn -> insn instanceof CallMethodInsn call && call.methodName().equals(methodName))
+                .map(insn -> (CallMethodInsn) insn)
+                .toList();
+        assertEquals(1, matches.size(), () -> "Expected exactly one call_method named " + methodName);
+        return matches.getFirst();
+    }
+
+    private static @NotNull CallMethodInsn requireGetNodeCall(@NotNull LirBasicBlock block) {
+        return requireCallNamed(block, "get_node");
+    }
+
+    private static <T extends LirInstruction> @NotNull T requireOnlyBlockInstruction(
+            @NotNull LirBasicBlock block,
+            @NotNull Class<T> instructionType
+    ) {
+        var matches = block.getInstructions().stream()
+                .filter(instructionType::isInstance)
+                .map(instructionType::cast)
+                .toList();
+        assertEquals(1, matches.size(), () -> "Expected exactly one " + instructionType.getSimpleName());
+        return matches.getFirst();
+    }
+
+    private static @NotNull List<AssignInsn> mergeSlotWrites(
+            @NotNull LirBasicBlock block,
+            @NotNull String mergeSlotId
+    ) {
+        return block.getInstructions().stream()
+                .filter(insn -> insn instanceof AssignInsn assign && assign.resultId().equals(mergeSlotId))
+                .map(insn -> (AssignInsn) insn)
+                .toList();
+    }
+
+    private static @NotNull String gotoTarget(@NotNull LirBasicBlock block) {
+        return assertInstanceOf(GotoInsn.class, block.getTerminator()).targetBbId();
+    }
+
+    private static @NotNull List<String> literalNodePathValues(@NotNull LirBasicBlock block) {
+        return block.getInstructions().stream()
+                .filter(LiteralNodePathInsn.class::isInstance)
+                .map(LiteralNodePathInsn.class::cast)
+                .map(LiteralNodePathInsn::value)
+                .toList();
+    }
+
+    @Test
     void runPinsGetNodeReceiverToEngineNodeAboveScriptOverride() throws Exception {
         // A GDCC subclass may declare a same-signature `get_node(NodePath)`. The `$` shorthand
         // must still resolve to the ENGINE `Node.get_node` (Godot compiler parity), while the

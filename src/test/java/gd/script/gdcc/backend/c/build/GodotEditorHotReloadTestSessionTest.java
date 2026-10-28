@@ -41,6 +41,28 @@ class GodotEditorHotReloadTestSessionTest {
     }
 
     @Test
+    void prepareProjectPreloadsExtensionListAndReplacesStaleEntries() throws IOException {
+        var session = newSession();
+
+        session.prepareProject(writeLibrary("v1", "v1-bytes".getBytes()), DRIVER_SOURCE);
+
+        var extensionList = projectDir().resolve(".godot").resolve("extension_list.cfg");
+        assertTrue(Files.isRegularFile(extensionList),
+                "editor startup must find a preloaded extension list");
+        assertEquals(GodotEditorHotReloadTestSession.GDEXTENSION_RESOURCE_PATH + "\n",
+                Files.readString(extensionList),
+                "the preloaded list must contain exactly the session .gdextension resource");
+
+        // A leftover list must be rewritten, not merged: stale entries would point the
+        // editor at extensions that no longer exist in the recreated project.
+        Files.writeString(extensionList, "res://stale_a.gdextension\nres://stale_b.gdextension\n");
+        session.prepareProject(writeLibrary("v2", "v2-bytes".getBytes()), DRIVER_SOURCE);
+        assertEquals(GodotEditorHotReloadTestSession.GDEXTENSION_RESOURCE_PATH + "\n",
+                Files.readString(extensionList),
+                "re-prepare must replace stale extension entries");
+    }
+
+    @Test
     void swapLibraryPublishesNewContentUnderNewHashedNameAndRewritesMetadata() throws IOException {
         var v1 = writeLibrary("v1", "v1-bytes".getBytes());
         var session = newSession();

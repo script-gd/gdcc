@@ -1,61 +1,20 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
-import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
-import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
-import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
-import gd.script.gdcc.frontend.diagnostic.FrontendRange;
-import gd.script.gdcc.frontend.parse.FrontendModule;
-import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
-import gd.script.gdcc.frontend.parse.GdScriptParserService;
-import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
-import gd.script.gdcc.frontend.sema.FrontendBindingKind;
-import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
-import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
-import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
-import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
-import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
-import gd.script.gdcc.gdextension.ExtensionAPI;
-import gd.script.gdcc.gdextension.ExtensionApiLoader;
-import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
-import gd.script.gdcc.gdextension.ExtensionEnumValue;
-import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
-import gd.script.gdcc.gdextension.ExtensionGdClass;
-import gd.script.gdcc.scope.ClassRegistry;
-import gd.script.gdcc.scope.PropertyDef;
-import gd.script.gdcc.scope.ScopeOwnerKind;
-import gd.script.gdcc.type.GdCallableType;
-import gd.script.gdcc.type.GdObjectType;
-import gd.script.gdcc.type.GdType;
-import gd.script.gdcc.type.GdVariantType;
-import dev.superice.gdparser.frontend.ast.AttributeExpression;
-import dev.superice.gdparser.frontend.ast.AttributeCallStep;
-import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
-import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
-import dev.superice.gdparser.frontend.ast.CallExpression;
-import dev.superice.gdparser.frontend.ast.ExpressionStatement;
-import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
-import dev.superice.gdparser.frontend.ast.GetNodeExpression;
-import dev.superice.gdparser.frontend.ast.IdentifierExpression;
-import dev.superice.gdparser.frontend.ast.Node;
-import dev.superice.gdparser.frontend.ast.VariableDeclaration;
-import org.jetbrains.annotations.NotNull;
-import org.junit.jupiter.api.Test;
-
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.function.Predicate;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.jetbrains.annotations.NotNull;
+import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+
+import dev.superice.gdparser.frontend.ast.*;
+import gd.script.gdcc.frontend.diagnostic.*;
+import gd.script.gdcc.frontend.parse.*;
+import gd.script.gdcc.frontend.sema.*;
+import gd.script.gdcc.gdextension.*;
+import gd.script.gdcc.scope.*;
+import gd.script.gdcc.type.*;
 
 class FrontendBodyOwnerProceduresChainBindingTest {
     @Test
@@ -1058,6 +1017,292 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         assertFalse(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("helper")));
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeResolvesOnreadySuffixMembersAcrossExplicitReceiverRoutes() throws Exception {
+        var analyzed = analyze(
+                "property_initializer_onready_suffix_routes.gd",
+                """
+                        class_name PropertyInitializerOnreadySuffixRoutes
+                        extends Node
+                        
+                        var payload: int = 1
+                        
+                        static func build() -> PropertyInitializerOnreadySuffixRoutes:
+                            return null
+                        
+                        @onready var child_name: StringName = $Child.name
+                        @onready var unique_name: StringName = %Unique.get_name()
+                        @onready var get_name_callable: Callable = $Child.get_name
+                        @onready var renamed_signal: Signal = $Child.renamed
+                        @onready var helper_result := build().payload
+                        @onready var ctor_name: StringName = Node.new().name
+                        @onready var cast_name: StringName = ($Child as Node).name
+                        @onready var conditional_name: StringName = $Child.name if true else %Unique.get_name()
+                        @onready var parent_name: StringName = $Child.get_parent().get_name()
+                        """
+        );
+
+        // Inside an eligible @onready island the get-node leaf resolves to Node and explicit
+        // expression receivers release the four suffix routes, even though the member owners
+        // (Node.name / get_name / renamed and the declaring class's payload) belong to the
+        // current instance hierarchy.
+        var getNodeExpressions = findNodes(analyzed.unit().ast(), GetNodeExpression.class, ignored -> true);
+        assertEquals(8, getNodeExpressions.size());
+        for (var getNodeExpression : getNodeExpressions) {
+            var headType = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+            assertNotNull(headType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, headType.status());
+            assertEquals(new GdObjectType("Node"), headType.publishedType());
+        }
+
+        var childNameDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("child_name")
+        );
+        var uniqueNameDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("unique_name")
+        );
+        var getNameCallableDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("get_name_callable")
+        );
+        var renamedSignalDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("renamed_signal")
+        );
+        var helperResultDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("helper_result")
+        );
+        var castNameDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("cast_name")
+        );
+        var ctorNameDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("ctor_name")
+        );
+        var conditionalNameDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("conditional_name")
+        );
+        var parentNameDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("parent_name")
+        );
+        var nameStep = findNode(childNameDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("name"));
+        var getNameCallStep = findNode(uniqueNameDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("get_name"));
+        var getNameReferenceStep = findNode(getNameCallableDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("get_name"));
+        var renamedStep = findNode(renamedSignalDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("renamed"));
+        var payloadStep = findNode(helperResultDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
+        var ctorNewStep = findNode(ctorNameDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("new"));
+        var ctorNameStep = findNode(ctorNameDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("name"));
+        var castNameStep = findNode(castNameDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("name"));
+        var conditionalNameStep = findNode(conditionalNameDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("name"));
+        var conditionalGetNameCallStep = findNode(conditionalNameDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("get_name"));
+        var getParentCallStep = findNode(parentNameDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("get_parent"));
+        var parentGetNameCallStep = findNode(parentNameDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("get_name"));
+
+        var resolvedName = analyzed.analysisData().resolvedMembers().get(nameStep);
+        assertNotNull(resolvedName);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedName.status());
+        assertEquals(FrontendBindingKind.PROPERTY, resolvedName.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedName.receiverKind());
+        assertEquals("StringName", resolvedName.resultType().getTypeName());
+
+        var resolvedRenamed = analyzed.analysisData().resolvedMembers().get(renamedStep);
+        assertNotNull(resolvedRenamed);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedRenamed.status());
+        assertEquals(FrontendBindingKind.SIGNAL, resolvedRenamed.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedRenamed.receiverKind());
+        assertInstanceOf(GdSignalType.class, resolvedRenamed.resultType());
+
+        var resolvedGetNameReference = analyzed.analysisData().resolvedMembers().get(getNameReferenceStep);
+        assertNotNull(resolvedGetNameReference);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedGetNameReference.status());
+        assertEquals(FrontendBindingKind.METHOD, resolvedGetNameReference.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedGetNameReference.receiverKind());
+        assertInstanceOf(GdCallableType.class, resolvedGetNameReference.resultType());
+
+        var resolvedGetNameCall = analyzed.analysisData().resolvedCalls().get(getNameCallStep);
+        assertNotNull(resolvedGetNameCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedGetNameCall.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedGetNameCall.callKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedGetNameCall.receiverKind());
+        assertEquals("StringName", resolvedGetNameCall.returnType().getTypeName());
+
+        // The static helper call result is an explicit expression receiver too: `.payload`
+        // resolves although the declaring class itself is the member owner.
+        var resolvedPayload = analyzed.analysisData().resolvedMembers().get(payloadStep);
+        assertNotNull(resolvedPayload);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedPayload.status());
+        assertEquals(FrontendBindingKind.PROPERTY, resolvedPayload.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedPayload.receiverKind());
+        assertEquals("int", resolvedPayload.resultType().getTypeName());
+
+        // A constructed object is likewise an explicit expression receiver: the constructor
+        // call resolves first, then `.name` resolves on its Node result.
+        var resolvedCtorNew = analyzed.analysisData().resolvedCalls().get(ctorNewStep);
+        assertNotNull(resolvedCtorNew);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCtorNew.status());
+        assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedCtorNew.callKind());
+        var resolvedCtorName = analyzed.analysisData().resolvedMembers().get(ctorNameStep);
+        assertNotNull(resolvedCtorName);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedCtorName.status());
+        assertEquals(FrontendBindingKind.PROPERTY, resolvedCtorName.bindingKind());
+        assertEquals("StringName", resolvedCtorName.resultType().getTypeName());
+
+        var resolvedCastName = analyzed.analysisData().resolvedMembers().get(castNameStep);
+        assertNotNull(resolvedCastName);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedCastName.status());
+        assertEquals(FrontendBindingKind.PROPERTY, resolvedCastName.bindingKind());
+        assertEquals("StringName", resolvedCastName.resultType().getTypeName());
+
+        var resolvedConditionalName = analyzed.analysisData().resolvedMembers().get(conditionalNameStep);
+        assertNotNull(resolvedConditionalName);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedConditionalName.status());
+        var resolvedConditionalGetNameCall = analyzed.analysisData().resolvedCalls().get(conditionalGetNameCallStep);
+        assertNotNull(resolvedConditionalGetNameCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedConditionalGetNameCall.status());
+
+        var resolvedGetParentCall = analyzed.analysisData().resolvedCalls().get(getParentCallStep);
+        assertNotNull(resolvedGetParentCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedGetParentCall.status());
+        assertEquals("Node", resolvedGetParentCall.returnType().getTypeName());
+        var resolvedParentGetNameCall = analyzed.analysisData().resolvedCalls().get(parentGetNameCallStep);
+        assertNotNull(resolvedParentGetNameCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedParentGetNameCall.status());
+        assertEquals("StringName", resolvedParentGetNameCall.returnType().getTypeName());
+
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+    }
+
+    @Test
+    void analyzeKeepsSuffixBoundariesSealedInsideIneligibleOnreadyIslands() throws Exception {
+        // A static or non-Node `@onready` declaration is not a ready-time island: the suffix
+        // owner boundary keeps sealing the same explicit-receiver chain that the eligible
+        // island releases, while the annotation usage owner reports the placement error.
+        var nonNodeAnalyzed = analyze(
+                "property_initializer_onready_suffix_non_node.gd",
+                """
+                        class_name PropertyInitializerOnreadySuffixNonNode
+                        extends RefCounted
+                        
+                        var payload: int = 1
+                        
+                        static func build() -> PropertyInitializerOnreadySuffixNonNode:
+                            return null
+                        
+                        @onready var leaked := build().payload
+                        """
+        );
+        var nonNodePayloadStep = findNode(
+                nonNodeAnalyzed.unit().ast(),
+                AttributePropertyStep.class,
+                step -> step.name().equals("payload")
+        );
+        var nonNodePayload = nonNodeAnalyzed.analysisData().resolvedMembers().get(nonNodePayloadStep);
+        assertNotNull(nonNodePayload);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, nonNodePayload.status());
+        assertTrue(diagnosticsByCategory(nonNodeAnalyzed.analysisData(), "sema.unsupported_chain_route").stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("payload")));
+        assertTrue(diagnosticsByCategory(nonNodeAnalyzed.analysisData(), "sema.annotation_usage").stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("inherits from Node")));
+
+        var staticAnalyzed = analyze(
+                "property_initializer_onready_suffix_static.gd",
+                """
+                        class_name PropertyInitializerOnreadySuffixStatic
+                        extends Node
+                        
+                        var payload: int = 1
+                        
+                        static func build() -> PropertyInitializerOnreadySuffixStatic:
+                            return null
+                        
+                        @onready static var leaked := build().payload
+                        """
+        );
+        var staticPayloadStep = findNode(
+                staticAnalyzed.unit().ast(),
+                AttributePropertyStep.class,
+                step -> step.name().equals("payload")
+        );
+        var staticPayload = staticAnalyzed.analysisData().resolvedMembers().get(staticPayloadStep);
+        assertNotNull(staticPayload);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, staticPayload.status());
+        assertTrue(diagnosticsByCategory(staticAnalyzed.analysisData(), "sema.unsupported_chain_route").stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("payload")));
+        assertTrue(diagnosticsByCategory(staticAnalyzed.analysisData(), "sema.annotation_usage").stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("static property 'leaked'")));
+    }
+
+    @Test
+    void analyzeFailsMissingMembersOnOnreadyExplicitReceiver() throws Exception {
+        var analyzed = analyze(
+                "property_initializer_onready_missing_member.gd",
+                """
+                        class_name PropertyInitializerOnreadyMissingMember
+                        extends Node
+                        
+                        @onready var missing_prop = $Child.does_not_exist
+                        @onready var missing_call = $Child.missing_method()
+                        """
+        );
+
+        // Releasing the owner boundary does not waive ordinary resolution: a property miss on
+        // the explicit get-node receiver still fails through the member-resolution owner, and
+        // a method miss takes the same dynamic fallback as inside bodies — neither is swept
+        // under the ready-time release.
+        var missingPropDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("missing_prop")
+        );
+        var missingCallDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("missing_call")
+        );
+        for (var getNodeExpression : findNodes(analyzed.unit().ast(), GetNodeExpression.class, ignored -> true)) {
+            var headType = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+            assertNotNull(headType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, headType.status());
+        }
+
+        var missingStep = findNode(missingPropDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("does_not_exist"));
+        var missingMember = analyzed.analysisData().resolvedMembers().get(missingStep);
+        assertNotNull(missingMember);
+        assertEquals(FrontendMemberResolutionStatus.FAILED, missingMember.status());
+        var memberDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution");
+        assertEquals(1, memberDiagnostics.size());
+        assertTrue(memberDiagnostics.getFirst().message().contains("does_not_exist"));
+
+        // A missing instance method is not a static failure anywhere: the ordinary resolver
+        // falls back to runtime-dynamic dispatch here exactly as it does inside bodies.
+        var missingCallStep = findNode(missingCallDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("missing_method"));
+        var missingCall = analyzed.analysisData().resolvedCalls().get(missingCallStep);
+        assertNotNull(missingCall);
+        assertEquals(FrontendCallResolutionStatus.DYNAMIC, missingCall.status());
+
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
     }
 
     @Test

@@ -26,20 +26,35 @@ class EditorAddonDiagnosticsFixtureTest {
             extends "res://diag_base.gd"
             """;
 
-    /// `@onready var camera = $Camera3D` is the GDScript-idiomatic form the LSP itself
-    /// recommends (so the LSP stays silent), while the gdcc compile-only gate still blocks
-    /// the deferred get-node expression. The gate runs exclusively under
-    /// `includeLowering=true`; the deferred expression also produces a WARNING, so this
-    /// fixture exercises both the errors[] and the warnings[] mapping.
+    /// An explicitly typed plain get-node initializer (`var camera: Node = $Camera3D`)
+    /// stays a deferred expression under gdcc, so the compile-only gate still blocks it
+    /// while the code is valid GDScript. The `@warning_ignore_start`/`@warning_ignore_restore`
+    /// region pair keeps Godot's own analyzer silent on the non-`@onready` get-node default;
+    /// gdcc ignores region annotations entirely, so the fixture isolates the gdcc
+    /// diagnostics. The gate runs exclusively under `includeLowering=true`; the deferred
+    /// expression also produces a WARNING, so this fixture exercises both the errors[]
+    /// and the warnings[] mapping.
     static final String LOWERING_SOURCE = """
             class_name DiagLowering
             extends Node
 
-            @onready var camera = $Camera3D
+            @warning_ignore_start("get_node_default_without_onready")
+            var camera: Node = $Camera3D
+            @warning_ignore_restore("get_node_default_without_onready")
+            """;
+
+    /// The explicitly typed `@onready` form is the supported counterpart: the same
+    /// get-node initializer lowers cleanly, so the positive case must stay silent.
+    static final String ONREADY_TYPED_SOURCE = """
+            class_name DiagOnreadyTyped
+            extends Node
+
+            @onready var camera: Node = $Camera3D
             """;
 
     static final String PATH_EXTENDS_DISPLAY = "res://diag_path_child.gd3";
     static final String LOWERING_DISPLAY = "res://diag_lowering.gd3";
+    static final String ONREADY_TYPED_DISPLAY = "res://diag_onready_typed.gd3";
 
     private static AnalysisResult analyzeSingle(String displayPath, String source, boolean includeLowering) {
         var api = ApiCompileTestSupport.newApi(ApiCompileTestSupport.RecordingCompiler.succeeding());
@@ -88,17 +103,17 @@ class EditorAddonDiagnosticsFixtureTest {
         var result = analyzeSingle(LOWERING_DISPLAY, LOWERING_SOURCE, true);
 
         assertEquals(AnalysisResult.Outcome.COMPLETED, result.outcome());
-        // Exactly two diagnostics on the same anchor (line 4, column 23): the
+        // Exactly two diagnostics on the same anchor (line 5, column 20): the
         // deferred-resolution WARNING and the compile-only ERROR.
         assertEquals(2, diagnosticsFor(result, LOWERING_DISPLAY).size());
         var error = singleDiagnostic(
                 result, LOWERING_DISPLAY, FrontendDiagnosticSeverity.ERROR, "sema.compile_check");
         assertTrue(error.message().contains("Get-node expression"), error.message());
-        assertEquals(4, error.range().start().line());
-        assertEquals(23, error.range().start().column());
+        assertEquals(5, error.range().start().line());
+        assertEquals(20, error.range().start().column());
         var warning = singleDiagnostic(result, LOWERING_DISPLAY,
                 FrontendDiagnosticSeverity.WARNING, "sema.deferred_expression_resolution");
-        assertEquals(4, warning.range().start().line());
+        assertEquals(5, warning.range().start().line());
         assertEquals(error.range(), warning.range());
         assertEquals(AnalysisResult.LoweringStatus.FAILED, result.loweringStatus());
 
@@ -106,6 +121,20 @@ class EditorAddonDiagnosticsFixtureTest {
         var withoutLowering = analyzeSingle(LOWERING_DISPLAY, LOWERING_SOURCE, false);
         assertTrue(diagnosticsFor(withoutLowering, LOWERING_DISPLAY).stream()
                 .noneMatch(entry -> entry.category().equals("sema.compile_check")));
+    }
+
+    @Test
+    void typedOnreadyInitializerLowersCleanly() {
+        // Positive counterpart of the lowering fixture: the same get-node initializer
+        // under an explicitly typed `@onready` is supported end to end, so no deferred
+        // warning and no compile-check error may surface.
+        var result = analyzeSingle(ONREADY_TYPED_DISPLAY, ONREADY_TYPED_SOURCE, true);
+
+        assertEquals(AnalysisResult.Outcome.COMPLETED, result.outcome());
+        assertEquals(AnalysisResult.LoweringStatus.SUCCEEDED, result.loweringStatus());
+        var diagnostics = diagnosticsFor(result, ONREADY_TYPED_DISPLAY);
+        assertTrue(diagnostics.isEmpty(),
+                () -> "typed @onready get-node must not produce diagnostics: " + diagnostics);
     }
 
     @Test

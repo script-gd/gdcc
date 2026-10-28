@@ -22,7 +22,7 @@
 - 关联文档：
   - `doc/module_impl/frontend/frontend_type_check_analyzer_implementation.md`（§5 `@onready` usage contract）
   - `doc/module_impl/frontend/frontend_property_init_lowering_implementation.md`（apply 双入口合同）
-  - `doc/module_impl/frontend/frontend_node_literal_implementation.md`（`$`/`%` DEFERRED 边界）
+  - `doc/module_impl/frontend/frontend_node_literal_implementation.md`（`$`/`%` 支持面与 DEFERRED 边界）
   - `doc/module_impl/frontend/frontend_engine_virtual_override_implementation.md`
   - `doc/module_impl/backend/cbodybuilder_implementation.md`
   - `doc/module_impl/backend/virtual_override_vtable_implementation.md`（`_ready` 虚拟分发接入）
@@ -238,15 +238,14 @@ if ((<根段 flags 访问> & GDCC_FLAG_CTOR_COMPLETE) == 0) {
 ### 8.1 边界
 
 - 跨模块 GDCC 父类的 onready 链不支持（与 vtable 跨模块限制同级）；父类为 engine 类时链递归终止。
-- `$`/`%` node literal 在 property initializer / onready initializer 中的 compile gate 未解除，`@onready var c = $Child` 尚不可编译；onready initializer 可书写的表达式支持面等于当前 property-init 支持面。
+- 合法 `@onready` initializer 中的 `$`/`%` node literal 及显式表达式 receiver 实例成员后缀已 compile-ready（见 `frontend_node_literal_implementation.md`）；普通 / `static` property initializer、parameter default、direct `self` 与隐式 self 裸成员边界不变。
 - `is_node_ready()` 在 onready initializer 执行期间为 `true`（以引擎为准，gdcc 不做额外承诺）。
 - library-aware 类名查询必须取得本库对应的 GDCC wrapper 类名；该行为需真实 Godot 环境验收，不能假设脚本 `class_name`、动态方法返回值或任意祖先名可替代。未知扩展后代与跨模块链 fail-closed，不回退父类假装支持。
 
 ### 8.2 后续工作（另行立项，不在本实现范围）
 
 - 混合 GDCC/GDScript 继承的完整 onready 对齐（需统一 engine virtual、ClassDB 按名入口与 ScriptInstance ready 生命周期）。
-- 解除 `@onready` initializer 中 `$`/`%` 的 compile gate（需与 `frontend_node_literal_implementation.md` DEFERRED 边界协调）。
-- 视需要放宽 onready initializer 对同类实例成员/`self` 的访问限制。
+- 视需要放宽 onready initializer 对 direct `self` / 隐式 self 裸成员的访问限制（合法岛内显式表达式 receiver 的实例成员后缀已放行，见 `frontend_node_literal_implementation.md`）。
 - `@onready` + `@export` 的 `ONREADY_WITH_EXPORT` 诊断对齐。
 
 ## 9. 回归测试基线

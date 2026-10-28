@@ -1,48 +1,21 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
-import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
-import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
-import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
-import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
-import gd.script.gdcc.frontend.parse.FrontendModule;
-import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
-import gd.script.gdcc.frontend.parse.GdScriptParserService;
-import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
-import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
-import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
-import gd.script.gdcc.frontend.sema.FrontendForIterationRoute;
-import gd.script.gdcc.gdextension.ExtensionApiLoader;
-import gd.script.gdcc.scope.ClassDef;
-import gd.script.gdcc.scope.ClassRegistry;
-import gd.script.gdcc.scope.PropertyDef;
-import gd.script.gdcc.scope.ResolveRestriction;
-import gd.script.gdcc.type.GdccForRangeIterType;
-import gd.script.gdcc.type.GdIntType;
-import gd.script.gdcc.type.GdVariantType;
-import gd.script.gdcc.type.GdVoidType;
-import dev.superice.gdparser.frontend.ast.AssignmentExpression;
-import dev.superice.gdparser.frontend.ast.ForStatement;
-import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
-import dev.superice.gdparser.frontend.ast.IfStatement;
-import dev.superice.gdparser.frontend.ast.Node;
-import dev.superice.gdparser.frontend.ast.Statement;
-import dev.superice.gdparser.frontend.ast.VariableDeclaration;
-import gd.script.gdcc.frontend.sema.FrontendExpressionType;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
-import org.junit.jupiter.api.Test;
-
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 import java.util.function.Predicate;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+
+import dev.superice.gdparser.frontend.ast.*;
+import gd.script.gdcc.frontend.diagnostic.*;
+import gd.script.gdcc.frontend.parse.*;
+import gd.script.gdcc.frontend.sema.*;
+import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.scope.*;
+import gd.script.gdcc.type.*;
 
 class FrontendTypeCheckAnalyzerTest {
     @Test
@@ -904,6 +877,60 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "skipped_blocked").getType());
         assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "skipped_failed_hint").getType());
         assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "skipped_deferred_hint").getType());
+    }
+
+    @Test
+    void analyzeChecksOnreadyGetNodeInitializerAgainstDeclaredSlotType() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_onready_get_node.gd", """
+                class_name TypeCheckOnreadyGetNode
+                extends Node
+                
+                @onready var child: Node = $Child
+                @onready var holder: Object = $Child
+                @onready var camera: Camera3D = $Camera
+                @onready var camera_cast: Camera3D = $Camera as Camera3D
+                @onready var inferred = $Child
+                @onready var inferred_typed := $Child
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        for (var name : List.of("child", "holder", "camera", "camera_cast", "inferred", "inferred_typed")) {
+            assertEquals(
+                    FrontendExpressionTypeStatus.RESOLVED,
+                    requireInitializerType(preparedInput.unit().ast(), name, preparedInput).status(),
+                    name
+            );
+        }
+
+        var diagnostics = preparedInput.diagnosticManager().snapshot();
+        // The stable `Node` fact now reaches slot compatibility: an `Object` slot accepts it
+        // as an ordinary upcast, assigning it to a `Camera3D` slot is an ordinary type error
+        // with no path-based downcast, while the explicit `as Camera3D` form stays clean.
+        var typeCheckDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_check");
+        assertEquals(1, typeCheckDiagnostics.size());
+        var typeCheckDiagnostic = typeCheckDiagnostics.getFirst();
+        assertEquals(FrontendDiagnosticSeverity.ERROR, typeCheckDiagnostic.severity());
+        assertTrue(typeCheckDiagnostic.message().contains("camera"));
+        assertTrue(typeCheckDiagnostic.message().contains("Node"));
+        assertTrue(typeCheckDiagnostic.message().contains("Camera3D"));
+
+        var typeHintDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_hint");
+        assertEquals(2, typeHintDiagnostics.size());
+        assertTrue(typeHintDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("'inferred'") && diagnostic.message().contains(": Node")
+        ));
+        assertTrue(typeHintDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("'inferred_typed'") && diagnostic.message().contains(": Node")
+        ));
+
+        var topLevelClass = preparedInput.analysisData().moduleSkeleton().sourceClassRelations().getFirst().classDef();
+        assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "inferred").getType());
+        assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "inferred_typed").getType());
     }
 
     /// Static `:=` follows the instance-property contract exactly: no inference, `Variant`

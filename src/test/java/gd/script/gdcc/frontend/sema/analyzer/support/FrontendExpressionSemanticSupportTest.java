@@ -1,94 +1,27 @@
 package gd.script.gdcc.frontend.sema.analyzer.support;
 
-import gd.script.gdcc.frontend.scope.BlockScope;
-import gd.script.gdcc.frontend.scope.BlockScopeKind;
-import gd.script.gdcc.frontend.scope.CallableScope;
-import gd.script.gdcc.frontend.scope.CallableScopeKind;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.function.Predicate;
+
+import org.jetbrains.annotations.NotNull;
+import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+
+import dev.superice.gdparser.frontend.ast.*;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
-import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
-import gd.script.gdcc.frontend.sema.FrontendBinding;
-import gd.script.gdcc.frontend.sema.FrontendBindingKind;
-import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
-import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
-import gd.script.gdcc.frontend.sema.FrontendExpressionType;
-import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
-import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
-import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
-import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
-import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
-import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
+import gd.script.gdcc.frontend.scope.*;
+import gd.script.gdcc.frontend.sema.*;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticSupport.NestedExpressionResolver;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
-import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
-import gd.script.gdcc.lir.LirClassDef;
-import gd.script.gdcc.lir.LirFunctionDef;
-import gd.script.gdcc.lir.LirParameterDef;
-import gd.script.gdcc.scope.ClassRegistry;
-import gd.script.gdcc.scope.ResolveRestriction;
-import gd.script.gdcc.scope.ScopeLookupStatus;
-import gd.script.gdcc.type.GdArrayType;
-import gd.script.gdcc.type.GdBoolType;
-import gd.script.gdcc.type.GdCallableType;
-import gd.script.gdcc.type.GdDictionaryType;
-import gd.script.gdcc.type.GdFloatType;
-import gd.script.gdcc.type.GdFloatVectorType;
-import gd.script.gdcc.type.GdIntType;
-import gd.script.gdcc.type.GdIntVectorType;
-import gd.script.gdcc.type.GdNilType;
-import gd.script.gdcc.type.GdObjectType;
-import gd.script.gdcc.type.GdPackedStringArrayType;
-import gd.script.gdcc.type.GdSignalType;
-import gd.script.gdcc.type.GdStringNameType;
-import gd.script.gdcc.type.GdStringType;
-import gd.script.gdcc.type.GdVariantType;
-import gd.script.gdcc.type.GdVoidType;
-import dev.superice.gdparser.frontend.ast.ArrayExpression;
-import dev.superice.gdparser.frontend.ast.AwaitExpression;
-import dev.superice.gdparser.frontend.ast.BinaryExpression;
-import dev.superice.gdparser.frontend.ast.CallExpression;
-import dev.superice.gdparser.frontend.ast.CastExpression;
-import dev.superice.gdparser.frontend.ast.ConditionalExpression;
-import dev.superice.gdparser.frontend.ast.DictEntry;
-import dev.superice.gdparser.frontend.ast.DictionaryExpression;
-import dev.superice.gdparser.frontend.ast.Expression;
-import dev.superice.gdparser.frontend.ast.ExpressionStatement;
-import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
-import dev.superice.gdparser.frontend.ast.GetNodeExpression;
-import dev.superice.gdparser.frontend.ast.IdentifierExpression;
-import dev.superice.gdparser.frontend.ast.Node;
-import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
-import dev.superice.gdparser.frontend.ast.Point;
-import dev.superice.gdparser.frontend.ast.PreloadExpression;
-import dev.superice.gdparser.frontend.ast.Range;
-import dev.superice.gdparser.frontend.ast.SubscriptExpression;
-import dev.superice.gdparser.frontend.ast.TypeRef;
-import dev.superice.gdparser.frontend.ast.TypeTestExpression;
-import dev.superice.gdparser.frontend.ast.UnaryExpression;
-import dev.superice.gdparser.frontend.ast.UnknownExpression;
-import gd.script.gdcc.type.GdType;
-import org.jetbrains.annotations.NotNull;
-import org.junit.jupiter.api.Test;
-
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
-import java.util.function.Predicate;
-
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import gd.script.gdcc.lir.*;
+import gd.script.gdcc.scope.*;
+import gd.script.gdcc.type.*;
 
 class FrontendExpressionSemanticSupportTest {
     private static final @NotNull Range TINY = new Range(0, 1, new Point(0, 0), new Point(0, 1));
@@ -1929,6 +1862,283 @@ class FrontendExpressionSemanticSupportTest {
                 .toList();
         assertEquals(1, deferredWarnings.size());
         assertTrue(deferredWarnings.getFirst().message().contains("property initializers"));
+    }
+
+    @Test
+    void analyzeResolvesGetNodeLeafsInsideOnreadyPropertyInitializer() throws Exception {
+        var analyzed = analyze(
+                "get_node_sema_onready_init.gd",
+                """
+                        class_name GetNodeSemaOnreadyInit
+                        extends Node
+                        
+                        @onready var child: Node = $Child
+                        @onready var nested: Node = $Branch/Leaf
+                        @onready var spaced: Node = $"Name With Space"
+                        @onready var unique: Node = %Unique
+                        @onready var unique_spaced: Node = %"Unique Name"
+                        @onready var candidates: Array[Node] = [$Child, %Unique]
+                        @onready var selected: Node = $Child if true else %Unique
+                        @onready var camera: Camera3D = $Camera as Camera3D
+                        """
+        );
+
+        // Ready-time initializers run after the node enters the scene tree, so every get-node
+        // leaf resolves to the fixed `Node` static type — including inside container elements,
+        // conditional arms, and cast operands.
+        var getNodeExpressions = findNodes(analyzed.ast(), GetNodeExpression.class, ignored -> true);
+        assertEquals(10, getNodeExpressions.size());
+        for (var getNodeExpression : getNodeExpressions) {
+            var published = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+            assertNotNull(published);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, published.status());
+            assertEquals(new GdObjectType("Node"), published.publishedType());
+        }
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+        assertTrue(analyzed.analysisData().diagnostics().asList().stream()
+                .noneMatch(diagnostic -> diagnostic.category().equals("sema.deferred_expression_resolution")));
+        // Get-node never publishes into the resolved-call key space (preload precedent), inside
+        // ready-time initializers either: lowering still desugars to `self.get_node(NodePath)`.
+        assertTrue(analyzed.analysisData().resolvedCalls().isEmpty());
+    }
+
+    @Test
+    void analyzeDefersGetNodeInsideStaticAndNonNodeOnreadyInitializers() throws Exception {
+        var staticAnalyzed = analyze(
+                "get_node_sema_static_onready.gd",
+                """
+                        class_name GetNodeSemaStaticOnready
+                        extends Node
+                        
+                        @onready static var child: Node = $Child
+                        """
+        );
+
+        // A static `@onready` stays outside the ready-time island: the leaf keeps the ordinary
+        // property-initializer deferral while the usage analyzer owns the placement error.
+        var staticGetNode = findNode(staticAnalyzed.ast(), GetNodeExpression.class, ignored -> true);
+        var staticPublished = staticAnalyzed.analysisData().expressionTypes().get(staticGetNode);
+        assertNotNull(staticPublished);
+        assertEquals(FrontendExpressionTypeStatus.DEFERRED, staticPublished.status());
+        var staticDeferred = staticAnalyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.deferred_expression_resolution"))
+                .toList();
+        assertEquals(1, staticDeferred.size());
+        assertTrue(staticAnalyzed.analysisData().diagnostics().asList().stream()
+                .anyMatch(diagnostic -> diagnostic.category().equals("sema.annotation_usage")
+                        && diagnostic.message().contains("static property 'child'")));
+
+        var nonNodeAnalyzed = analyze(
+                "get_node_sema_non_node_onready.gd",
+                """
+                        class_name GetNodeSemaNonNodeOnready
+                        extends RefCounted
+                        
+                        @onready var child: Node = $Child
+                        """
+        );
+
+        var nonNodeGetNode = findNode(nonNodeAnalyzed.ast(), GetNodeExpression.class, ignored -> true);
+        var nonNodePublished = nonNodeAnalyzed.analysisData().expressionTypes().get(nonNodeGetNode);
+        assertNotNull(nonNodePublished);
+        assertEquals(FrontendExpressionTypeStatus.DEFERRED, nonNodePublished.status());
+        var nonNodeDeferred = nonNodeAnalyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.deferred_expression_resolution"))
+                .toList();
+        assertEquals(1, nonNodeDeferred.size());
+        assertTrue(nonNodeAnalyzed.analysisData().diagnostics().asList().stream()
+                .anyMatch(diagnostic -> diagnostic.category().equals("sema.annotation_usage")
+                        && diagnostic.message().contains("inherits from Node")));
+    }
+
+    @Test
+    void analyzeResolvesOnreadyGetNodeFromDeclaringClassInsideInnerClass() throws Exception {
+        var resolved = analyze(
+                "get_node_sema_onready_inner_node.gd",
+                """
+                        class_name GetNodeSemaOnreadyInnerNode
+                        extends RefCounted
+                        
+                        class Probe extends Node:
+                            @onready var child: Node = $Child
+                        """
+        );
+
+        // Eligibility reads the initializer's declaring class, not the file-level owner: a
+        // RefCounted top-level class does not disqualify the Node-derived inner class.
+        var resolvedGetNode = findNode(resolved.ast(), GetNodeExpression.class, ignored -> true);
+        var resolvedPublished = resolved.analysisData().expressionTypes().get(resolvedGetNode);
+        assertNotNull(resolvedPublished);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, resolvedPublished.status());
+        assertEquals(new GdObjectType("Node"), resolvedPublished.publishedType());
+        assertFalse(resolved.analysisData().diagnostics().hasErrors());
+
+        var deferred = analyze(
+                "get_node_sema_onready_inner_non_node.gd",
+                """
+                        class_name GetNodeSemaOnreadyInnerNonNode
+                        extends Node
+                        
+                        class Probe extends RefCounted:
+                            @onready var child: Node = $Child
+                        """
+        );
+
+        var deferredGetNode = findNode(deferred.ast(), GetNodeExpression.class, ignored -> true);
+        var deferredPublished = deferred.analysisData().expressionTypes().get(deferredGetNode);
+        assertNotNull(deferredPublished);
+        assertEquals(FrontendExpressionTypeStatus.DEFERRED, deferredPublished.status());
+        var deferredWarnings = deferred.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.deferred_expression_resolution"))
+                .toList();
+        assertEquals(1, deferredWarnings.size());
+        assertTrue(deferred.analysisData().diagnostics().asList().stream()
+                .anyMatch(diagnostic -> diagnostic.category().equals("sema.annotation_usage")
+                        && diagnostic.message().contains("inherits from Node")));
+    }
+
+    @Test
+    void analyzeResolvesDuplicateOnreadyGetNodeLeafWhileUsageKeepsDuplicateError() throws Exception {
+        var analyzed = analyze(
+                "get_node_sema_duplicate_onready.gd",
+                """
+                        class_name GetNodeSemaDuplicateOnready
+                        extends Node
+                        
+                        @onready
+                        @onready var child: Node = $Child
+                        """
+        );
+
+        // The ready-time capability check only asks for one syntactically intact `@onready`
+        // marker; the duplicate-annotation diagnostic stays with the usage analyzer.
+        var getNodeExpression = findNode(analyzed.ast(), GetNodeExpression.class, ignored -> true);
+        var published = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+        assertNotNull(published);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, published.status());
+        assertTrue(analyzed.analysisData().diagnostics().asList().stream()
+                .anyMatch(diagnostic -> diagnostic.category().equals("sema.annotation_usage")
+                        && diagnostic.message().contains("can only be used once")));
+        assertTrue(analyzed.analysisData().diagnostics().asList().stream()
+                .noneMatch(diagnostic -> diagnostic.category().equals("sema.deferred_expression_resolution")));
+    }
+
+    @Test
+    void analyzeDefersGetNodeLeafBehindDamagedOnreadyAnnotation() throws Exception {
+        var analyzed = analyze(
+                "get_node_sema_damaged_onready.gd",
+                """
+                        class_name GetNodeSemaDamagedOnready
+                        extends Node
+                        
+                        @onready(= 3)
+                        var child: Node = $Child
+                        @onready
+                        var sibling: Node = $Sibling
+                        """
+        );
+
+        // The parser owns the damaged argument list and marks the annotation statement as a
+        // skipped subtree root; the surviving projection must not grant the ready-time
+        // capability, so this leaf stays deferred while the intact sibling resolves.
+        var childDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                candidate -> candidate.name().equals("child")
+        );
+        var childAnnotations = analyzed.analysisData().annotationsByAst().get(childDeclaration);
+        assertNotNull(childAnnotations);
+        assertEquals(1, childAnnotations.size());
+        var childAnnotation = childAnnotations.getFirst();
+        assertEquals("onready", childAnnotation.name());
+        assertNotNull(childAnnotation.sourceStatement());
+        assertTrue(analyzed.analysisData().skippedSubtreeRoots().containsKey(childAnnotation.sourceStatement()));
+
+        var childGetNode = findNode(childDeclaration.value(), GetNodeExpression.class, ignored -> true);
+        var childPublished = analyzed.analysisData().expressionTypes().get(childGetNode);
+        assertNotNull(childPublished);
+        assertEquals(FrontendExpressionTypeStatus.DEFERRED, childPublished.status());
+
+        var siblingDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                candidate -> candidate.name().equals("sibling")
+        );
+        var siblingGetNode = findNode(siblingDeclaration.value(), GetNodeExpression.class, ignored -> true);
+        var siblingPublished = analyzed.analysisData().expressionTypes().get(siblingGetNode);
+        assertNotNull(siblingPublished);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, siblingPublished.status());
+
+        var diagnostics = analyzed.analysisData().diagnostics().asList();
+        assertTrue(diagnostics.stream().anyMatch(diagnostic -> diagnostic.category().startsWith("parse.")));
+        assertTrue(diagnostics.stream().noneMatch(diagnostic -> diagnostic.category().equals("sema.annotation_usage")));
+        assertEquals(1, diagnostics.stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.deferred_expression_resolution"))
+                .count());
+    }
+
+    @Test
+    void analyzeResolvesGetNodeLeafBehindIndirectNodeBase() throws Exception {
+        var analyzed = analyze(
+                "get_node_sema_indirect_node_base.gd",
+                """
+                        class_name GetNodeSemaIndirectNodeBase
+                        extends Camera3D
+                        
+                        @onready var child: Node = $Child
+                        """
+        );
+
+        // `Camera3D -> Node3D -> Node` is assignable to Node through two hops, so the
+        // ready-time capability does not require the declaring class to name Node directly.
+        var getNode = findNode(analyzed.ast(), GetNodeExpression.class, ignored -> true);
+        var published = analyzed.analysisData().expressionTypes().get(getNode);
+        assertNotNull(published);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, published.status());
+        assertEquals(new GdObjectType("Node"), published.publishedType());
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+    }
+
+    @Test
+    void analyzeSkipsGetNodeLeafInsideDamagedInitializerWhileSiblingResolves() throws Exception {
+        var analyzed = analyze(
+                "get_node_sema_damaged_initializer.gd",
+                """
+                        class_name GetNodeSemaDamagedInitializer
+                        extends Node
+                        
+                        @onready var broken = [$Broken, = 3]
+                        @onready var sibling: Node = $Sibling
+                        """
+        );
+
+        // The damaged initializer makes the whole `broken` declaration a skipped subtree root:
+        // its initializer is never typed, so no fact is fabricated for the get-node leaf inside
+        // it, while the intact sibling still resolves through the ready-time island.
+        var brokenDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                candidate -> candidate.name().equals("broken")
+        );
+        assertTrue(analyzed.analysisData().skippedSubtreeRoots().containsKey(brokenDeclaration));
+        var brokenGetNode = findNode(brokenDeclaration.value(), GetNodeExpression.class, ignored -> true);
+        assertNull(analyzed.analysisData().expressionTypes().get(brokenGetNode));
+
+        var siblingDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                candidate -> candidate.name().equals("sibling")
+        );
+        var siblingGetNode = findNode(siblingDeclaration.value(), GetNodeExpression.class, ignored -> true);
+        var siblingPublished = analyzed.analysisData().expressionTypes().get(siblingGetNode);
+        assertNotNull(siblingPublished);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, siblingPublished.status());
+        assertEquals(new GdObjectType("Node"), siblingPublished.publishedType());
+
+        var diagnostics = analyzed.analysisData().diagnostics().asList();
+        assertTrue(diagnostics.stream().anyMatch(diagnostic -> diagnostic.category().startsWith("parse.")));
+        assertTrue(diagnostics.stream().noneMatch(diagnostic -> diagnostic.category().equals("sema.annotation_usage")));
+        assertTrue(diagnostics.stream().noneMatch(diagnostic -> diagnostic.category().equals("sema.deferred_expression_resolution")));
     }
 
     @Test

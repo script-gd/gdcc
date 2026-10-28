@@ -331,7 +331,7 @@ property initializer 当前只是 frontend body-phase 的最小支持岛，不�
 
 当前 initializer boundary 已冻结为：
 
-- 不支持访问当前实例层级可达的 non-static property / method / signal / `self`
+- 不支持访问当前实例层级可达的 non-static property / method / signal / `self`（唯一例外：合法 `@onready` initializer 内显式表达式 receiver 的实例成员后缀，按句法 direct-self 边界放行，见 `frontend_node_literal_implementation.md` §3.3）
 - 允许 literal、普通表达式子树、global callable、type-meta static route、继承链上的 static member 等非当前实例依赖
 
 owner 分工固定为：
