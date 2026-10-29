@@ -1,6 +1,7 @@
 package gd.script.gdcc.frontend.sema.analyzer.support;
 
 import gd.script.gdcc.frontend.constant.GdConstantValue;
+import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 
@@ -30,6 +31,10 @@ public interface LookupContext {
     /// `EvaluationPolicy.Capability.REGISTERED_MEMBER_CALL` never consults it.
     @NotNull FrontendConstCallableRegistry callableRegistry();
 
+    /// The generation's extension-metadata registry, exposed read-only so selection helpers and
+    /// the evaluator can consult builtin metadata without reaching into analysis side tables.
+    @NotNull ClassRegistry classRegistry();
+
     /// Selects the exact builtin method signature a frozen member call would bind to (§5.5).
     ///
     /// Selection is ordinary overload resolution by argument types against the generation's
@@ -38,11 +43,19 @@ public interface LookupContext {
     /// `callableRegistry()`; a `Rejected` selection is terminal for the call. Constructor
     /// calls are not routed here: the §5.3 constructor whitelist is a fixed recipe table the
     /// evaluator matches directly.
-    @NotNull SelectionResult selectCall(
+    ///
+    /// The default implementation delegates to `FrontendConstCallSelectionSupport`, which covers
+    /// the shared pure signature-resolution path; contexts that must reconcile already-published
+    /// CHAIN/EXPR call facts (suite-side const resolution) override it to cross-check, never to
+    /// pick a different method.
+    default @NotNull SelectionResult selectCall(
             @NotNull GdType receiverType,
             @NotNull String methodName,
             @NotNull List<GdType> argumentTypes
-    );
+    ) {
+        return FrontendConstCallSelectionSupport.select(
+                classRegistry(), receiverType, methodName, argumentTypes);
+    }
 
     /// Name-resolution result (§4.3: resolved constant / nonconstant / blocked / unknown).
     /// `ResolvedNamespace` splits qualified namespaces out of "resolved" so chains such as

@@ -1,5 +1,6 @@
 package gd.script.gdcc.frontend.sema.analyzer.support;
 
+import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -19,10 +20,34 @@ public interface FrontendConstCallableRegistry {
         return key -> null;
     }
 
+    /// Starts a metadata-validating builder bound to the generation's extension registry (§5.5).
+    static @NotNull Builder builder(@NotNull ClassRegistry classRegistry) {
+        return new FrontendConstCallableRegistryBuilder(classRegistry);
+    }
+
     /// Finds the entry for one already-selected exact signature, or null when unregistered.
-    /// Registration and freeze mechanics land with the P2 builder stage; this lookup contract
-    /// is the frozen read side every `LookupContext` exposes.
     @Nullable Entry find(@NotNull ConstCallableKey key);
+
+    /// Registration surface of one generation-scoped registry.
+    ///
+    /// Every `register` call validates the claimed signature against the bound `ClassRegistry`:
+    /// the key must resolve to a real builtin instance method, its parameter types must be the
+    /// selected declared types, the declared return type must match, and the metadata method must
+    /// carry `is_const` (§5.5 treats that flag as registration-time mismatch evidence, not as an
+    /// automatic purity proof). Duplicate keys, signatures outside the admitted surface, and
+    /// registrations after `build()` are programmer errors, not source diagnostics.
+    interface Builder {
+
+        /// Registers one pure handler under its exact selected signature.
+        @NotNull Builder register(
+                @NotNull ConstCallableKey key,
+                @NotNull GdType returnType,
+                @NotNull ConstMemberEvaluator evaluator
+        );
+
+        /// Freezes the registered entries into an immutable registry shared by the generation.
+        @NotNull FrontendConstCallableRegistry build();
+    }
 
     /// One frozen registration: exact key + declared return type + pure handler.
     ///

@@ -4,7 +4,7 @@
 > 文中除「§2 核实的代码基线」与「§13 执行记录」外均为建议方案，
 > 建议与事实严格分开，不以本文档内容回写任何事实源文档。
 > §12 的 A1 已由用户确认 earlier-only，不再是待确认项。
-> 阶段状态：P0、P1 已实施（见 §10 各阶段条目与 §13 记录）；P2–P7 未实施。
+> 阶段状态：P0、P1、P2 已实施（见 §10 各阶段条目与 §13 记录）；P3–P7 未实施。
 
 - 适用范围（计划触及，均为相对仓库根路径）：
   - `src/main/java/gd/script/gdcc/frontend/constant/**`（新增值族与求值事实模型）
@@ -814,7 +814,7 @@
     `FrontendConstantMaterializationTest`（含 simple/DOM roundtrip）、parser /
     serializer 精度与非有限值专项、`CConstructInsnGenTest` 以真实
     `extension_api_451.json` 校验全部 16 个 recipe 的 `godot_new_*_with_*` 发射。
-- P2 通用 evaluator + enum 适配 + 标量规则 + registry seam
+- P2 通用 evaluator + enum 适配 + 标量规则 + registry seam —— **已实施（2026-10-29）**
   - 目标：`FrontendConstantEvaluator` 标量全集（int/float/bool/String）+ 短路 /
     条件表达式 + `FrontendBuiltinOperatorSupport` 抽取；enum 旧入口薄适配；
     `FrontendConstCallableRegistry` Builder / freeze、纯方法 selection /
@@ -826,6 +826,51 @@
     整数幂不丢精度；无 runtime 副作用（evaluator 不触 Godot 运行时）；
     dispatch seam 测试注入 entry 证明扩展有效、生产空表拒绝。
   - 退出门槛：mixed scalar 仍拒绝；除零 / 非法 shift / 死分支未知名全拒绝。
+  - 实施结果：`FrontendConstantEvaluator` 为两遍纯 evaluator——validation
+    pass 先对整树证明白名单 / 名字绑定 / 算子合法性 / 已注册 call 签名（死
+    分支不能藏未知名或未注册 call），evaluation pass 只沿已采取值的分支计算
+    （`and`/`or` 短路、三元只求值选中臂，死分支除零等域错误不触发）。标量
+    运算表按类型精确配对：int `+ - * / % << >> & | ^ **`（long 回绕、`MIN/-1`
+    回绕、`**` 平方乘不丢精度、shift 0..63 fail-closed、负幂拒绝）与比较；
+    float `+ - * / **` 与比较；bool `== != and or`（`&&`/`||`/`!` 别名）；
+    String `+ == !=`（不含 `<`/`%`，比 metadata 窄）；`in`/`not in`、
+    mixed int/float 对标量一律拒绝。`Unary(-) + 整数字面量` 承载
+    `Long.MIN_VALUE` 边例（bare 溢出字面量仍拒绝），经 `LONG_MIN_LITERAL`
+    能力门。`EvaluationPolicy` 增加 `domain()` 与 `general()` /
+    `enumPrePass()` 共享工厂；`LookupContext` 增加 `classRegistry()` 并把
+    `selectCall` 变为委托共享 helper 的 default 方法；`GdConstantValue`
+    增加 `isSupportedConstantType` 单一事实源。
+    `FrontendBuiltinOperatorSupport` 自 `FrontendExpressionSemanticSupport`
+    行为等价抽取（unary/binary exact return type、operator owner、特殊返回
+    类型、mixed scalar 判别）；`FrontendConstCallSelectionSupport` 以
+    `ScopeMethodResolver` 做普通 overload 选择，产出 declared 参数
+    `ConstCallableKey`（非 const 表面 receiver/参数、static、省略默认参数、
+    未注册变体均确定性拒绝）。`FrontendConstCallableRegistry.Builder` 注册时
+    校验 key 恰为普通 selection 结果、returnType 一致、metadata 方法带
+    `is_const`（当前 metadata 无反例，作为防误配纵深保留）、`build()` 冻结
+    为 `Map`-backed 不可变表；重复 / 冻后注册抛 IAE/ISE。
+    `FrontendEnumConstantEvaluator` 改为薄适配：enum 专用 `LookupContext`
+    （earlier 成员 → 同类 enum 常量 → ancestor blocker → globals 顺序与旧
+    实现一致）+ `EvaluationPolicy.enumPrePass()`，旧 `Evaluation`
+    Resolved(long)/Rejected(reason) 形状与拒绝措辞不变，既有测试零修改全绿。
+    测试：`FrontendConstantEvaluatorTest`（52 用例正反双向——标量/回绕/
+    `MIN/-1`/幂精度/短路死分支验证不执行/三元全槽先验/名字四态/namespace
+    下行/registry dispatch 注入与空表拒绝/参数规范化 int→float 与
+    Vector2i→Vector2/能力门枚举）、`FrontendConstCallableRegistryTest`
+    （builder/freeze/重复/冻后/假签名/静态方法/非 const 表面参数/省略默认/
+    非 builtin owner/selection helper 直测）；`FrontendEnumConstantEvaluatorTest`
+    及 `FrontendBodyOwnerProceduresExprTypeTest`、`FrontendTypeCheckAnalyzerTest`、
+    `FrontendCompileCheckAnalyzerTest`、`FrontendEnumBodyBindingExprTypeTest`、
+    `FrontendEnumChainBindingTest` 回归全绿。顺带修复：旧 enum 求值器对
+    `MIN/-1` 会抛 `ArithmeticException` 逃逸，现按 int64 回绕语义统一为
+    `Resolved(MIN)`。评审复核后加固：`evaluate()` 入口先跑一次整树
+    `checkExpression`（后序兄弟验证失败时 handler 不会先行执行、嵌套短路
+    链验证从 O(n²) 降为 O(n)）；`Long.MIN_VALUE` magnitude 判别共享
+    `StringUtil.parseGdUnsignedIntegerLexeme` 的词法校验（`0x_8000…` 等
+    畸形下划线位置按普通 malformed 拒绝），且边例同时要求
+    `INT_ARITHMETIC`；enum 域所有 legacy 可见拒绝措辞经
+    `unsupportedSuffix`/`expressionSuffix` 保持逐字一致
+    （`FrontendEnumConstantEvaluatorTest` 精确字符串断言锚定）。
 - P3 geometry 构造器 / 运算 / 成员投影 / metadata decoder
   - 目标：§5.3 构造白名单、§5.1 vector/Color/geometry 运算、§5.4 投影与
     `FrontendBuiltinConstantDecoder`；不要求实现 length 等生产 registry

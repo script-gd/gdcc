@@ -240,6 +240,38 @@ public final class StringUtil {
     /// between two digits of the active radix, matching the Godot tokenizer: leading, trailing,
     /// doubled, or prefix-adjacent underscores are malformed.
     public static @Nullable Long parseGdIntegerLexeme(@NotNull String lexeme) {
+        var decomposed = decomposeGdIntegerLexeme(lexeme);
+        if (decomposed == null) {
+            return null;
+        }
+        try {
+            return Long.valueOf(decomposed.digits().replace("_", ""), decomposed.radix());
+        } catch (NumberFormatException _) {
+            return null;
+        }
+    }
+
+    /// Parses a GDScript integer literal lexeme as an unsigned 64-bit magnitude under the same
+    /// lexeme rules as `parseGdIntegerLexeme`. Values in `2^63 .. 2^64 - 1` produce the matching
+    /// bit pattern as a negative `long` (e.g. `2^63` yields `Long.MIN_VALUE`); malformed lexemes
+    /// return null. Callers decide whether an unsigned-only edge — like the `Long.MIN_VALUE`
+    /// magnitude after `Unary(-)` — is legal.
+    public static @Nullable Long parseGdUnsignedIntegerLexeme(@NotNull String lexeme) {
+        var decomposed = decomposeGdIntegerLexeme(lexeme);
+        if (decomposed == null) {
+            return null;
+        }
+        try {
+            return Long.parseUnsignedLong(decomposed.digits().replace("_", ""), decomposed.radix());
+        } catch (NumberFormatException _) {
+            return null;
+        }
+    }
+
+    /// Shared lexeme shape split: rejects signs, extracts the optional radix prefix, and applies
+    /// the between-two-digits underscore rule. Returning the digits rather than a parsed value
+    /// keeps signed and unsigned decoding behind one grammar.
+    private static @Nullable GdIntegerLexeme decomposeGdIntegerLexeme(@NotNull String lexeme) {
         var text = Objects.requireNonNull(lexeme, "lexeme must not be null").trim();
         if (text.isEmpty() || text.charAt(0) == '+' || text.charAt(0) == '-') {
             return null;
@@ -259,11 +291,10 @@ public final class StringUtil {
         if (digits.isEmpty() || !hasLegalUnderscorePlacement(digits, radix)) {
             return null;
         }
-        try {
-            return Long.parseLong(digits.replace("_", ""), radix);
-        } catch (NumberFormatException _) {
-            return null;
-        }
+        return new GdIntegerLexeme(radix, digits);
+    }
+
+    private record GdIntegerLexeme(int radix, @NotNull String digits) {
     }
 
     /// Parses a GDScript float literal lexeme into its IEEE-754 value.

@@ -23,6 +23,20 @@ public sealed interface GdConstantValue {
     /// The exact GDScript type this frozen value carries; `BuiltinValue` returns its own `GdType`.
     @NotNull GdType type();
 
+    /// Whether `type` belongs to the exact-type set a constant value can carry: the four scalars
+    /// (`bool`/`int`/`float`/`String`) plus the controlled builtin types `BuiltinValue` admits.
+    /// `Variant`, `Nil`, `Object`, containers, and every other type are not constant-capable.
+    static boolean isSupportedConstantType(@NotNull GdType type) {
+        var extensionType = type.getGdExtensionType();
+        if (extensionType == null) {
+            return false;
+        }
+        return switch (extensionType) {
+            case BOOL, INT, FLOAT, STRING -> true;
+            default -> BuiltinValue.isControlledBuiltinType(type);
+        };
+    }
+
     /// Frozen `bool` payload.
     record BoolValue(boolean value) implements GdConstantValue {
         @Override
@@ -151,6 +165,11 @@ public sealed interface GdConstantValue {
                 components.add(new IntValue(leaf));
             }
             return new BuiltinValue(type, components);
+        }
+
+        /// Whether `type` is one of the controlled builtin types this record admits.
+        static boolean isControlledBuiltinType(@NotNull GdType type) {
+            return ComponentSpec.of(type) != null;
         }
 
         private static @NotNull String leafTypeName(@Nullable GdConstantValue leaf) {

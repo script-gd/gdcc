@@ -271,6 +271,46 @@ class FrontendEnumConstantEvaluatorTest {
         assertRejected(evaluation, "unknown identifier");
     }
 
+    @Test
+    void preservesLegacyRejectionWordingExactly() {
+        // The enum domain keeps the pre-extraction phrasing character-for-character so the
+        // diagnostics users see stay stable across the evaluator consolidation.
+        assertAll(
+                () -> assertRejectedExactly(
+                        "binary operator '**' is not supported in enum constants",
+                        evaluate(binary("**", integerLiteral("2"), integerLiteral("3")))
+                ),
+                () -> assertRejectedExactly(
+                        "binary operator 'in' is not supported in enum constants",
+                        evaluate(binary("in", integerLiteral("1"), integerLiteral("2")))
+                ),
+                () -> assertRejectedExactly(
+                        "binary operator '==' is not supported in enum constants",
+                        evaluate(binary("==", integerLiteral("1"), integerLiteral("1")))
+                ),
+                () -> assertRejectedExactly(
+                        "division by zero in enum constant expression",
+                        evaluate(binary("/", integerLiteral("1"), integerLiteral("0")))
+                ),
+                () -> assertRejectedExactly(
+                        "remainder by zero in enum constant expression",
+                        evaluate(binary("%", integerLiteral("1"), integerLiteral("0")))
+                ),
+                () -> assertRejectedExactly(
+                        "shift count 64 is out of the 0..63 range in enum constant expression",
+                        evaluate(binary("<<", integerLiteral("1"), integerLiteral("64")))
+                ),
+                () -> assertRejectedExactly(
+                        "unknown identifier 'X' in enum constant expression",
+                        evaluate(identifier("X"))
+                ),
+                () -> assertRejectedExactly(
+                        "unary operator 'not' is not supported in enum constants",
+                        evaluate(unary("not", integerLiteral("1")))
+                )
+        );
+    }
+
     private static @NotNull FrontendEnumConstantEvaluator.Evaluation evaluate(@NotNull Expression expression) {
         return evaluate(expression, Map.of(), List.of(), Set.of());
     }
@@ -309,6 +349,14 @@ class FrontendEnumConstantEvaluatorTest {
     private static void assertResolved(long expected, FrontendEnumConstantEvaluator.Evaluation evaluation) {
         var resolved = assertInstanceOf(FrontendEnumConstantEvaluator.Evaluation.Resolved.class, evaluation);
         assertEquals(expected, resolved.value());
+    }
+
+    private static void assertRejectedExactly(
+            String expectedReason,
+            FrontendEnumConstantEvaluator.Evaluation evaluation
+    ) {
+        var rejected = assertInstanceOf(FrontendEnumConstantEvaluator.Evaluation.Rejected.class, evaluation);
+        assertEquals(expectedReason, rejected.reason());
     }
 
     private static void assertRejected(
