@@ -463,6 +463,116 @@ public class SimpleLirBlockInsnParserTest {
     }
 
     @Test
+    public void parse_literalFloatPreservesFullDoublePrecision() {
+        // Float payloads round-trip through Java `double` semantics; a Float.parseFloat path
+        // would collapse these to 0.30000001192092896 and 0.0.
+        var insns = parse("""
+                $0 = literal_float 0.30000000000000004;
+                $1 = literal_float 1e-320;
+                """);
+        var precise = assertInstanceOf(LiteralFloatInsn.class, insns.get(0));
+        var subnormal = assertInstanceOf(LiteralFloatInsn.class, insns.get(1));
+        assertAll(
+                () -> assertEquals(0.30000000000000004, precise.value()),
+                () -> assertEquals(1e-320, subnormal.value())
+        );
+    }
+
+    @Test
+    public void parse_literalFloatAcceptsNonFiniteCanonicalSpellings() {
+        var insns = parse("""
+                $0 = literal_float NaN;
+                $1 = literal_float Infinity;
+                $2 = literal_float -Infinity;
+                """);
+        var nan = assertInstanceOf(LiteralFloatInsn.class, insns.get(0));
+        var infinity = assertInstanceOf(LiteralFloatInsn.class, insns.get(1));
+        var negativeInfinity = assertInstanceOf(LiteralFloatInsn.class, insns.get(2));
+        assertAll(
+                () -> assertTrue(Double.isNaN(nan.value())),
+                () -> assertEquals(Double.POSITIVE_INFINITY, infinity.value()),
+                () -> assertEquals(Double.NEGATIVE_INFINITY, negativeInfinity.value())
+        );
+    }
+
+    @Test
+    public void parse_literalFloatAcceptsInfNanAliasesAsCanonicalValues() {
+        var insns = parse("""
+                $0 = literal_float INF;
+                $1 = literal_float NAN;
+                $2 = literal_float -INF;
+                """);
+        var infinity = assertInstanceOf(LiteralFloatInsn.class, insns.get(0));
+        var nan = assertInstanceOf(LiteralFloatInsn.class, insns.get(1));
+        var negativeInfinity = assertInstanceOf(LiteralFloatInsn.class, insns.get(2));
+        assertAll(
+                () -> assertEquals(Double.POSITIVE_INFINITY, infinity.value()),
+                () -> assertTrue(Double.isNaN(nan.value())),
+                () -> assertEquals(Double.NEGATIVE_INFINITY, negativeInfinity.value())
+        );
+    }
+
+    @Test
+    public void parse_literalFloatPreservesSignedZeroRawBits() {
+        var insns = parse("""
+                $0 = literal_float -0.0;
+                $1 = literal_float 0.0;
+                """);
+        var negativeZero = assertInstanceOf(LiteralFloatInsn.class, insns.get(0));
+        var positiveZero = assertInstanceOf(LiteralFloatInsn.class, insns.get(1));
+        assertAll(
+                () -> assertEquals(Double.doubleToRawLongBits(-0.0),
+                        Double.doubleToRawLongBits(negativeZero.value())),
+                () -> assertEquals(Double.doubleToRawLongBits(0.0),
+                        Double.doubleToRawLongBits(positiveZero.value()))
+        );
+    }
+
+    @Test
+    public void parse_literalFloatRoundTripsAllCanonicalSpellings() throws Exception {
+        var values = List.of(
+                0.30000000000000004,
+                -0.0,
+                1.0,
+                Double.NaN,
+                Double.POSITIVE_INFINITY,
+                Double.NEGATIVE_INFINITY
+        );
+        var serializer = new SimpleLirBlockInsnSerializer();
+        for (var value : values) {
+            var out = new StringWriter();
+            serializer.serialize(List.of(new LiteralFloatInsn("x", value)), out);
+            var reparsed = assertInstanceOf(LiteralFloatInsn.class, parse(out.toString()).getFirst());
+            assertEquals(
+                    Double.doubleToRawLongBits(value),
+                    Double.doubleToRawLongBits(reparsed.value()),
+                    () -> "roundtrip of " + out
+            );
+        }
+    }
+
+    @Test
+    public void parse_nonFiniteFloatWordsAreNotLabelsOrVariables() {
+        // Non-finite spellings tokenize as FLOAT, so they can never be swallowed by the
+        // identifier/label fallback.
+        var labelLine = "goto Infinity;";
+        var labelColumn = labelLine.indexOf("Infinity") + 1;
+        assertParseError(labelLine, 1, labelColumn, "Expected label identifier");
+
+        var variableLine = "$r = unary_op \"NEGATE\" NaN;";
+        var variableColumn = variableLine.indexOf("NaN") + 1;
+        assertParseError(variableLine, 1, variableColumn, "Expected variable operand");
+    }
+
+    @Test
+    public void parse_constructBuiltinRejectsNonVariableOperands() {
+        // construct_builtin operands are materialized slots — never immediate literals.
+        var line = "$v = construct_builtin 1.5;";
+        var column = line.indexOf("1.5") + 1;
+        assertParseError(line, 1, column, "Expected variable operand");
+    }
+
+    @Test
     public void parse_lifecycleInstructionWithUnknownProvenanceShouldFail() {
         var line = "destruct $0 \"NOT_A_PROVENANCE\";";
         var parser = new SimpleLirBlockInsnParser();

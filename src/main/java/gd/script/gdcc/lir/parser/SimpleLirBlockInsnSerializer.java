@@ -52,7 +52,10 @@ public final class SimpleLirBlockInsnSerializer implements LirBlockInsnSerialize
             case BasicBlockOperand b -> sb.append(b.bbId());
             case StringOperand s -> sb.append('"').append(escapeString(s.value())).append('"');
             case IntOperand it -> sb.append(it.value());
-            case FloatOperand ft -> sb.append(ft.value());
+            // Canonical float output is Java `Double.toString`: `NaN`, `Infinity`,
+            // `-Infinity`, `-0.0`, and float-shaped integers like `1.0` — the parser
+            // round-trips all of these as FLOAT tokens.
+            case FloatOperand ft -> sb.append(Double.toString(ft.value()));
             case BooleanOperand bo -> sb.append(bo.value());
             case GdOperatorOperand opn -> sb.append('"').append(opn.operator().name()).append('"');
             case VarargOperand va -> {

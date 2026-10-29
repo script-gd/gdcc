@@ -1,12 +1,13 @@
-# Frontend const 常量支持实施计划（待实施）
+# Frontend const 常量支持实施计划（实施中）
 
-> 本文档是 **待实施计划**，不是事实源。日期：2026-10-28。
-> 全部阶段（P0–P7）均未实施；文中除「§2 核实的代码基线」外均为建议方案，
+> 本文档是实施计划，不是事实源。日期：2026-10-28（2026-10-29 起进入实施）。
+> 文中除「§2 核实的代码基线」与「§13 执行记录」外均为建议方案，
 > 建议与事实严格分开，不以本文档内容回写任何事实源文档。
-> §12 的 A1 已由用户确认 earlier-only，不再是待确认项；计划仍未实施。
+> §12 的 A1 已由用户确认 earlier-only，不再是待确认项。
+> 阶段状态：P0、P1 已实施（见 §10 各阶段条目与 §13 记录）；P2–P7 未实施。
 
 - 适用范围（计划触及，均为相对仓库根路径）：
-  - `src/main/java/gd/script/gdcc/constant/**`（新增值族与求值事实模型）
+  - `src/main/java/gd/script/gdcc/frontend/constant/**`（新增值族与求值事实模型）
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/**`（求值器与运算支撑）
   - `src/main/java/gd/script/gdcc/frontend/sema/**`（skeleton 联合预 pass、local pipeline）
   - `src/main/java/gd/script/gdcc/frontend/scope/**`（ClassScope 常量索引与限定访问）
@@ -205,7 +206,7 @@
 
 ### 4.1 `GdConstantValue` 值族
 
-- 新增中性共享包 `gd.script.gdcc.constant`，与 frontend/backend 解耦。
+- 新增中性共享包 `gd.script.gdcc.frontend.constant`，与 lowering/backend 解耦。
 - `GdConstantValue` 为 sealed 值族：
   - `BoolValue(boolean)`
   - `IntValue(long)`
@@ -763,21 +764,32 @@
   全部未实施。
 - 下述「文件定位」列的是类名，默认在包前缀 `src/main/java/gd/script/gdcc/`
   下；不是可点击的完整文件路径，定位以类名检索为准。
-- P0 契约与 parse fixtures / 基线冻结
+- P0 契约与 parse fixtures / 基线冻结 —— **已实施（2026-10-29）**
   - 目标：确定 `GdConstantValue` / `Evaluation` / `LookupContext` / `EvaluationPolicy`
     契约与 parser 可表达的 const 形状 fixtures；`ConstCallableKey` / registry
     Entry / `ConstMemberEvaluator` callback 契约与 immutable 单次 analysis
     generation 共享方式（§5.5）；earlier-only 规则已按用户确认冻结（§12）。
-  - 文件定位：`src/main/java/gd/script/gdcc/constant/`（新包骨架）、
+  - 文件定位：`src/main/java/gd/script/gdcc/frontend/constant/`（新包骨架）、
     `frontend/sema/analyzer/support/`（接口）。
   - 完成证据：契约编译通过；fixtures 落盘 `src/test/resources` 或对应测试目录。
   - 退出门槛：冻结通用接口与 earlier-only 规则；所有阶段仍未实施。
-- P1 值模型 + 既有 LIR 常量物化 + roundtrip
+  - 实施结果：新增 `frontend.constant` 包（`GdConstantValue` sealed 值族、`Evaluation`、
+    `ConstCallResult`、`GdScriptEvaluatedConstant`）与 support 契约
+    （`LookupContext` 含四态 `LookupResult` + namespace 下行 + `selectCall`
+    精确签名选择面及其 `SelectionResult`、`EvaluationPolicy`
+    能力门、`ConstCallableKey`、`ConstMemberEvaluator`、
+    `FrontendConstCallableRegistry` 读侧接口 + `empty()` 生产默认、
+    `FrontendConstantEvaluator` 冻结签名，实现属 P2）。parse fixtures 以
+    `FrontendConstParseBehaviorTest` 落盘并锁定 gdparser 0.6.0 实际形状：
+    `const X`/`const X: T`/`const X := v` 为 `DeclarationKind.CONST`；
+    `static const` 在 CST 即报错、`static` 成 `ErrorStatement`、const 恢复为
+    非 static；无初始化器 const 为 `ErrorStatement`、不产出 declaration。
+- P1 值模型 + 既有 LIR 常量物化 + roundtrip —— **已实施（2026-10-29）**
   - 目标：值族与 `FrontendBodyLoweringSession.materializeConstantValue`（§8.1
     固定 recipe、exact 参数类型、non-ref scratch + Assign / pack 路径）；先直接
     构造 LIR 验证，不开放 const syntax；无 `GdInstruction` 新 opcode / 新
     visitor / `ParsedLirInstruction` 新分派代码任务，无 C aggregate renderer。
-  - 文件定位：`gd/script/gdcc/constant/`、`frontend/lowering/pass/body/`
+  - 文件定位：`gd/script/gdcc/frontend/constant/`、`frontend/lowering/pass/body/`
     （session helper）、`lir/parser/`（现有 FLOAT / String 精度修复）、
     `backend/c/`（复用已有 construct / literal emission）；测试落点
     `FrontendConstantMaterializationTest`（planned）+ `CConstructInsnGenTest` +
@@ -788,6 +800,20 @@
   - 退出门槛：每类型 recipe 的 exact 参数类型与 variable-only operands 正确；
     非对称 `Basis` / `Transform3D` 经逻辑列分量顺序验证；错类型 / 错个数 /
     int 越界在 frontend 拒绝。
+  - 实施结果：`GdConstantValue.BuiltinValue` 完成 16 个受控 builtin 的精确 leaf
+    数/族校验、float32 收窄规范化、int32 leaf 边界、不可变拷贝与 null leaf
+    拒绝（`GdConstantValueTest`）。`materializeConstantValue` 按 §8.1 固定 recipe
+    物化：scalar 直达 `literal_*`；BuiltinValue 深度优先——先 leaf literal 进
+    `cfg_const_leaf_*`/`cfg_const_part_*`（独立前缀 + skip-occupied 防冲突 +
+    exact-typed non-ref scratch），再 variable-only `construct_builtin`；结果槽
+    类型必须等于 `value.type()`，ref 槽 fail-fast，供后续 Assign / pack / unpack
+    边界路径消费。§8.2：`literal_float` 的 FLOAT token 改 `Double.parseDouble`
+    （GENERIC 分支同步；INT token 保持原路径），tokenizer 显式识别
+    `NaN`/`Infinity`/`-Infinity` 并兼容 `INF`/`NAN` 别名（不被 IDENT/label 吞），
+    serializer 显式 `Double.toString` 规范输出。测试：`GdConstantValueTest`、
+    `FrontendConstantMaterializationTest`（含 simple/DOM roundtrip）、parser /
+    serializer 精度与非有限值专项、`CConstructInsnGenTest` 以真实
+    `extension_api_451.json` 校验全部 16 个 recipe 的 `godot_new_*_with_*` 发射。
 - P2 通用 evaluator + enum 适配 + 标量规则 + registry seam
   - 目标：`FrontendConstantEvaluator` 标量全集（int/float/bool/String）+ 短路 /
     条件表达式 + `FrontendBuiltinOperatorSupport` 抽取；enum 旧入口薄适配；

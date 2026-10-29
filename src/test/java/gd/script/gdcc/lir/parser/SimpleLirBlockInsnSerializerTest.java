@@ -6,6 +6,7 @@ import gd.script.gdcc.lir.insn.*;
 import gd.script.gdcc.lir.insn.*;
 import org.junit.jupiter.api.Test;
 
+import java.io.StringReader;
 import java.io.StringWriter;
 import java.util.List;
 
@@ -183,5 +184,64 @@ public class SimpleLirBlockInsnSerializerTest {
         var out = sw.toString();
 
         assertTrue(out.contains("$a = assign $b;"), out);
+    }
+
+    @Test
+    public void serialize_floatOperandUsesCanonicalDoubleSpellings() throws Exception {
+        // Canonical output is Java `Double.toString`: integral doubles keep the float marker
+        // (`1.0`, never `1`), signed zero keeps its sign, and non-finite values use exactly the
+        // spellings the parser recognizes as FLOAT tokens.
+        var insnList = List.<LirInstruction>of(
+                new LiteralFloatInsn("integral", 1.0),
+                new LiteralFloatInsn("neg_zero", -0.0),
+                new LiteralFloatInsn("nan", Double.NaN),
+                new LiteralFloatInsn("inf", Double.POSITIVE_INFINITY),
+                new LiteralFloatInsn("neg_inf", Double.NEGATIVE_INFINITY),
+                new LiteralFloatInsn("precise", 0.30000000000000004)
+        );
+
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var sw = new StringWriter();
+        serializer.serialize(insnList, sw);
+        var out = sw.toString();
+
+        assertAll(
+                () -> assertTrue(out.contains("$integral = literal_float 1.0;"), out),
+                () -> assertTrue(out.contains("$neg_zero = literal_float -0.0;"), out),
+                () -> assertTrue(out.contains("$nan = literal_float NaN;"), out),
+                () -> assertTrue(out.contains("$inf = literal_float Infinity;"), out),
+                () -> assertTrue(out.contains("$neg_inf = literal_float -Infinity;"), out),
+                () -> assertTrue(out.contains("$precise = literal_float 0.30000000000000004;"), out)
+        );
+    }
+
+    @Test
+    public void serialize_literalAndConstructChainRoundTripsExactly() throws Exception {
+        // The constant materialization chain shape: scalar leaf literals feeding a
+        // construct_builtin of variable-only operands, then an assign of the result.
+        var insnList = List.<LirInstruction>of(
+                new LiteralFloatInsn("cfg_const_leaf_0", 1.0),
+                new LiteralFloatInsn("cfg_const_leaf_1", -0.5),
+                new ConstructBuiltinInsn("out_vector2", List.of(
+                        new LirInstruction.VariableOperand("cfg_const_leaf_0"),
+                        new LirInstruction.VariableOperand("cfg_const_leaf_1")
+                )),
+                new LiteralIntInsn("cfg_const_leaf_2", Long.MIN_VALUE),
+                new LiteralStringInsn("cfg_const_leaf_3", "payload"),
+                new AssignInsn("alias_out", "out_vector2")
+        );
+
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var sw = new StringWriter();
+        serializer.serialize(insnList, sw);
+        var reparsed = new SimpleLirBlockInsnParser().parse(new StringReader(sw.toString()));
+
+        assertEquals(insnList.size(), reparsed.size());
+        for (var i = 0; i < insnList.size(); i++) {
+            var expected = insnList.get(i);
+            var index = i;
+            assertTrue(expected.checkEquals(reparsed.get(i)),
+                    () -> "instruction " + index + ": " + expected);
+        }
     }
 }

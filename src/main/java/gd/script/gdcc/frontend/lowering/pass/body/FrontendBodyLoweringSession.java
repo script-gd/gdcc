@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.lowering.pass.body;
 
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
+import gd.script.gdcc.frontend.constant.GdConstantValue;
 import gd.script.gdcc.frontend.lowering.FrontendBodyLoweringSupport;
 import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.FunctionLoweringContext;
@@ -37,6 +38,8 @@ import gd.script.gdcc.lir.insn.BuiltinCastInsn;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructContainerLiteralInsn;
+import gd.script.gdcc.lir.insn.LiteralBoolInsn;
+import gd.script.gdcc.lir.insn.LiteralFloatInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
@@ -50,6 +53,7 @@ import gd.script.gdcc.scope.ParameterDef;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.RefCountedStatus;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.type.GdBasisType;
 import gd.script.gdcc.type.GdContainerType;
 import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdDictionaryType;
@@ -117,6 +121,7 @@ public final class FrontendBodyLoweringSession {
     private int returnNilCounter;
     private int languageFunctionTempCounter;
     private int enumGroupLiteralTempCounter;
+    private int constLiteralTempCounter;
 
     public FrontendBodyLoweringSession(
             @NotNull FunctionLoweringContext functionContext,
@@ -1660,6 +1665,195 @@ public final class FrontendBodyLoweringSession {
             operands.add(new LirInstruction.VariableOperand(valueSlotId));
         }
         block.appendNonTerminatorInstruction(new ConstructContainerLiteralInsn(resultSlotId, List.copyOf(operands)));
+    }
+
+    /// Allocates one body-local temp owned by constant-payload materialization.
+    ///
+    /// Scalar leaves and nested builtin parts each need their own scratch slots that stay
+    /// separated from published CFG value ids and every other helper prefix, so this allocator
+    /// owns a dedicated counter/prefix. The skip-occupied loop mirrors
+    /// `allocateEnumGroupLiteralTemp`: `cfg_const_*` is a legal source identifier, so a user
+    /// variable could already occupy the next id and must never be silently overwritten.
+    @NotNull String allocateConstLiteralTemp(@NotNull String purpose, @NotNull GdType type) {
+        var tempType = Objects.requireNonNull(type, "type must not be null");
+        var prefix = "cfg_const_" + StringUtil.requireNonBlank(purpose, "purpose") + "_";
+        while (true) {
+            var slotId = prefix + constLiteralTempCounter++;
+            if (function.getVariableById(slotId) != null) {
+                continue;
+            }
+            function.createAndAddVariable(slotId, tempType);
+            return slotId;
+        }
+    }
+
+    /// Materializes one frozen compile-time constant into `resultSlotId` (const plan §8.1).
+    ///
+    /// Scalars become the matching `literal_*` instruction. A `BuiltinValue` first materializes
+    /// each normalized leaf into an exact-typed scalar temp (`literal_int` for int32 leaves —
+    /// the int32 guard already ran at evaluation — and `literal_float` for float leaves, whose
+    /// stored double is already `(float)`-normalized), then runs the fixed canonical
+    /// construction recipe, so every `construct_builtin` operand is a `VariableOperand` pointing
+    /// at one of those temps. The recipe always rebuilds from the final payload — it never
+    /// replays source constructors, axis-angle forms, or matrix operations.
+    ///
+    /// The result slot must be a non-ref variable whose type equals `value.type()`: a missing
+    /// slot is declared with the value type, while a mismatched or ref slot fails fast because
+    /// both construction results and plain assigns are non-ref contracts. Consumers that need a
+    /// Variant or ref boundary use the existing assign / pack / unpack paths afterwards; the
+    /// temp slots produced here are materialization scratch, not const declaration storage.
+    void materializeConstantValue(
+            @NotNull LirBasicBlock block,
+            @NotNull GdConstantValue value,
+            @NotNull String resultSlotId
+    ) {
+        Objects.requireNonNull(block, "block must not be null");
+        var constant = Objects.requireNonNull(value, "value must not be null");
+        var targetSlotId = StringUtil.requireNonBlank(resultSlotId, "resultSlotId");
+        ensureVariable(targetSlotId, constant.type());
+        var resultVariable = function.getVariableById(targetSlotId);
+        if (resultVariable == null || resultVariable.ref()) {
+            throw new IllegalStateException(
+                    "Constant materialization requires a non-ref result slot '" + targetSlotId + "'"
+            );
+        }
+        switch (constant) {
+            case GdConstantValue.BoolValue boolValue ->
+                    block.appendNonTerminatorInstruction(new LiteralBoolInsn(targetSlotId, boolValue.value()));
+            case GdConstantValue.IntValue intValue ->
+                    block.appendNonTerminatorInstruction(new LiteralIntInsn(targetSlotId, intValue.value()));
+            case GdConstantValue.FloatValue floatValue ->
+                    block.appendNonTerminatorInstruction(new LiteralFloatInsn(targetSlotId, floatValue.value()));
+            case GdConstantValue.StringValue stringValue ->
+                    block.appendNonTerminatorInstruction(new LiteralStringInsn(targetSlotId, stringValue.value()));
+            case GdConstantValue.BuiltinValue builtinValue ->
+                    materializeBuiltinConstantValue(block, builtinValue, targetSlotId);
+        }
+    }
+
+    /// Emits the fixed canonical construction recipe of one builtin constant: component parts
+    /// are materialized before the parent `construct_builtin`, so scalar leaf temps and nested
+    /// sub-constructions always precede their consumer in the block.
+    private void materializeBuiltinConstantValue(
+            @NotNull LirBasicBlock block,
+            @NotNull GdConstantValue.BuiltinValue value,
+            @NotNull String resultSlotId
+    ) {
+        var operands = new ArrayList<LirInstruction.Operand>();
+        for (var part : constantPartsOf(value.type())) {
+            if (part.subType() == null) {
+                var leafSlotId = materializeConstantLeaf(block, value.components().get(part.leafStart()));
+                operands.add(new LirInstruction.VariableOperand(leafSlotId));
+            } else {
+                var partSlotId = allocateConstLiteralTemp("part", part.subType());
+                var partValue = new GdConstantValue.BuiltinValue(
+                        part.subType(),
+                        value.components().subList(part.leafStart(), part.leafStart() + part.leafCount())
+                );
+                materializeBuiltinConstantValue(block, partValue, partSlotId);
+                operands.add(new LirInstruction.VariableOperand(partSlotId));
+            }
+        }
+        block.appendNonTerminatorInstruction(new ConstructBuiltinInsn(resultSlotId, List.copyOf(operands)));
+    }
+
+    /// Emits one scalar leaf literal into a fresh `cfg_const_leaf_*` temp. The leaf already
+    /// carries its normalized payload, so the temp gets the exact scalar type the construction
+    /// signature expects: `IntValue` (an int32 leaf on an int64 scalar) or `FloatValue`.
+    private @NotNull String materializeConstantLeaf(
+            @NotNull LirBasicBlock block,
+            @NotNull GdConstantValue leaf
+    ) {
+        return switch (leaf) {
+            case GdConstantValue.IntValue intValue -> {
+                var leafSlotId = allocateConstLiteralTemp("leaf", GdIntType.INT);
+                block.appendNonTerminatorInstruction(new LiteralIntInsn(leafSlotId, intValue.value()));
+                yield leafSlotId;
+            }
+            case GdConstantValue.FloatValue floatValue -> {
+                var leafSlotId = allocateConstLiteralTemp("leaf", GdFloatType.FLOAT);
+                block.appendNonTerminatorInstruction(new LiteralFloatInsn(leafSlotId, floatValue.value()));
+                yield leafSlotId;
+            }
+            default -> throw new IllegalStateException(
+                    "Builtin constant components must be scalar leaves, but got "
+                            + leaf.type().getTypeName()
+            );
+        };
+    }
+
+    /// The fixed canonical construction recipe (const plan §8.1): how each controlled builtin
+    /// type decomposes its flat leaves into scalar temps and nested sub-constructions before
+    /// the parent construct. Every recipe maps to an exact API constructor signature — no
+    /// flat-float shim and no source-syntax form is involved.
+    private static @NotNull List<ConstValuePart> constantPartsOf(@NotNull GdType type) {
+        var extensionType = type.getGdExtensionType();
+        if (extensionType == null) {
+            throw new IllegalArgumentException(
+                    "Unsupported constant builtin type: " + type.getTypeName()
+            );
+        }
+        return switch (extensionType) {
+            case VECTOR2 -> scalarParts(2);
+            case VECTOR3 -> scalarParts(3);
+            case VECTOR4 -> scalarParts(4);
+            case VECTOR2I -> scalarParts(2);
+            case VECTOR3I -> scalarParts(3);
+            case VECTOR4I -> scalarParts(4);
+            case RECT2 -> List.of(
+                    new ConstValuePart(GdFloatVectorType.VECTOR2, 0, 2),
+                    new ConstValuePart(GdFloatVectorType.VECTOR2, 2, 2)
+            );
+            case RECT2I -> List.of(
+                    new ConstValuePart(GdIntVectorType.VECTOR2I, 0, 2),
+                    new ConstValuePart(GdIntVectorType.VECTOR2I, 2, 2)
+            );
+            case PLANE, QUATERNION, COLOR -> scalarParts(4);
+            case AABB -> List.of(
+                    new ConstValuePart(GdFloatVectorType.VECTOR3, 0, 3),
+                    new ConstValuePart(GdFloatVectorType.VECTOR3, 3, 3)
+            );
+            // The canonical payload keeps the three logical column vectors; the Godot
+            // component constructor maps them onto physical rows — no frontend transpose.
+            case BASIS -> List.of(
+                    new ConstValuePart(GdFloatVectorType.VECTOR3, 0, 3),
+                    new ConstValuePart(GdFloatVectorType.VECTOR3, 3, 3),
+                    new ConstValuePart(GdFloatVectorType.VECTOR3, 6, 3)
+            );
+            case TRANSFORM2D -> List.of(
+                    new ConstValuePart(GdFloatVectorType.VECTOR2, 0, 2),
+                    new ConstValuePart(GdFloatVectorType.VECTOR2, 2, 2),
+                    new ConstValuePart(GdFloatVectorType.VECTOR2, 4, 2)
+            );
+            case TRANSFORM3D -> List.of(
+                    new ConstValuePart(GdBasisType.BASIS, 0, 9),
+                    new ConstValuePart(GdFloatVectorType.VECTOR3, 9, 3)
+            );
+            case PROJECTION -> List.of(
+                    new ConstValuePart(GdFloatVectorType.VECTOR4, 0, 4),
+                    new ConstValuePart(GdFloatVectorType.VECTOR4, 4, 4),
+                    new ConstValuePart(GdFloatVectorType.VECTOR4, 8, 4),
+                    new ConstValuePart(GdFloatVectorType.VECTOR4, 12, 4)
+            );
+            default -> throw new IllegalArgumentException(
+                    "Unsupported constant builtin type: " + type.getTypeName()
+            );
+        };
+    }
+
+    /// `count` consecutive scalar leaf parts starting at index 0.
+    private static @NotNull List<ConstValuePart> scalarParts(int count) {
+        var parts = new ArrayList<ConstValuePart>(count);
+        for (var i = 0; i < count; i++) {
+            parts.add(new ConstValuePart(null, i, 1));
+        }
+        return List.copyOf(parts);
+    }
+
+    /// One component group inside a builtin construction recipe: either a single scalar leaf
+    /// (`subType == null`, `leafCount == 1`) or a nested builtin value spanning `leafCount`
+    /// consecutive leaves starting at `leafStart` (e.g. the `Basis` inside a `Transform3D`).
+    private record ConstValuePart(@Nullable GdType subType, int leafStart, int leafCount) {
     }
 
     /// Allocates one synthetic basic block owned by writable-route lowering.

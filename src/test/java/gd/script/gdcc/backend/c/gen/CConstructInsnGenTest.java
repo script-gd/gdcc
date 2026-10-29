@@ -4,6 +4,7 @@ import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.exception.InvalidInsnException;
+import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
@@ -33,15 +34,22 @@ import gd.script.gdcc.lir.insn.GetClassNameInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdAABBType;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBasisType;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdColorType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdPlaneType;
+import gd.script.gdcc.type.GdQuaternionType;
+import gd.script.gdcc.type.GdRect2Type;
+import gd.script.gdcc.type.GdRect2iType;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
@@ -1985,6 +1993,69 @@ class CConstructInsnGenTest {
                 0,
                 List.of(new ExtensionFunctionArgument("from", argType, null, null))
         );
+    }
+
+    /// The §8.1 canonical const materialization recipes — every controlled builtin type lowers
+    /// to an exact metadata constructor signature with variable-only operands, validated here
+    /// against the real `extension_api` table so recipe/metadata drift fails fast.
+    @Test
+    void constructBuiltinConstantRecipesEmitExactApiConstructors() throws Exception {
+        for (var recipe : constRecipeCases()) {
+            var clazz = newTestClass();
+            var func = newFunction("construct_recipe_" + recipe.targetType().getTypeName());
+            var operands = new ArrayList<LirInstruction.Operand>(recipe.argTypes().size());
+            for (var i = 0; i < recipe.argTypes().size(); i++) {
+                var argId = "arg_" + i;
+                func.createAndAddVariable(argId, recipe.argTypes().get(i));
+                operands.add(new LirInstruction.VariableOperand(argId));
+            }
+            func.createAndAddVariable("result", recipe.targetType());
+
+            entry(func).appendInstruction(new ConstructBuiltinInsn("result", operands));
+            clazz.addFunction(func);
+
+            var module = new LirModule("test_module", List.of(clazz));
+            var codegen = newCodegen(module, List.of(clazz), ExtensionApiLoader.loadDefault());
+            var body = codegen.generateFuncBody(clazz, func);
+            assertTrue(
+                    body.contains(recipe.constructorName()),
+                    () -> "Missing exact recipe constructor for " + recipe.targetType().getTypeName()
+                            + ".\nBody:\n" + body
+            );
+        }
+    }
+
+    private List<ConstRecipeCase> constRecipeCases() {
+        var f = GdFloatType.FLOAT;
+        var i = GdIntType.INT;
+        var v2 = GdFloatVectorType.VECTOR2;
+        var v3 = GdFloatVectorType.VECTOR3;
+        var v4 = GdFloatVectorType.VECTOR4;
+        return List.of(
+                new ConstRecipeCase(v2, List.of(f, f), "godot_new_Vector2_with_float_float"),
+                new ConstRecipeCase(v3, List.of(f, f, f), "godot_new_Vector3_with_float_float_float"),
+                new ConstRecipeCase(v4, List.of(f, f, f, f), "godot_new_Vector4_with_float_float_float_float"),
+                new ConstRecipeCase(GdIntVectorType.VECTOR2I, List.of(i, i), "godot_new_Vector2i_with_int_int"),
+                new ConstRecipeCase(GdIntVectorType.VECTOR3I, List.of(i, i, i), "godot_new_Vector3i_with_int_int_int"),
+                new ConstRecipeCase(GdIntVectorType.VECTOR4I, List.of(i, i, i, i), "godot_new_Vector4i_with_int_int_int_int"),
+                new ConstRecipeCase(GdRect2Type.RECT2, List.of(v2, v2), "godot_new_Rect2_with_Vector2_Vector2"),
+                new ConstRecipeCase(GdRect2iType.RECT2I, List.of(GdIntVectorType.VECTOR2I, GdIntVectorType.VECTOR2I), "godot_new_Rect2i_with_Vector2i_Vector2i"),
+                new ConstRecipeCase(GdPlaneType.PLANE, List.of(f, f, f, f), "godot_new_Plane_with_float_float_float_float"),
+                new ConstRecipeCase(GdQuaternionType.QUATERNION, List.of(f, f, f, f), "godot_new_Quaternion_with_float_float_float_float"),
+                new ConstRecipeCase(GdAABBType.AABB, List.of(v3, v3), "godot_new_AABB_with_Vector3_Vector3"),
+                new ConstRecipeCase(GdBasisType.BASIS, List.of(v3, v3, v3), "godot_new_Basis_with_Vector3_Vector3_Vector3"),
+                new ConstRecipeCase(GdTransform2DType.TRANSFORM2D, List.of(v2, v2, v2), "godot_new_Transform2D_with_Vector2_Vector2_Vector2"),
+                new ConstRecipeCase(GdTransform3DType.TRANSFORM3D, List.of(GdBasisType.BASIS, v3), "godot_new_Transform3D_with_Basis_Vector3"),
+                new ConstRecipeCase(GdProjectionType.PROJECTION, List.of(v4, v4, v4, v4), "godot_new_Projection_with_Vector4_Vector4_Vector4_Vector4"),
+                new ConstRecipeCase(GdColorType.COLOR, List.of(f, f, f, f), "godot_new_Color_with_float_float_float_float")
+        );
+    }
+
+    private record ConstRecipeCase(
+            GdType targetType,
+            List<GdType> argTypes,
+            String constructorName
+    ) {
     }
 
     private record FlatFloatHelperCtorCase(

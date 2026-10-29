@@ -175,7 +175,14 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
                     throw new LirInsnParsingException(lineNo, token.column, line, "Expected integer operand");
                 }
                 case FLOAT -> {
-                    if (token.kind == TokenKind.FLOAT || token.kind == TokenKind.INT) {
+                    if (token.kind == TokenKind.FLOAT) {
+                        // Keep full double precision: float payloads (including constant
+                        // component literals) round-trip through Java `double` semantics.
+                        return new FloatOperand(Double.parseDouble(token.text));
+                    }
+                    if (token.kind == TokenKind.INT) {
+                        // Integer text feeding a float operand stays on the historical path;
+                        // the double-precision widening only covers FLOAT tokens.
                         return new FloatOperand(Float.parseFloat(token.text));
                     }
                     throw new LirInsnParsingException(lineNo, token.column, line, "Expected float operand");
@@ -210,7 +217,7 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
                         case VARIABLE -> new VariableOperand(token.text);
                         case STRING -> new StringOperand(token.text);
                         case INT -> new IntOperand(Long.parseLong(token.text));
-                        case FLOAT -> new FloatOperand(Float.parseFloat(token.text));
+                        case FLOAT -> new FloatOperand(Double.parseDouble(token.text));
                         case BOOL -> new BooleanOperand(Boolean.parseBoolean(token.text));
                         case IDENT -> new BasicBlockOperand(token.text);
                     };
@@ -319,6 +326,19 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
                 }
                 if (txt.matches("[+-]?\\d*\\.\\d+([eE][+-]?\\d+)?") || txt.matches("[+-]?\\d+[eE][+-]?\\d+")) {
                     return new Token(TokenKind.FLOAT, txt, tokenCol);
+                }
+                // Non-finite canonical spellings (`NaN`, `Infinity`, `-Infinity` — the only
+                // forms the serializer emits) plus the accepted `INF` / `NAN` input aliases.
+                // Alias tokens carry the canonical parseable spelling so downstream operand
+                // mapping sees exactly one form, and these words can never be labels/idents.
+                var nonFinite = switch (txt) {
+                    case "NaN", "NAN" -> "NaN";
+                    case "Infinity", "INF" -> "Infinity";
+                    case "-Infinity", "-INF" -> "-Infinity";
+                    default -> null;
+                };
+                if (nonFinite != null) {
+                    return new Token(TokenKind.FLOAT, nonFinite, tokenCol);
                 }
                 // identifier/label
                 return new Token(TokenKind.IDENT, txt, tokenCol);
