@@ -23,9 +23,9 @@ public interface EvaluationPolicy {
         return EvaluationDomain.GENERAL;
     }
 
-    /// The general const-evaluation surface (§5.1 scalars + §5.2 short-circuit/conditional +
-    /// §5.5 registry dispatch + attribute chains). Geometry operators, member projections, and
-    /// the §5.3 constructor whitelist join this surface when their stage lands.
+    /// The general const-evaluation surface (§5.1 scalars and geometry operators, §5.2
+    /// short-circuit/conditional, §5.3 constructor whitelist, §5.4 member projections, and
+    /// §5.5 registry dispatch on attribute chains).
     static @NotNull EvaluationPolicy general() {
         return new CapabilitySet(
                 Set.of(
@@ -36,6 +36,9 @@ public interface EvaluationPolicy {
                         Capability.BOOL_OPERATORS,
                         Capability.STRING_OPERATORS,
                         Capability.COMPARISON,
+                        Capability.CONSTRUCTOR,
+                        Capability.BUILTIN_OPERATORS,
+                        Capability.MEMBER_PROJECTION,
                         Capability.TERNARY,
                         Capability.ATTRIBUTE_ACCESS,
                         Capability.REGISTERED_MEMBER_CALL

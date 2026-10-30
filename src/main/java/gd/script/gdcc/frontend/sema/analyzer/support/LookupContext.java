@@ -24,7 +24,19 @@ public interface LookupContext {
     ///
     /// `namespaceIdentity` is opaque to the evaluator — it is whatever token this context
     /// emitted inside `LookupResult.ResolvedNamespace` (script enum group, script class, ...).
-    @NotNull LookupResult resolveMember(@NotNull Object namespaceIdentity, @NotNull String memberName);
+    ///
+    /// By convention a builtin *type* namespace carries its `GdType` as identity; the default
+    /// implementation decodes builtin metadata constants (`Vector2.ZERO`, `Basis.IDENTITY`,
+    /// ...) for those identities through `FrontendBuiltinConstantDecoder`. Contexts that emit
+    /// their own identity tokens override this method, usually delegating to
+    /// `LookupContext.super.resolveMember` so builtin namespaces keep working.
+    default @NotNull LookupResult resolveMember(@NotNull Object namespaceIdentity, @NotNull String memberName) {
+        if (namespaceIdentity instanceof GdType builtinType) {
+            return FrontendBuiltinConstantDecoder.resolveConstant(
+                    classRegistry(), builtinType, memberName);
+        }
+        return new LookupResult.Unknown();
+    }
 
     /// The immutable const-callable registry shared for the whole analysis generation (§5.5).
     /// The production default is the empty registry; a policy that denies

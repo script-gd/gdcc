@@ -4,7 +4,7 @@
 > 文中除「§2 核实的代码基线」与「§13 执行记录」外均为建议方案，
 > 建议与事实严格分开，不以本文档内容回写任何事实源文档。
 > §12 的 A1 已由用户确认 earlier-only，不再是待确认项。
-> 阶段状态：P0、P1、P2 已实施（见 §10 各阶段条目与 §13 记录）；P3–P7 未实施。
+> 阶段状态：P0、P1、P2、P3 已实施（见 §10 各阶段条目与 §13 记录）；P4–P7 未实施。
 
 - 适用范围（计划触及，均为相对仓库根路径）：
   - `src/main/java/gd/script/gdcc/frontend/constant/**`（新增值族与求值事实模型）
@@ -871,7 +871,7 @@
     `INT_ARITHMETIC`；enum 域所有 legacy 可见拒绝措辞经
     `unsupportedSuffix`/`expressionSuffix` 保持逐字一致
     （`FrontendEnumConstantEvaluatorTest` 精确字符串断言锚定）。
-- P3 geometry 构造器 / 运算 / 成员投影 / metadata decoder
+- P3 geometry 构造器 / 运算 / 成员投影 / metadata decoder（已实施）
   - 目标：§5.3 构造白名单、§5.1 vector/Color/geometry 运算、§5.4 投影与
     `FrontendBuiltinConstantDecoder`；不要求实现 length 等生产 registry
     entries（候选见 §5.5）。
@@ -883,6 +883,60 @@
     Projection 数据通过；decoder 坏 shape 明确拒绝。
   - 退出门槛：float assert 用 absolute+relative tolerance，整数 / 类型 / 布局 exact；
     `NAN` 用 `isNaN`、`-0` 验 raw bits。
+  - 实施结果：
+    - `FrontendConstConstructorSupport`：普通
+      `FrontendConstructorResolutionSupport` overload 选择 + 显式白名单（声明参数
+      类型精确匹配）；§5.3 全部签名——标量 `int/float/bool/String`（`int(float)`
+      有限范围 + toward-zero、`int(bool)`、`float(int/bool)`、`bool(int/float)`，
+      `int(String)`/`float(String)`/`String(其它)` 排除）、VectorN(i) 分量/copy/
+      同维互转、Rect2(i) 三形态 + 互转、Plane/Quaternion/AABB/Basis/Transform2D/
+      Transform3D/Projection/Color 列明签名、`T()` 文档化默认值（identity vs zero）；
+      axis-angle、`Basis(Quaternion)`、`Quaternion(Basis)`、`Color(String)`、
+      `Transform3D(Projection)` 等 metadata 存在但白名单外的签名全部
+      `whitelist` 拒绝。实参先经 `normalizeArgument`（identity / int→float /
+      同维 Vector*i→Vector*）再入 recipe；`VectorNi`/`Rect2i` int64 实参
+      int32 预检（`BuiltinValue` guard 不充当源错误）。
+    - `FrontendConstMemberProjectionSupport`：§5.4 精确 API 名白名单——
+      vectors/Quaternion `x/y/z/w`、Rect2(i)/AABB `position/size/end`、Plane
+      `normal/x/y/z/d`、Basis/Transform/Projection 列切片、Color `r/g/b/a`；
+      `end` 为 pos+size 逐分量计算（`Rect2i.end` int32 越界拒绝）；`h`/`s`/`v`/
+      `r8`/`ok_hsl`/scalar 接收者全拒绝。
+    - `FrontendBuiltinConstantDecoder`：受限 `TypeName(arg, ...)` 文法——
+      固定类型名 + flat scalar 参数（十进制/指数 + `inf`/`inf_neg`/`nan`）；
+      arity 按 §5.3 canonical leaf 数精确匹配（2/3/4/6/9/12/16），Basis/
+      Transform3D flat 物理行主序转置到 canonical 逻辑列；坏 shape / 错类型 /
+      超 arity / int32 越界 / 不支持类型全拒绝；`LookupContext.resolveMember`
+      默认实现把 `GdType` namespace identity 接到此 decoder——`Vector2.ZERO` /
+      `Basis.IDENTITY` / `Transform3D.FLIP_Y` / `Color.RED` 等 metadata 常量
+      直接求值，builtin class enum 成员（`AXIS_X`）保持 Unknown。
+    - evaluator：CONSTRUCTOR 下 `CallExpression` 全形状——callee 必须解析为
+      `GdType` namespace token、实参经 operand pass；BUILTIN_OPERATORS 下
+      unary `±`（metadata 精确条目，恰覆盖 9 类型）、同型分量 `+ - * /`
+      （`*i` 额外 `%`，toward-zero/dividend-sign 同 Java）、`==`/`!=` 逐叶
+      IEEE 比较（`record.equals` 的 NaN/-0 差异显式规避）、右标量 `* /` 与
+      左标量 `*`（返回类型以 metadata 为准，如 `Vector2i*float→Vector2`）；
+      `*i` 算术 int64 计算 + int32 fail-closed（`MIN/-1`、分量溢出、负化全
+      拒绝）；int64 标量乘经 `Math.multiplyExact` 防回绕——`MAX*2` 等
+      回绕进 int32 窗口的乘积也正确拒绝；矩阵乘/四元数/变换等 metadata
+      存在但白名单外的 pair 全部拒绝。
+      `EvaluationPolicy.general()` 增 CONSTRUCTOR/BUILTIN_OPERATORS/
+      MEMBER_PROJECTION；enum policy 不变（CONSTRUCTOR-off 的
+      `CallExpression` 仍走 `rejectedShape` 旧措辞）。
+    - 测试：`FrontendConstantEvaluatorTest` 新增 14 用例（~110 断言点）——
+      构造矩阵每签名正例 + 排除组反例、非对称 Basis/Transform/Projection 列
+      布局、`Vector2i` int32 端点与溢出、IEEE `==`（`-0.0==+0.0`、`NaN!=NaN`）、
+      全类型投影表 + `end` 计算 + 越界、metadata 常量解码、callee/参数形状
+      校验、三能力门独立拒绝、dead-branch 整树验证；float leaf 断言改
+      `doubleToRawLongBits`（-0.0/+0.0 可区分）；新增
+      `FrontendBuiltinConstantDecoderTest`（decoder 正反：标量/flat 布局/
+      Basis·Transform3D 转置/坏 shape/真实 metadata/`AXIS_X` Unknown）。
+      `GdConstantValue` 增 `leafCountOf`/`leafKindOf` 公开访问器。
+      `FrontendConstCallableRegistryTest`、`FrontendEnumConstantEvaluatorTest`、
+      `GdConstantValueTest`、`FrontendConstantMaterializationTest`、
+      `FrontendBodyOwnerProceduresExprTypeTest`、
+      `FrontendTypeCheckAnalyzerTest`、`FrontendCompileCheckAnalyzerTest`、
+      `FrontendEnumBodyBindingExprTypeTest`、`FrontendEnumChainBindingTest`
+      回归全绿。
 - P4 class 联合 prepass / binding / qualified / lowering
   - 目标：§6 全部接线（name reservations、联合 prepass、ClassScope 泛化、
     `FrontendChainReductionHelper`、lowering 使用处物化）；class

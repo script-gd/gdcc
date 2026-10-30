@@ -172,6 +172,27 @@ public sealed interface GdConstantValue {
             return ComponentSpec.of(type) != null;
         }
 
+        /// Canonical flat-leaf count of a controlled builtin type, or `-1` when `type` is not
+        /// controlled — the §5.3 layout arity shared by decoders, projections, and materializers.
+        public static int leafCountOf(@NotNull GdType type) {
+            var spec = ComponentSpec.of(type);
+            return spec == null ? -1 : spec.leafCount();
+        }
+
+        /// Scalar leaf family of a controlled builtin type, or null when `type` is not controlled.
+        public static @Nullable LeafKind leafKindOf(@NotNull GdType type) {
+            var spec = ComponentSpec.of(type);
+            return spec == null ? null : spec.leafKind();
+        }
+
+        /// Scalar family a controlled builtin type's flat leaves belong to.
+        public enum LeafKind {
+            /// `FloatValue` leaves normalized through float32 narrowing (geometry `real_t`).
+            FLOAT,
+            /// `IntValue` leaves bounded to the int32 component range (`*i`/`Rect2i`).
+            INT
+        }
+
         private static @NotNull String leafTypeName(@Nullable GdConstantValue leaf) {
             return leaf == null ? "null" : leaf.type().getTypeName();
         }
@@ -179,11 +200,6 @@ public sealed interface GdConstantValue {
         /// Canonical flat-leaf contract of one controlled builtin type: exact scalar-leaf count
         /// and which scalar family the leaves belong to (plan §5.3 layout table).
         private record ComponentSpec(int leafCount, @NotNull LeafKind leafKind) {
-
-            private enum LeafKind {
-                FLOAT,
-                INT
-            }
 
             private static @Nullable ComponentSpec of(@NotNull GdType type) {
                 var extensionType = type.getGdExtensionType();

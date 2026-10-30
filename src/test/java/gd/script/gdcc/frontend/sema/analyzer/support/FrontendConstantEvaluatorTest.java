@@ -25,6 +25,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -565,10 +566,11 @@ class FrontendConstantEvaluatorTest {
                         ),
                         "not supported"
                 ),
-                // Member projections on values belong to the later stage, not this surface.
-                () -> assertRejected(
-                        evaluate(attrProperty(identifier("V"), "x"), context),
-                        "not supported"
+                // Member projections resolve through the §5.4 whitelist — they are not
+                // registry calls and never consult `callableRegistry()`.
+                () -> assertResolvedFloat(
+                        1,
+                        evaluate(attrProperty(identifier("V"), "x"), context)
                 )
         );
     }
@@ -691,9 +693,12 @@ class FrontendConstantEvaluatorTest {
     @Test
     void rejectsUnsupportedShapesAndOperators() {
         assertAll(
+                // With constructors open, `f()` reaches callee resolution — the name is
+                // unknown, so the rejection is the name-binding diagnostic rather than a
+                // shape rejection.
                 () -> assertRejected(
                         evaluate(new CallExpression(identifier("f"), List.of(), TINY)),
-                        "not a supported constant expression"
+                        "unknown identifier 'f'"
                 ),
                 () -> assertRejected(
                         evaluate(new SubscriptExpression(identifier("V"), List.of(intLit(0)), TINY)),
@@ -784,6 +789,872 @@ class FrontendConstantEvaluatorTest {
     }
 
     // ------------------------------------------------------------------
+    // §5.3 scalar constructor whitelist
+    // ------------------------------------------------------------------
+
+    @Test
+    void scalarConstructorsConvertAndCopy() {
+        var context = typeContext(GdIntType.INT, GdFloatType.FLOAT, GdBoolType.BOOL, GdStringType.STRING);
+        assertAll(
+                () -> assertResolvedInt(0, evaluate(call(identifier("int")), context)),
+                () -> assertResolvedInt(5, evaluate(call(identifier("int"), intLit(5)), context)),
+                // int(float) truncates toward zero; only finite values inside int64 admit.
+                () -> assertResolvedInt(2, evaluate(call(identifier("int"), floatLit("2.9")), context)),
+                () -> assertResolvedInt(-2, evaluate(call(identifier("int"),
+                        unary("-", floatLit("2.9"))), context)),
+                () -> assertResolvedInt(1, evaluate(call(identifier("int"), lit("true", "true")), context)),
+                () -> assertResolvedInt(0, evaluate(call(identifier("int"), lit("false", "false")), context)),
+                () -> assertResolvedFloat(0.0, evaluate(call(identifier("float")), context)),
+                () -> assertResolvedFloat(2.0, evaluate(call(identifier("float"), intLit(2)), context)),
+                () -> assertResolvedFloat(1.0, evaluate(call(identifier("float"), lit("true", "true")), context)),
+                () -> assertResolvedFloat(0.5, evaluate(call(identifier("float"), floatLit("0.5")), context)),
+                () -> assertResolvedBool(false, evaluate(call(identifier("bool")), context)),
+                () -> assertResolvedBool(true, evaluate(call(identifier("bool"), intLit(1)), context)),
+                () -> assertResolvedBool(false, evaluate(call(identifier("bool"), intLit(0)), context)),
+                () -> assertResolvedBool(true, evaluate(call(identifier("bool"), floatLit("0.5")), context)),
+                () -> assertResolvedBool(false, evaluate(call(identifier("bool"), floatLit("0.0")), context)),
+                () -> assertResolvedString("", evaluate(call(identifier("String")), context)),
+                () -> assertResolvedString("abc", evaluate(call(identifier("String"), strLit("abc")), context))
+        );
+    }
+
+    @Test
+    void excludedScalarConstructorFormsReject() {
+        var context = typeContext(GdIntType.INT, GdFloatType.FLOAT, GdStringType.STRING);
+        assertAll(
+                // int(String) / float(String) exist in metadata but are outside the §5.3 whitelist.
+                () -> assertRejected(
+                        evaluate(call(identifier("int"), strLit("5")), context), "whitelist"),
+                () -> assertRejected(
+                        evaluate(call(identifier("float"), strLit("1.5")), context), "whitelist"),
+                // int(float) fails closed: non-finite and out-of-int64-range values reject.
+                () -> assertRejected(
+                        evaluate(call(identifier("int"), floatLit("1e19")), context), "not convertible"),
+                () -> assertRejected(
+                        evaluate(call(identifier("int"), unary("-", floatLit("1e19"))), context),
+                        "not convertible"),
+                // No int->String overload exists at all — a selection failure, not a whitelist miss.
+                () -> assertRejected(
+                        evaluate(call(identifier("String"), intLit(5)), context), "applicable"),
+                () -> assertRejected(
+                        evaluate(call(identifier("String"),
+                                call(identifier("String"), strLit("a"), intLit(1))), context),
+                        "applicable")
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // §5.3 geometry constructor whitelist
+    // ------------------------------------------------------------------
+
+    @Test
+    void vectorConstructorsCoverWhitelistedShapes() {
+        var context = typeContext(
+                GdFloatVectorType.VECTOR2, GdFloatVectorType.VECTOR3, GdFloatVectorType.VECTOR4,
+                GdIntVectorType.VECTOR2I, GdIntVectorType.VECTOR3I, GdIntVectorType.VECTOR4I);
+        assertAll(
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{0, 0},
+                        evaluate(call(identifier("Vector2")), context)),
+                // VectorN accepts N float components — int args normalize through int->float.
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{1, 2},
+                        evaluate(call(identifier("Vector2"), intLit(1), intLit(2)), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR3, new double[]{1, 2, 3},
+                        evaluate(call(identifier("Vector3"), intLit(1), intLit(2), intLit(3)), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR4, new double[]{1, 2, 3, 4},
+                        evaluate(call(identifier("Vector4"), intLit(1), intLit(2), intLit(3), intLit(4)), context)),
+                // Copy construction passes the canonical value through unchanged.
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{1, 2},
+                        evaluate(call(identifier("Vector2"), v2(1, 2)), context)),
+                // Same-dimension VectorNi -> VectorN widens each int leaf exactly.
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{1, -2},
+                        evaluate(call(identifier("Vector2"), call(
+                                identifier("Vector2i"), intLit(1), unary("-", intLit(2)))), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR3, new double[]{1, 2, 3},
+                        evaluate(call(identifier("Vector3"), call(
+                                identifier("Vector3i"), intLit(1), intLit(2), intLit(3))), context)),
+                // VectorNi takes int leaves inside the int32 component range.
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR2I, new long[]{0, 0},
+                        evaluate(call(identifier("Vector2i")), context)),
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR2I, new long[]{1, -2},
+                        evaluate(call(identifier("Vector2i"), intLit(1), unary("-", intLit(2))), context)),
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR3I, new long[]{1, 2, 3},
+                        evaluate(call(identifier("Vector3i"), intLit(1), intLit(2), intLit(3)), context)),
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR4I, new long[]{1, 2, 3, 4},
+                        evaluate(call(identifier("Vector4i"), intLit(1), intLit(2), intLit(3), intLit(4)), context)),
+                // int32 component endpoints admit.
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR2I,
+                        new long[]{Integer.MAX_VALUE, Integer.MIN_VALUE},
+                        evaluate(call(identifier("Vector2i"),
+                                intLit(Integer.MAX_VALUE),
+                                unary("-", lit("integer", "2147483648"))), context)),
+                // VectorN -> VectorNi truncates toward zero per component.
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR2I, new long[]{1, -2},
+                        evaluate(call(identifier("Vector2i"), v2(1.9, -2.9)), context))
+        );
+    }
+
+    @Test
+    void compositeConstructorsAssembleCanonicalLayouts() {
+        var context = typeContext(
+                GdFloatVectorType.VECTOR2, GdFloatVectorType.VECTOR3, GdFloatVectorType.VECTOR4,
+                GdIntVectorType.VECTOR2I, GdRect2Type.RECT2, GdRect2iType.RECT2I,
+                GdPlaneType.PLANE, GdQuaternionType.QUATERNION, GdAABBType.AABB,
+                GdBasisType.BASIS, GdTransform2DType.TRANSFORM2D, GdTransform3DType.TRANSFORM3D,
+                GdProjectionType.PROJECTION, GdColorType.COLOR);
+        assertAll(
+                // Rect2: two same-type vectors (Vector2i converts to Vector2), four floats,
+                // or a Rect2i widening — components are position then size.
+                () -> assertResolvedFloatLeaves(GdRect2Type.RECT2, new double[]{1, 2, 3, 4},
+                        evaluate(call(identifier("Rect2"), v2(1, 2), v2(3, 4)), context)),
+                () -> assertResolvedFloatLeaves(GdRect2Type.RECT2, new double[]{1, 2, 3, 4},
+                        evaluate(call(identifier("Rect2"), intLit(1), intLit(2), intLit(3), intLit(4)), context)),
+                () -> assertResolvedFloatLeaves(GdRect2Type.RECT2, new double[]{1, 2, 3, 4},
+                        evaluate(call(identifier("Rect2"), call(
+                                identifier("Rect2i"), intLit(1), intLit(2), intLit(3), intLit(4))), context)),
+                () -> assertResolvedFloatLeaves(GdRect2Type.RECT2, new double[]{1, 2, 3, 4},
+                        evaluate(call(identifier("Rect2"), call(identifier("Vector2i"), intLit(1), intLit(2)),
+                                call(identifier("Vector2i"), intLit(3), intLit(4))), context)),
+                // Rect2i mirrors the shapes with int32 leaves.
+                () -> assertResolvedIntLeaves(GdRect2iType.RECT2I, new long[]{1, 2, 3, 4},
+                        evaluate(call(identifier("Rect2i"), intLit(1), intLit(2), intLit(3), intLit(4)), context)),
+                () -> assertResolvedIntLeaves(GdRect2iType.RECT2I, new long[]{1, 2, 3, 4},
+                        evaluate(call(identifier("Rect2i"),
+                                call(identifier("Vector2i"), intLit(1), intLit(2)),
+                                call(identifier("Vector2i"), intLit(3), intLit(4))), context)),
+                () -> assertResolvedIntLeaves(GdRect2iType.RECT2I, new long[]{1, 2, 3, 4},
+                        evaluate(call(identifier("Rect2i"), call(
+                                identifier("Rect2"), intLit(1), intLit(2), intLit(3), intLit(4))), context)),
+                // Plane: (Vector3 normal, float d) and four floats share the canonical layout.
+                () -> assertResolvedFloatLeaves(GdPlaneType.PLANE, new double[]{0, 1, 0, 5},
+                        evaluate(call(identifier("Plane"), v3(0, 1, 0), intLit(5)), context)),
+                () -> assertResolvedFloatLeaves(GdPlaneType.PLANE, new double[]{0, 1, 0, 5},
+                        evaluate(call(identifier("Plane"), intLit(0), intLit(1), intLit(0), intLit(5)), context)),
+                // Quaternion defaults to identity and takes four floats.
+                () -> assertResolvedFloatLeaves(GdQuaternionType.QUATERNION, new double[]{0, 0, 0, 1},
+                        evaluate(call(identifier("Quaternion")), context)),
+                () -> assertResolvedFloatLeaves(GdQuaternionType.QUATERNION, new double[]{1, 2, 3, 4},
+                        evaluate(call(identifier("Quaternion"), intLit(1), intLit(2), intLit(3), intLit(4)), context)),
+                // AABB takes position and size Vector3s.
+                () -> assertResolvedFloatLeaves(GdAABBType.AABB, new double[]{1, 2, 3, 4, 5, 6},
+                        evaluate(call(identifier("AABB"), v3(1, 2, 3), v3(4, 5, 6)), context)),
+                // Basis keeps logical axis columns — asymmetric data pins the column order.
+                () -> assertResolvedFloatLeaves(GdBasisType.BASIS,
+                        new double[]{1, 2, 3, 4, 5, 6, 7, 8, 10},
+                        evaluate(call(identifier("Basis"), v3(1, 2, 3), v3(4, 5, 6), v3(7, 8, 10)), context)),
+                // Transform2D takes three Vector2 columns (x, y, origin).
+                () -> assertResolvedFloatLeaves(GdTransform2DType.TRANSFORM2D,
+                        new double[]{1, 2, 3, 4, 5, 6},
+                        evaluate(call(identifier("Transform2D"), v2(1, 2), v2(3, 4), v2(5, 6)), context)),
+                // Transform3D: (Basis, Vector3) and four-Vector3 forms share the layout —
+                // x/y/z basis columns then origin.
+                () -> assertResolvedFloatLeaves(GdTransform3DType.TRANSFORM3D,
+                        new double[]{1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13},
+                        evaluate(call(identifier("Transform3D"),
+                                call(identifier("Basis"), v3(1, 2, 3), v3(4, 5, 6), v3(7, 8, 10)),
+                                v3(11, 12, 13)), context)),
+                () -> assertResolvedFloatLeaves(GdTransform3DType.TRANSFORM3D,
+                        new double[]{1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13},
+                        evaluate(call(identifier("Transform3D"),
+                                v3(1, 2, 3), v3(4, 5, 6), v3(7, 8, 10), v3(11, 12, 13)), context)),
+                // Projection takes four Vector4 columns.
+                () -> assertResolvedFloatLeaves(GdProjectionType.PROJECTION,
+                        new double[]{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+                        evaluate(call(identifier("Projection"),
+                                v4(1, 2, 3, 4), v4(5, 6, 7, 8), v4(9, 10, 11, 12), v4(13, 14, 15, 16)), context)),
+                // Color: rgb implies alpha=1; (Color, float alpha) keeps rgb and replaces alpha.
+                () -> assertResolvedFloatLeaves(GdColorType.COLOR, new double[]{0, 0, 0, 1},
+                        evaluate(call(identifier("Color")), context)),
+                () -> assertResolvedFloatLeaves(GdColorType.COLOR, new double[]{1, 2, 3, 1},
+                        evaluate(call(identifier("Color"), intLit(1), intLit(2), intLit(3)), context)),
+                () -> assertResolvedFloatLeaves(GdColorType.COLOR, new double[]{1, 2, 3, 4},
+                        evaluate(call(identifier("Color"), intLit(1), intLit(2), intLit(3), intLit(4)), context)),
+                () -> assertResolvedFloatLeaves(GdColorType.COLOR, new double[]{1, 2, 3, 5},
+                        evaluate(call(identifier("Color"),
+                                call(identifier("Color"), intLit(1), intLit(2), intLit(3), intLit(4)),
+                                intLit(5)), context))
+        );
+    }
+
+    @Test
+    void defaultConstructorsProduceDocumentedDefaults() {
+        var context = typeContext(
+                GdRect2Type.RECT2, GdRect2iType.RECT2I, GdPlaneType.PLANE, GdAABBType.AABB,
+                GdBasisType.BASIS, GdTransform2DType.TRANSFORM2D, GdTransform3DType.TRANSFORM3D,
+                GdProjectionType.PROJECTION);
+        assertAll(
+                () -> assertResolvedFloatLeaves(GdRect2Type.RECT2, new double[]{0, 0, 0, 0},
+                        evaluate(call(identifier("Rect2")), context)),
+                () -> assertResolvedIntLeaves(GdRect2iType.RECT2I, new long[]{0, 0, 0, 0},
+                        evaluate(call(identifier("Rect2i")), context)),
+                () -> assertResolvedFloatLeaves(GdPlaneType.PLANE, new double[]{0, 0, 0, 0},
+                        evaluate(call(identifier("Plane")), context)),
+                () -> assertResolvedFloatLeaves(GdAABBType.AABB, new double[]{0, 0, 0, 0, 0, 0},
+                        evaluate(call(identifier("AABB")), context)),
+                // Identity transforms — zero defaults would be silently wrong here.
+                () -> assertResolvedFloatLeaves(GdBasisType.BASIS,
+                        new double[]{1, 0, 0, 0, 1, 0, 0, 0, 1},
+                        evaluate(call(identifier("Basis")), context)),
+                () -> assertResolvedFloatLeaves(GdTransform2DType.TRANSFORM2D,
+                        new double[]{1, 0, 0, 1, 0, 0},
+                        evaluate(call(identifier("Transform2D")), context)),
+                () -> assertResolvedFloatLeaves(GdTransform3DType.TRANSFORM3D,
+                        new double[]{1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0},
+                        evaluate(call(identifier("Transform3D")), context)),
+                () -> assertResolvedFloatLeaves(GdProjectionType.PROJECTION,
+                        new double[]{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1},
+                        evaluate(call(identifier("Projection")), context))
+        );
+    }
+
+    @Test
+    void excludedGeometryConstructorOverloadsReject() {
+        var context = typeContext(
+                GdFloatVectorType.VECTOR2, GdFloatVectorType.VECTOR3, GdIntVectorType.VECTOR2I,
+                GdRect2iType.RECT2I, GdPlaneType.PLANE, GdQuaternionType.QUATERNION,
+                GdBasisType.BASIS, GdTransform2DType.TRANSFORM2D, GdTransform3DType.TRANSFORM3D,
+                GdProjectionType.PROJECTION, GdColorType.COLOR);
+        assertAll(
+                // Axis-angle, arc, and Basis conversions are outside the Quaternion whitelist.
+                () -> assertRejected(
+                        evaluate(call(identifier("Quaternion"), v3(0, 1, 0), floatLit("0.5")), context),
+                        "whitelist"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Quaternion"), v3(0, 0, 1), v3(1, 0, 0)), context),
+                        "whitelist"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Quaternion"), call(identifier("Basis"))), context),
+                        "whitelist"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Basis"), call(identifier("Quaternion"))), context),
+                        "whitelist"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Basis"), v3(0, 1, 0), floatLit("0.5")), context),
+                        "whitelist"),
+                // Plane normal-only, normal+point, and three-point forms are excluded.
+                () -> assertRejected(
+                        evaluate(call(identifier("Plane"), v3(0, 1, 0)), context), "whitelist"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Plane"), v3(0, 1, 0), v3(1, 0, 0)), context),
+                        "whitelist"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Plane"), v3(0, 0, 0), v3(1, 0, 0), v3(0, 1, 0)), context),
+                        "whitelist"),
+                // Transform2D rotation forms and the Projection cross-conversions are excluded.
+                () -> assertRejected(
+                        evaluate(call(identifier("Transform2D"), floatLit("0.5"), v2(1, 2)), context),
+                        "whitelist"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Transform2D"),
+                                floatLit("0.5"), v2(1, 2), floatLit("0.1"), v2(3, 4)), context),
+                        "whitelist"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Transform3D"), call(identifier("Projection"))), context),
+                        "whitelist"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Projection"), call(identifier("Transform3D"))), context),
+                        "whitelist"),
+                // Named-color parsing and float->int-vector arguments are excluded.
+                () -> assertRejected(
+                        evaluate(call(identifier("Color"), strLit("red")), context), "whitelist"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Color"), strLit("red"), floatLit("0.5")), context),
+                        "whitelist"),
+                // Arity and argument-type mismatches fail overload selection itself.
+                () -> assertRejected(
+                        evaluate(call(identifier("Vector2"), intLit(1)), context), "applicable"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Vector2i"), floatLit("1.5"), intLit(2)), context),
+                        "applicable"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Rect2i"), v2(1, 2), v2(3, 4)), context), "applicable"),
+                // int64 leaves that exceed the int32 component range reject at construction.
+                () -> assertRejected(
+                        evaluate(call(identifier("Vector2i"), intLit(2147483648L), intLit(0)), context),
+                        "int32")
+        );
+    }
+
+    @Test
+    void constructorCallShapeValidation() {
+        var constant = context(
+                Map.of("V", constOf(GdConstantValue.BuiltinValue.ofFloats(
+                        GdFloatVectorType.VECTOR2, 1, 2))),
+                Map.of(),
+                FrontendConstCallableRegistry.empty(), null);
+        var namespaces = context(
+                Map.of(
+                        "State", new LookupContext.LookupResult.ResolvedNamespace(new Object()),
+                        "Vector2", typeName(GdFloatVectorType.VECTOR2),
+                        "Variant", typeName(GdVariantType.VARIANT),
+                        "StringName", typeName(GdStringNameType.STRING_NAME)),
+                Map.of(),
+                FrontendConstCallableRegistry.empty(), null);
+        assertAll(
+                // A value callee is not a constructor.
+                () -> assertRejected(evaluate(call(identifier("V"), intLit(1)), constant),
+                        "not a type constructor"),
+                // A namespace whose identity is not a builtin type (enum groups, script
+                // classes) cannot construct constants either.
+                () -> assertRejected(evaluate(call(identifier("State"), intLit(1)), namespaces),
+                        "not a builtin type"),
+                // Nested callee results are values too.
+                () -> assertRejected(
+                        evaluate(call(call(identifier("Vector2")), intLit(1)), namespaces),
+                        "not a type constructor"),
+                // Unknown callees and non-value arguments keep rejecting through the operand pass.
+                () -> assertRejected(evaluate(call(identifier("Missing"), intLit(1)), namespaces),
+                        "unknown identifier"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Vector2"), identifier("Missing"), intLit(2)), namespaces),
+                        "unknown identifier"),
+                () -> assertRejected(
+                        evaluate(call(identifier("Vector2"), identifier("State"), intLit(2)), namespaces),
+                        "constant values"),
+                // Types outside the constant surface (Variant) and builtin classes outside the
+                // constructor whitelist (StringName) both fail the constructibility gate.
+                () -> assertRejected(evaluate(call(identifier("Variant"), intLit(1)), namespaces),
+                        "constant-constructible"),
+                () -> assertRejected(evaluate(call(identifier("StringName"), strLit("x")), namespaces),
+                        "constant-constructible")
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // §5.1 geometry operators
+    // ------------------------------------------------------------------
+
+    @Test
+    void unaryPlusMinusOnMetadataAdmittedTypes() {
+        var context = context(
+                Map.of(
+                        "V", constOf(GdConstantValue.BuiltinValue.ofFloats(GdFloatVectorType.VECTOR2, 1, -2)),
+                        "VI", constOf(GdConstantValue.BuiltinValue.ofInts(GdIntVectorType.VECTOR3I, 1, -2, 3)),
+                        "P", constOf(GdConstantValue.BuiltinValue.ofFloats(GdPlaneType.PLANE, 0, 1, 0, 5)),
+                        "Q", constOf(GdConstantValue.BuiltinValue.ofFloats(GdQuaternionType.QUATERNION, 1, 2, 3, 4)),
+                        "C", constOf(GdConstantValue.BuiltinValue.ofFloats(GdColorType.COLOR, 0.5, 0.25, 0.125, 1)),
+                        "B", constOf(GdConstantValue.BuiltinValue.ofFloats(GdBasisType.BASIS,
+                                1, 0, 0, 0, 1, 0, 0, 0, 1)),
+                        "R", constOf(GdConstantValue.BuiltinValue.ofFloats(GdRect2Type.RECT2, 1, 2, 3, 4))),
+                Map.of(),
+                FrontendConstCallableRegistry.empty(), null);
+        assertAll(
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{-1, 2},
+                        evaluate(unary("-", identifier("V")), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{1, -2},
+                        evaluate(unary("+", identifier("V")), context)),
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR3I, new long[]{-1, 2, -3},
+                        evaluate(unary("-", identifier("VI")), context)),
+                () -> assertResolvedFloatLeaves(GdPlaneType.PLANE, new double[]{-0.0, -1, -0.0, -5},
+                        evaluate(unary("-", identifier("P")), context)),
+                () -> assertResolvedFloatLeaves(GdQuaternionType.QUATERNION, new double[]{-1, -2, -3, -4},
+                        evaluate(unary("-", identifier("Q")), context)),
+                () -> assertResolvedFloatLeaves(GdColorType.COLOR, new double[]{-0.5, -0.25, -0.125, -1},
+                        evaluate(unary("-", identifier("C")), context)),
+                // Metadata owns no unary entry for Basis/Rect2/transforms — those reject even
+                // though they are controlled builtins.
+                () -> assertRejected(evaluate(unary("-", identifier("B")), context), "not supported"),
+                () -> assertRejected(evaluate(unary("-", identifier("R")), context), "not supported")
+        );
+    }
+
+    @Test
+    void componentArithmeticOnVectorsAndColor() {
+        var context = context(
+                Map.of(
+                        "V", constOf(GdConstantValue.BuiltinValue.ofFloats(GdFloatVectorType.VECTOR2, 8, -6)),
+                        "VI", constOf(GdConstantValue.BuiltinValue.ofInts(GdIntVectorType.VECTOR2I, 7, -6)),
+                        "C", constOf(GdConstantValue.BuiltinValue.ofFloats(GdColorType.COLOR, 0.5, 0.5, 0.5, 1)),
+                        "Vector2", typeName(GdFloatVectorType.VECTOR2),
+                        "Vector2i", typeName(GdIntVectorType.VECTOR2I),
+                        "Color", typeName(GdColorType.COLOR)),
+                Map.of(),
+                FrontendConstCallableRegistry.empty(), null);
+        assertAll(
+                // Same-type component + - * / for float vectors.
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{9, -4},
+                        evaluate(binary("+", identifier("V"), v2(1, 2)), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{7, -8},
+                        evaluate(binary("-", identifier("V"), v2(1, 2)), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{16, -12},
+                        evaluate(binary("*", identifier("V"), v2(2, 2)), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{4, -3},
+                        evaluate(binary("/", identifier("V"), v2(2, 2)), context)),
+                // *i vectors additionally admit % — toward-zero division, dividend-signed
+                // remainder, both matching Godot semantics.
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR2I, new long[]{9, -4},
+                        evaluate(binary("+", identifier("VI"),
+                                call(identifier("Vector2i"), intLit(2), intLit(2))), context)),
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR2I, new long[]{3, -3},
+                        evaluate(binary("/", identifier("VI"),
+                                call(identifier("Vector2i"), intLit(2), intLit(2))), context)),
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR2I, new long[]{1, 0},
+                        evaluate(binary("%", identifier("VI"),
+                                call(identifier("Vector2i"), intLit(3), intLit(2))), context)),
+                // Color component arithmetic shares the vector rules.
+                () -> assertResolvedFloatLeaves(GdColorType.COLOR, new double[]{0.25, 0.25, 0.25, 1},
+                        evaluate(binary("*", identifier("C"), call(
+                                identifier("Color"), floatLit("0.5"), floatLit("0.5"), floatLit("0.5"), intLit(1))),
+                                context))
+        );
+    }
+
+    @Test
+    void scalarPairsFollowMetadataDirection() {
+        var context = context(
+                Map.of(
+                        "V", constOf(GdConstantValue.BuiltinValue.ofFloats(GdFloatVectorType.VECTOR2, 4, -6)),
+                        "VI", constOf(GdConstantValue.BuiltinValue.ofInts(GdIntVectorType.VECTOR2I, 4, -6)),
+                        "C", constOf(GdConstantValue.BuiltinValue.ofFloats(GdColorType.COLOR, 0.5, 0.5, 0.5, 1))),
+                Map.of(),
+                FrontendConstCallableRegistry.empty(), null);
+        assertAll(
+                // Right-scalar * / keep the builtin type when metadata says so.
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{8, -12},
+                        evaluate(binary("*", identifier("V"), intLit(2)), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{10, -15},
+                        evaluate(binary("*", identifier("V"), floatLit("2.5")), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{2, -3},
+                        evaluate(binary("/", identifier("V"), intLit(2)), context)),
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR2I, new long[]{8, -12},
+                        evaluate(binary("*", identifier("VI"), intLit(2)), context)),
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR2I, new long[]{2, -3},
+                        evaluate(binary("/", identifier("VI"), intLit(2)), context)),
+                // *i * float promotes to the float vector the metadata declares.
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{10, -15},
+                        evaluate(binary("*", identifier("VI"), floatLit("2.5")), context)),
+                // Left-scalar * mirrors the right-scalar result type.
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{8, -12},
+                        evaluate(binary("*", intLit(2), identifier("V")), context)),
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR2I, new long[]{8, -12},
+                        evaluate(binary("*", intLit(2), identifier("VI")), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{10, -15},
+                        evaluate(binary("*", floatLit("2.5"), identifier("VI")), context)),
+                () -> assertResolvedFloatLeaves(GdColorType.COLOR, new double[]{1, 1, 1, 2},
+                        evaluate(binary("*", identifier("C"), intLit(2)), context))
+        );
+    }
+
+    @Test
+    void geometryOperatorWhitelistRejectsOtherPairs() {
+        var context = context(
+                Map.of(
+                        "V", constOf(GdConstantValue.BuiltinValue.ofFloats(GdFloatVectorType.VECTOR2, 1, 2)),
+                        "VI", constOf(GdConstantValue.BuiltinValue.ofInts(GdIntVectorType.VECTOR2I, 1, 2)),
+                        "B", constOf(GdConstantValue.BuiltinValue.ofFloats(GdBasisType.BASIS,
+                                1, 0, 0, 0, 1, 0, 0, 0, 1)),
+                        "T", constOf(GdConstantValue.BuiltinValue.ofFloats(GdTransform3DType.TRANSFORM3D,
+                                1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)),
+                        "Q", constOf(GdConstantValue.BuiltinValue.ofFloats(GdQuaternionType.QUATERNION, 0, 0, 0, 1))),
+                Map.of(),
+                FrontendConstCallableRegistry.empty(), null);
+        assertAll(
+                // Relational geometry comparisons are not in the §5.1 surface.
+                () -> assertRejected(evaluate(binary("<", identifier("V"), identifier("V")), context), "not supported"),
+                // Different builtin types never pair — Vector2 vs Vector2i stays rejected.
+                () -> assertRejected(evaluate(binary("+", identifier("V"), identifier("VI")), context), "not supported"),
+                // % on float vectors and scalar-sided % are excluded.
+                () -> assertRejected(evaluate(binary("%", identifier("V"), identifier("V")), context), "not supported"),
+                () -> assertRejected(evaluate(binary("%", identifier("VI"), intLit(2)), context), "not supported"),
+                // scalar + Vector / scalar - Vector / scalar / Vector all reject.
+                () -> assertRejected(evaluate(binary("+", intLit(1), identifier("V")), context), "not supported"),
+                () -> assertRejected(evaluate(binary("-", intLit(1), identifier("V")), context), "not supported"),
+                () -> assertRejected(evaluate(binary("/", intLit(2), identifier("V")), context), "not supported"),
+                // vector + scalar / vector - scalar reject — only * / open on the right.
+                () -> assertRejected(evaluate(binary("+", identifier("V"), intLit(1)), context), "not supported"),
+                () -> assertRejected(evaluate(binary("-", identifier("V"), intLit(1)), context), "not supported"),
+                // Matrix/transform/quaternion arithmetic is outside v1 even though metadata
+                // lists entries for it.
+                () -> assertRejected(evaluate(binary("*", identifier("B"), identifier("B")), context), "not supported"),
+                () -> assertRejected(evaluate(binary("*", identifier("T"), identifier("T")), context), "not supported"),
+                () -> assertRejected(evaluate(binary("*", identifier("Q"), identifier("Q")), context), "not supported"),
+                () -> assertRejected(evaluate(binary("+", identifier("Q"), identifier("Q")), context), "not supported")
+        );
+    }
+
+    @Test
+    void geometryArithmeticFailsClosedOnDomainErrors() {
+        var context = context(
+                Map.ofEntries(
+                        Map.entry("V", constOf(GdConstantValue.BuiltinValue.ofFloats(GdFloatVectorType.VECTOR2, 4, -6))),
+                        Map.entry("VI", constOf(GdConstantValue.BuiltinValue.ofInts(GdIntVectorType.VECTOR2I, 4, -6))),
+                        Map.entry("VIZERO", constOf(GdConstantValue.BuiltinValue.ofInts(GdIntVectorType.VECTOR2I, 0, 1))),
+                        Map.entry("VZERO", constOf(GdConstantValue.BuiltinValue.ofFloats(GdFloatVectorType.VECTOR2, 0, 1))),
+                        Map.entry("VIMAX", constOf(GdConstantValue.BuiltinValue.ofInts(
+                                GdIntVectorType.VECTOR2I, Integer.MAX_VALUE, 1))),
+                        Map.entry("VIMIN", constOf(GdConstantValue.BuiltinValue.ofInts(
+                                GdIntVectorType.VECTOR2I, Integer.MIN_VALUE, 1))),
+                        Map.entry("Vector2i", typeName(GdIntVectorType.VECTOR2I)),
+                        Map.entry("Vector3i", typeName(GdIntVectorType.VECTOR3I))),
+                Map.of(),
+                FrontendConstCallableRegistry.empty(), null);
+        assertAll(
+                // Per-component zero divisors reject.
+                () -> assertRejected(evaluate(binary("/", identifier("V"), identifier("VZERO")), context),
+                        "division by zero"),
+                () -> assertRejected(evaluate(binary("/", identifier("VI"), identifier("VIZERO")), context),
+                        "division by zero"),
+                () -> assertRejected(evaluate(binary("%", identifier("VI"), identifier("VIZERO")), context),
+                        "remainder by zero"),
+                () -> assertRejected(evaluate(binary("/", identifier("V"), intLit(0)), context),
+                        "division by zero"),
+                () -> assertRejected(evaluate(binary("/", identifier("VI"), intLit(0)), context),
+                        "division by zero"),
+                // int32 component overflow rejects rather than wrapping — addition and the
+                // MIN/-1 edge both fail closed.
+                () -> assertRejected(
+                        evaluate(binary("+", identifier("VIMAX"),
+                                call(identifier("Vector2i"), intLit(1), intLit(0))), context),
+                        "int32"),
+                () -> assertRejected(
+                        evaluate(binary("/", identifier("VIMIN"),
+                                call(identifier("Vector2i"), unary("-", intLit(1)), intLit(1))), context),
+                        "int32"),
+                () -> assertRejected(
+                        evaluate(binary("*", identifier("VIMIN"), unary("-", intLit(1))), context), "int32"),
+                () -> assertRejected(evaluate(unary("-", identifier("VIMIN")), context), "int32"),
+                // An unrestricted int64 scalar can wrap the int32 leaf product back inside
+                // the component window (MAX*2 wraps to -2) — the multiply is checked, not
+                // left for the post-hoc range test to miss.
+                () -> assertRejected(
+                        evaluate(binary("*",
+                                call(identifier("Vector2i"), intLit(2), intLit(0)),
+                                lit("integer", "9223372036854775807")), context),
+                        "int32"),
+                () -> assertRejected(
+                        evaluate(binary("*",
+                                lit("integer", "9223372036854775807"),
+                                call(identifier("Vector2i"), intLit(2), intLit(0))), context),
+                        "int32"),
+                // The negative extreme wraps too: MIN*2 wraps to 0.
+                () -> assertRejected(
+                        evaluate(binary("*",
+                                call(identifier("Vector2i"), intLit(2), intLit(0)),
+                                unary("-", lit("integer", "9223372036854775808"))), context),
+                        "int32")
+        );
+    }
+
+    @Test
+    void builtinEqualityUsesIeeeComponentSemantics() {
+        var context = context(
+                Map.of(
+                        "V", constOf(GdConstantValue.BuiltinValue.ofFloats(GdFloatVectorType.VECTOR2, 1, -2)),
+                        "NEGZERO", constOf(GdConstantValue.BuiltinValue.ofFloats(
+                                GdFloatVectorType.VECTOR2, 1, -0.0)),
+                        "POSZERO", constOf(GdConstantValue.BuiltinValue.ofFloats(
+                                GdFloatVectorType.VECTOR2, 1, 0.0)),
+                        "NANV", constOf(GdConstantValue.BuiltinValue.ofFloats(
+                                GdFloatVectorType.VECTOR2, Double.NaN, 0)),
+                        "VI", constOf(GdConstantValue.BuiltinValue.ofInts(GdIntVectorType.VECTOR2I, 1, -2)),
+                        "B", constOf(GdConstantValue.BuiltinValue.ofFloats(GdBasisType.BASIS,
+                                1, 0, 0, 0, 1, 0, 0, 0, 1)),
+                        "Vector2", typeName(GdFloatVectorType.VECTOR2)),
+                Map.of(),
+                FrontendConstCallableRegistry.empty(), null);
+        assertAll(
+                () -> assertResolvedBool(true, evaluate(binary("==", identifier("V"), v2(1, -2)), context)),
+                () -> assertResolvedBool(false, evaluate(binary("==", identifier("V"), v2(1, 2)), context)),
+                () -> assertResolvedBool(true, evaluate(binary("!=", identifier("V"), v2(1, 2)), context)),
+                () -> assertResolvedBool(true, evaluate(binary("==", identifier("VI"), identifier("VI")), context)),
+                // IEEE -0.0 == +0.0 at the component level — `Double.equals` would reject.
+                () -> assertResolvedBool(true, evaluate(binary("==", identifier("NEGZERO"), identifier("POSZERO")), context)),
+                () -> assertResolvedBool(false, evaluate(binary("!=", identifier("NEGZERO"), identifier("POSZERO")), context)),
+                // NaN never equals itself — record-style `Double.equals` would say it does.
+                () -> assertResolvedBool(false, evaluate(binary("==", identifier("NANV"), identifier("NANV")), context)),
+                () -> assertResolvedBool(true, evaluate(binary("!=", identifier("NANV"), identifier("NANV")), context)),
+                // All controlled builtin types admit same-type equality, including Basis.
+                () -> assertResolvedBool(true, evaluate(binary("==", identifier("B"), identifier("B")), context)),
+                // Cross-type builtin equality stays rejected — Vector2i != Vector2.
+                () -> assertRejected(evaluate(binary("==", identifier("VI"), identifier("V")), context), "not supported"),
+                () -> assertRejected(evaluate(binary("==", identifier("V"), intLit(1)), context), "not supported")
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // §5.4 member projections and builtin metadata constants
+    // ------------------------------------------------------------------
+
+    @Test
+    void memberProjectionsExposeDocumentedMembers() {
+        var context = context(
+                Map.ofEntries(
+                        Map.entry("V3", constOf(GdConstantValue.BuiltinValue.ofFloats(GdFloatVectorType.VECTOR3, 1, 2, 3))),
+                        Map.entry("V4I", constOf(GdConstantValue.BuiltinValue.ofInts(GdIntVectorType.VECTOR4I, 1, 2, 3, 4))),
+                        Map.entry("R", constOf(GdConstantValue.BuiltinValue.ofFloats(GdRect2Type.RECT2, 1, 2, 3, 4))),
+                        Map.entry("RI", constOf(GdConstantValue.BuiltinValue.ofInts(GdRect2iType.RECT2I, 1, 2, 3, 4))),
+                        Map.entry("A", constOf(GdConstantValue.BuiltinValue.ofFloats(GdAABBType.AABB, 1, 2, 3, 4, 5, 6))),
+                        Map.entry("P", constOf(GdConstantValue.BuiltinValue.ofFloats(GdPlaneType.PLANE, 1, 2, 3, 4))),
+                        Map.entry("Q", constOf(GdConstantValue.BuiltinValue.ofFloats(GdQuaternionType.QUATERNION, 1, 2, 3, 4))),
+                        Map.entry("B", constOf(GdConstantValue.BuiltinValue.ofFloats(GdBasisType.BASIS,
+                                1, 2, 3, 4, 5, 6, 7, 8, 10))),
+                        Map.entry("T2", constOf(GdConstantValue.BuiltinValue.ofFloats(GdTransform2DType.TRANSFORM2D,
+                                1, 2, 3, 4, 5, 6))),
+                        Map.entry("T3", constOf(GdConstantValue.BuiltinValue.ofFloats(GdTransform3DType.TRANSFORM3D,
+                                1, 0, 0, 0, 1, 0, 0, 0, 1, 7, 8, 9))),
+                        Map.entry("PR", constOf(GdConstantValue.BuiltinValue.ofFloats(GdProjectionType.PROJECTION,
+                                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16))),
+                        Map.entry("C", constOf(GdConstantValue.BuiltinValue.ofFloats(GdColorType.COLOR, 0.1, 0.2, 0.3, 0.4)))),
+                Map.of(),
+                FrontendConstCallableRegistry.empty(), null);
+        assertAll(
+                () -> assertResolvedFloat(1, evaluate(attrProperty(identifier("V3"), "x"), context)),
+                () -> assertResolvedFloat(2, evaluate(attrProperty(identifier("V3"), "y"), context)),
+                () -> assertResolvedFloat(3, evaluate(attrProperty(identifier("V3"), "z"), context)),
+                () -> assertResolvedInt(4, evaluate(attrProperty(identifier("V4I"), "w"), context)),
+                // Rect2/Rect2i members — stored slices plus the computed `end` (pos+size).
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{1, 2},
+                        evaluate(attrProperty(identifier("R"), "position"), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{3, 4},
+                        evaluate(attrProperty(identifier("R"), "size"), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{4, 6},
+                        evaluate(attrProperty(identifier("R"), "end"), context)),
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR2I, new long[]{4, 6},
+                        evaluate(attrProperty(identifier("RI"), "end"), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR3, new double[]{5, 7, 9},
+                        evaluate(attrProperty(identifier("A"), "end"), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR3, new double[]{1, 2, 3},
+                        evaluate(attrProperty(identifier("A"), "position"), context)),
+                // Plane exposes normal (Vector3), axis leaves, and d.
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR3, new double[]{1, 2, 3},
+                        evaluate(attrProperty(identifier("P"), "normal"), context)),
+                () -> assertResolvedFloat(4, evaluate(attrProperty(identifier("P"), "d"), context)),
+                () -> assertResolvedFloat(2, evaluate(attrProperty(identifier("P"), "y"), context)),
+                () -> assertResolvedFloat(4, evaluate(attrProperty(identifier("Q"), "w"), context)),
+                // Basis axis columns slice the canonical 9-leaf layout.
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR3, new double[]{1, 2, 3},
+                        evaluate(attrProperty(identifier("B"), "x"), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR3, new double[]{4, 5, 6},
+                        evaluate(attrProperty(identifier("B"), "y"), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR3, new double[]{7, 8, 10},
+                        evaluate(attrProperty(identifier("B"), "z"), context)),
+                // Transform2D column slices and origin.
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{5, 6},
+                        evaluate(attrProperty(identifier("T2"), "origin"), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{1, 2},
+                        evaluate(attrProperty(identifier("T2"), "x"), context)),
+                // Transform3D exposes the nested Basis and the origin.
+                () -> assertResolvedFloatLeaves(GdBasisType.BASIS,
+                        new double[]{1, 0, 0, 0, 1, 0, 0, 0, 1},
+                        evaluate(attrProperty(identifier("T3"), "basis"), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR3, new double[]{7, 8, 9},
+                        evaluate(attrProperty(identifier("T3"), "origin"), context)),
+                // Projection column slices.
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR4, new double[]{9, 10, 11, 12},
+                        evaluate(attrProperty(identifier("PR"), "z"), context)),
+                // Color channels.
+                () -> assertResolvedFloat(0.1f, evaluate(attrProperty(identifier("C"), "r"), context)),
+                () -> assertResolvedFloat(0.4f, evaluate(attrProperty(identifier("C"), "a"), context))
+        );
+    }
+
+    @Test
+    void unsupportedMembersAndScalarReceiversReject() {
+        var context = context(
+                Map.of(
+                        "V", constOf(GdConstantValue.BuiltinValue.ofFloats(GdFloatVectorType.VECTOR2, 1, 2)),
+                        "C", constOf(GdConstantValue.BuiltinValue.ofFloats(GdColorType.COLOR, 1, 0, 0, 1)),
+                        "N", constOf(new GdConstantValue.IntValue(5)),
+                        "S", constOf(new GdConstantValue.StringValue("abc")),
+                        "RI", constOf(GdConstantValue.BuiltinValue.ofInts(
+                                GdRect2iType.RECT2I, Integer.MAX_VALUE, 0, 1, 1))),
+                Map.of(),
+                FrontendConstCallableRegistry.empty(), null);
+        assertAll(
+                // Whitelisted types reject non-whitelisted members.
+                () -> assertRejected(evaluate(attrProperty(identifier("V"), "width"), context),
+                        "not a supported constant member"),
+                // Color conversions (h/s/v/r8/...) are explicitly outside v1.
+                () -> assertRejected(evaluate(attrProperty(identifier("C"), "h"), context),
+                        "not a supported constant member"),
+                () -> assertRejected(evaluate(attrProperty(identifier("C"), "r8"), context),
+                        "not a supported constant member"),
+                // Scalar receivers have no projections at all — the same "not a supported
+                // member" rejection the check pass phrases uniformly.
+                () -> assertRejected(evaluate(attrProperty(identifier("N"), "x"), context),
+                        "not a supported constant member"),
+                () -> assertRejected(evaluate(attrProperty(identifier("S"), "x"), context),
+                        "not a supported constant member"),
+                // Rect2i.end overflows the int32 component range -> fail closed.
+                () -> assertRejected(evaluate(attrProperty(identifier("RI"), "end"), context),
+                        "int32")
+        );
+    }
+
+    @Test
+    void builtinMetadataConstantsDecodeThroughNamespaces() {
+        var context = typeContext(
+                GdFloatVectorType.VECTOR2, GdFloatVectorType.VECTOR3, GdIntVectorType.VECTOR2I,
+                GdIntVectorType.VECTOR3I, GdPlaneType.PLANE, GdQuaternionType.QUATERNION,
+                GdBasisType.BASIS, GdTransform2DType.TRANSFORM2D, GdTransform3DType.TRANSFORM3D,
+                GdProjectionType.PROJECTION, GdColorType.COLOR);
+        assertAll(
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{0, 0},
+                        evaluate(attrProperty(identifier("Vector2"), "ZERO"), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{1, 1},
+                        evaluate(attrProperty(identifier("Vector2"), "ONE"), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2,
+                        new double[]{Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY},
+                        evaluate(attrProperty(identifier("Vector2"), "INF"), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR3, new double[]{0, 1, 0},
+                        evaluate(attrProperty(identifier("Vector3"), "UP"), context)),
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR2I, new long[]{1, 1},
+                        evaluate(attrProperty(identifier("Vector2i"), "ONE"), context)),
+                () -> assertResolvedIntLeaves(GdIntVectorType.VECTOR3I,
+                        new long[]{Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE},
+                        evaluate(attrProperty(identifier("Vector3i"), "MAX"), context)),
+                () -> assertResolvedFloatLeaves(GdPlaneType.PLANE, new double[]{1, 0, 0, 0},
+                        evaluate(attrProperty(identifier("Plane"), "PLANE_YZ"), context)),
+                () -> assertResolvedFloatLeaves(GdQuaternionType.QUATERNION, new double[]{0, 0, 0, 1},
+                        evaluate(attrProperty(identifier("Quaternion"), "IDENTITY"), context)),
+                // Basis.FLIP_X stores -1 on the x column — row-major flat text must still land
+                // on the canonical column layout.
+                () -> assertResolvedFloatLeaves(GdBasisType.BASIS,
+                        new double[]{-1, 0, 0, 0, 1, 0, 0, 0, 1},
+                        evaluate(attrProperty(identifier("Basis"), "FLIP_X"), context)),
+                () -> assertResolvedFloatLeaves(GdTransform3DType.TRANSFORM3D,
+                        new double[]{-1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0},
+                        evaluate(attrProperty(identifier("Transform3D"), "FLIP_X"), context)),
+                () -> assertResolvedFloatLeaves(GdProjectionType.PROJECTION,
+                        new double[]{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1},
+                        evaluate(attrProperty(identifier("Projection"), "IDENTITY"), context)),
+                () -> assertResolvedFloatLeaves(GdColorType.COLOR, new double[]{1, 0, 0, 1},
+                        evaluate(attrProperty(identifier("Color"), "RED"), context)),
+                // Builtin-class enum members (AXIS_X and friends) live outside `constants` —
+                // they stay unknown, not mis-decoded.
+                () -> assertRejected(evaluate(attrProperty(identifier("Vector2"), "AXIS_X"), context),
+                        "unknown member"),
+                () -> assertRejected(evaluate(attrProperty(identifier("Vector2"), "MISSING"), context),
+                        "unknown member")
+        );
+    }
+
+    @Test
+    void projectionsComposeWithConstructorsAndOperators() {
+        var context = typeContext(
+                GdFloatVectorType.VECTOR2, GdFloatVectorType.VECTOR3, GdRect2Type.RECT2,
+                GdQuaternionType.QUATERNION, GdTransform3DType.TRANSFORM3D, GdBasisType.BASIS);
+        assertAll(
+                // Constructor results feed the projection chain directly.
+                () -> assertResolvedFloat(2, evaluate(
+                        attrProperty(call(identifier("Vector2"), intLit(1), intLit(2)), "y"), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{4, 6},
+                        evaluate(attrProperty(
+                                call(identifier("Rect2"), v2(1, 2), v2(3, 4)), "end"), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR3, new double[]{1, 2, 3},
+                        evaluate(attrProperty(attrProperty(
+                                call(identifier("Transform3D"),
+                                        call(identifier("Basis"), v3(1, 2, 3), v3(4, 5, 6), v3(7, 8, 10)),
+                                        v3(0, 0, 0)),
+                                "basis"), "x"), context)),
+                // Projected leaves join ordinary arithmetic — a float leaf pairs with a
+                // float literal; an int literal would hit the mixed-scalar rejection.
+                () -> assertResolvedFloat(4, evaluate(
+                        binary("+", attrProperty(call(identifier("Vector2"), intLit(1), intLit(2)), "y"),
+                                floatLit("2.0")), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{2, 4},
+                        evaluate(binary("+",
+                                call(identifier("Vector2"), intLit(1), intLit(2)),
+                                call(identifier("Vector2"), intLit(1), intLit(2))), context)),
+                () -> assertResolvedFloatLeaves(GdFloatVectorType.VECTOR2, new double[]{1, 1},
+                        evaluate(binary("+", attrProperty(identifier("Vector2"), "ONE"),
+                                attrProperty(identifier("Vector2"), "ZERO")), context))
+        );
+    }
+
+    @Test
+    void geometryCapabilityGatesAreHonored() {
+        var noCtor = new EvaluationPolicy.CapabilitySet(
+                Set.of(
+                        EvaluationPolicy.Capability.INT_ARITHMETIC,
+                        EvaluationPolicy.Capability.FLOAT_ARITHMETIC,
+                        EvaluationPolicy.Capability.BOOL_OPERATORS,
+                        EvaluationPolicy.Capability.STRING_OPERATORS,
+                        EvaluationPolicy.Capability.COMPARISON,
+                        EvaluationPolicy.Capability.TERNARY,
+                        EvaluationPolicy.Capability.ATTRIBUTE_ACCESS,
+                        EvaluationPolicy.Capability.BUILTIN_OPERATORS,
+                        EvaluationPolicy.Capability.MEMBER_PROJECTION,
+                        EvaluationPolicy.Capability.REGISTERED_MEMBER_CALL
+                ),
+                EvaluationPolicy.EvaluationDomain.GENERAL
+        );
+        var noBuiltinOps = new EvaluationPolicy.CapabilitySet(
+                Set.of(
+                        EvaluationPolicy.Capability.INT_ARITHMETIC,
+                        EvaluationPolicy.Capability.FLOAT_ARITHMETIC,
+                        EvaluationPolicy.Capability.BOOL_OPERATORS,
+                        EvaluationPolicy.Capability.STRING_OPERATORS,
+                        EvaluationPolicy.Capability.COMPARISON,
+                        EvaluationPolicy.Capability.TERNARY,
+                        EvaluationPolicy.Capability.ATTRIBUTE_ACCESS,
+                        EvaluationPolicy.Capability.CONSTRUCTOR,
+                        EvaluationPolicy.Capability.MEMBER_PROJECTION,
+                        EvaluationPolicy.Capability.REGISTERED_MEMBER_CALL
+                ),
+                EvaluationPolicy.EvaluationDomain.GENERAL
+        );
+        var noProjection = new EvaluationPolicy.CapabilitySet(
+                Set.of(
+                        EvaluationPolicy.Capability.INT_ARITHMETIC,
+                        EvaluationPolicy.Capability.FLOAT_ARITHMETIC,
+                        EvaluationPolicy.Capability.BOOL_OPERATORS,
+                        EvaluationPolicy.Capability.STRING_OPERATORS,
+                        EvaluationPolicy.Capability.COMPARISON,
+                        EvaluationPolicy.Capability.TERNARY,
+                        EvaluationPolicy.Capability.ATTRIBUTE_ACCESS,
+                        EvaluationPolicy.Capability.CONSTRUCTOR,
+                        EvaluationPolicy.Capability.BUILTIN_OPERATORS,
+                        EvaluationPolicy.Capability.REGISTERED_MEMBER_CALL
+                ),
+                EvaluationPolicy.EvaluationDomain.GENERAL
+        );
+        var names = context(
+                Map.of(
+                        "Vector2", typeName(GdFloatVectorType.VECTOR2),
+                        "V", constOf(GdConstantValue.BuiltinValue.ofFloats(GdFloatVectorType.VECTOR2, 1, 2))),
+                Map.of(),
+                FrontendConstCallableRegistry.empty(), null);
+        assertAll(
+                // Without CONSTRUCTOR the whole call shape rejects — same wording enum uses.
+                () -> assertRejected(
+                        evaluate(call(identifier("Vector2"), intLit(1), intLit(2)), names, noCtor),
+                        "not a supported constant expression"),
+                // Without BUILTIN_OPERATORS, operator admission rejects with the capability phrase.
+                () -> assertRejected(
+                        evaluate(binary("+", identifier("V"), identifier("V")), names, noBuiltinOps),
+                        "binary operator '+' is not supported in this constant evaluation"),
+                () -> assertRejected(
+                        evaluate(unary("-", identifier("V")), names, noBuiltinOps),
+                        "unary operator '-' is not supported in this constant evaluation"),
+                // Without MEMBER_PROJECTION the projection phrase names the member.
+                () -> assertRejected(
+                        evaluate(attrProperty(identifier("V"), "x"), names, noProjection),
+                        "member projection 'x' is not supported in this constant evaluation")
+        );
+    }
+
+    @Test
+    void deadBranchesStillValidateGeometryShapes() {
+        var context = typeContext(GdFloatVectorType.VECTOR2, GdQuaternionType.QUATERNION);
+        assertAll(
+                // Whole-tree validation: a non-whitelisted constructor in the dead arm rejects.
+                () -> assertRejected(
+                        evaluate(ternary(lit("true", "true"), intLit(1),
+                                call(identifier("Quaternion"), attrProperty(identifier("Vector2"), "MISSING"),
+                                        floatLit("0.5"))), context),
+                        "unknown member"),
+                () -> assertRejected(
+                        evaluate(ternary(lit("true", "true"), intLit(1),
+                                call(identifier("Vector2"), identifier("Missing"), intLit(2))), context),
+                        "unknown identifier"),
+                // The taken arm evaluates alone — the dead arm's zero division never runs.
+                () -> assertResolvedInt(1, evaluate(
+                        ternary(lit("true", "true"), intLit(1),
+                                binary("/", intLit(1), intLit(0))), context))
+        );
+    }
+
+    // ------------------------------------------------------------------
     // Fixture
     // ------------------------------------------------------------------
 
@@ -815,6 +1686,12 @@ class FrontendConstantEvaluatorTest {
 
     private static @NotNull LookupContext.LookupResult constOf(@NotNull GdConstantValue value) {
         return new LookupContext.LookupResult.ResolvedConstant(value);
+    }
+
+    /// A builtin-type namespace token: `resolve("Vector2")` returning this lets
+    /// `Vector2(1, 2)` construct and `Vector2.ZERO` decode through the real metadata.
+    private static @NotNull LookupContext.LookupResult typeName(@NotNull GdType type) {
+        return new LookupContext.LookupResult.ResolvedNamespace(type);
     }
 
     private static @NotNull LookupContext context(
@@ -872,7 +1749,12 @@ class FrontendConstantEvaluatorTest {
 
         @Override
         public @NotNull LookupResult resolveMember(@NotNull Object namespaceIdentity, @NotNull String memberName) {
-            return members.getOrDefault(namespaceIdentity + "." + memberName, new LookupResult.Unknown());
+            // The map wins for test-driven members; builtin type namespaces (`GdType`
+            // identities) fall through to the default decoder seam — `Vector2.ZERO` and
+            // friends resolve through the real metadata, unregistered members stay unknown.
+            return members.getOrDefault(
+                    namespaceIdentity + "." + memberName,
+                    LookupContext.super.resolveMember(namespaceIdentity, memberName));
         }
 
         @Override
@@ -957,6 +1839,50 @@ class FrontendConstantEvaluatorTest {
         );
     }
 
+    private static @NotNull CallExpression call(
+            @NotNull Expression callee,
+            @NotNull Expression... arguments
+    ) {
+        return new CallExpression(callee, List.of(arguments), TINY);
+    }
+
+    /// Short vector-constructor expressions — int components arrive as int literals and the
+    /// ordinary `int -> float` parameter normalization converts them.
+    private static @NotNull CallExpression v2(double x, double y) {
+        return call(identifier("Vector2"), scalarLeaf(x), scalarLeaf(y));
+    }
+
+    private static @NotNull CallExpression v3(double x, double y, double z) {
+        return call(identifier("Vector3"), scalarLeaf(x), scalarLeaf(y), scalarLeaf(z));
+    }
+
+    private static @NotNull CallExpression v4(double x, double y, double z, double w) {
+        return call(identifier("Vector4"), scalarLeaf(x), scalarLeaf(y), scalarLeaf(z), scalarLeaf(w));
+    }
+
+    private static @NotNull Expression scalarLeaf(double value) {
+        // Literal lexemes never carry a sign — negatives go through the unary operator.
+        if (value == Math.rint(value) && Math.abs(value) < 1e15) {
+            return value < 0 ? unary("-", intLit((long) -value)) : intLit((long) value);
+        }
+        return value < 0
+                ? unary("-", floatLit(Double.toString(-value)))
+                : floatLit(Double.toString(value));
+    }
+
+    /// `resolve` answers each type's source name with its builtin namespace token.
+    private static @NotNull Map<String, LookupContext.LookupResult> typeNames(@NotNull GdType... types) {
+        var names = new HashMap<String, LookupContext.LookupResult>(types.length);
+        for (var type : types) {
+            names.put(type.getTypeName(), typeName(type));
+        }
+        return Map.copyOf(names);
+    }
+
+    private static @NotNull LookupContext typeContext(@NotNull GdType... types) {
+        return context(typeNames(types), Map.of(), FrontendConstCallableRegistry.empty(), null);
+    }
+
     // ------------------------------------------------------------------
     // Assertions
     // ------------------------------------------------------------------
@@ -983,6 +1909,51 @@ class FrontendConstantEvaluatorTest {
         var resolved = assertInstanceOf(Evaluation.Resolved.class, evaluation);
         var value = assertInstanceOf(GdConstantValue.StringValue.class, resolved.value());
         assertEquals(expected, value.value());
+    }
+
+    /// Float-leaf comparison uses the float32 narrowing rule plus raw-bit equality: `NaN`
+    /// checks via `isNaN` and every other leaf compares `doubleToRawLongBits`, so `-0.0` and
+    /// `+0.0` stay distinguishable instead of collapsing under tolerance.
+    private static void assertResolvedFloatLeaves(
+            @NotNull GdType type,
+            double @NotNull [] expected,
+            @NotNull Evaluation evaluation
+    ) {
+        var resolved = assertInstanceOf(Evaluation.Resolved.class, evaluation);
+        var value = assertInstanceOf(GdConstantValue.BuiltinValue.class, resolved.value());
+        assertEquals(type, value.type());
+        assertEquals(expected.length, value.components().size());
+        for (var index = 0; index < expected.length; index++) {
+            var leaf = assertInstanceOf(
+                    GdConstantValue.FloatValue.class, value.components().get(index),
+                    "component " + index + " of '" + type.getTypeName() + "'");
+            if (Double.isNaN(expected[index])) {
+                assertTrue(Double.isNaN(leaf.value()), "component " + index + " should be NaN");
+            } else {
+                assertEquals(
+                        Double.doubleToRawLongBits((double) (float) expected[index]),
+                        Double.doubleToRawLongBits(leaf.value()),
+                        "component " + index + " of '" + type.getTypeName() + "'");
+            }
+        }
+    }
+
+    private static void assertResolvedIntLeaves(
+            @NotNull GdType type,
+            long @NotNull [] expected,
+            @NotNull Evaluation evaluation
+    ) {
+        var resolved = assertInstanceOf(Evaluation.Resolved.class, evaluation);
+        var value = assertInstanceOf(GdConstantValue.BuiltinValue.class, resolved.value());
+        assertEquals(type, value.type());
+        assertEquals(expected.length, value.components().size());
+        for (var index = 0; index < expected.length; index++) {
+            var leaf = assertInstanceOf(
+                    GdConstantValue.IntValue.class, value.components().get(index),
+                    "component " + index + " of '" + type.getTypeName() + "'");
+            assertEquals(expected[index], leaf.value(),
+                    "component " + index + " of '" + type.getTypeName() + "'");
+        }
     }
 
     private static void assertResolvedValue(@NotNull GdConstantValue expected, @NotNull Evaluation evaluation) {

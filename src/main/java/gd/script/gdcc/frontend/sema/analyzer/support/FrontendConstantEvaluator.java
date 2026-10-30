@@ -6,6 +6,7 @@ import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
+import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -19,6 +20,7 @@ import gd.script.gdcc.frontend.constant.ConstCallResult;
 import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.frontend.constant.GdConstantValue;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdColorType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
@@ -153,6 +155,7 @@ public final class FrontendConstantEvaluator {
             case BinaryExpression binary -> evaluateBinary(binary, env);
             case ConditionalExpression conditional -> evaluateConditional(conditional, env);
             case AttributeExpression attribute -> evaluateAttributeChain(attribute, env);
+            case CallExpression call -> evaluateCall(call, env);
             default -> rejectedShape(expression, env);
         };
     }
@@ -246,7 +249,7 @@ public final class FrontendConstantEvaluator {
             );
         }
         return switch (requireUnaryOperandType(operator, operand.type(), unary, env)) {
-            case Checked.Payload<GdType> _ -> computeUnary(operator, operand, unary);
+            case Checked.Payload<GdType> _ -> computeUnary(operator, operand, unary, env);
             case Checked.Failed<GdType> failed -> failed.rejection();
             case Checked.Namespace<GdType> _ -> throw new IllegalStateException(
                     "operand type admission never produces a namespace token"
@@ -322,7 +325,8 @@ public final class FrontendConstantEvaluator {
         var leftValue = ((Evaluation.Resolved) leftEvaluation).value();
         var rightValue = ((Evaluation.Resolved) rightEvaluation).value();
         return switch (requireBinaryOperandTypes(operator, leftValue.type(), rightValue.type(), binary, env)) {
-            case Checked.Payload<GdType> _ -> computeBinary(operator, leftValue, rightValue, binary, env);
+            case Checked.Payload<GdType> payload -> computeBinary(
+                    operator, leftValue, rightValue, payload.payload(), binary, env);
             case Checked.Failed<GdType> failed -> failed.rejection();
             case Checked.Namespace<GdType> _ -> throw new IllegalStateException(
                     "operand type admission never produces a namespace token"
@@ -427,21 +431,25 @@ public final class FrontendConstantEvaluator {
                                 ));
                     };
                 }
-                // A property step on a value is a §5.4 member projection, handled by the
-                // projection stage — the capability gate decides admission here.
+                // A property step on a value is a §5.4 member projection: the read-only
+                // whitelist decodes stored leaves and the calculated `end` member.
                 var denied = requireCapability(
                         env,
                         EvaluationPolicy.Capability.MEMBER_PROJECTION,
                         "member projection '" + property.name() + "'",
                         property
                 );
-                yield new Checked.Failed<GdConstantValue>(Objects.requireNonNullElseGet(
-                        denied,
-                        () -> new Evaluation.Rejected(
-                                "member projections are not supported in this constant evaluation",
-                                property
-                        )
-                ));
+                if (denied != null) {
+                    yield new Checked.Failed<GdConstantValue>(denied);
+                }
+                var receiverValue = ((Checked.Payload<GdConstantValue>) receiver).payload();
+                yield switch (FrontendConstMemberProjectionSupport.project(
+                        receiverValue, property.name())) {
+                    case ConstCallResult.Resolved resolved ->
+                            new Checked.Payload<GdConstantValue>(resolved.value());
+                    case ConstCallResult.Rejected rejected -> new Checked.Failed<GdConstantValue>(
+                            new Evaluation.Rejected(rejected.reason(), property));
+                };
             }
             case AttributeCallStep call -> applyCallStep(receiver, call, env);
             case AttributeSubscriptStep _, MissingAttributeStep _, UnknownAttributeStep _ ->
@@ -526,6 +534,85 @@ public final class FrontendConstantEvaluator {
         };
     }
 
+    /// Constant constructor calls (`Vector2(1, 2)`, `int(2.5)`, ...): the callee must resolve
+    /// to a builtin-type namespace token, arguments evaluate like ordinary operands, and the
+    /// selected signature goes through the §5.3 whitelist — never a runtime constructor.
+    private static @NotNull Evaluation evaluateCall(
+            @NotNull CallExpression call,
+            @NotNull EvaluationEnvironment env
+    ) {
+        if (!env.permits(EvaluationPolicy.Capability.CONSTRUCTOR)) {
+            return rejectedShape(call, env);
+        }
+        var callee = evalChainOperand(call.callee(), env);
+        return switch (callee) {
+            case Checked.Failed<GdConstantValue> failed -> failed.rejection();
+            case Checked.Payload<GdConstantValue> _ -> new Evaluation.Rejected(
+                    "the callee resolves to a constant value, not a type constructor", call);
+            case Checked.Namespace<GdConstantValue> namespace -> {
+                if (!(namespace.identity() instanceof GdType targetType)) {
+                    yield new Evaluation.Rejected(
+                            "the callee denotes a namespace that is not a builtin type", call);
+                }
+                var arguments = new ArrayList<GdConstantValue>(call.arguments().size());
+                for (var argumentExpression : call.arguments()) {
+                    var argumentEvaluation = evaluateExpression(argumentExpression, env);
+                    if (argumentEvaluation instanceof Evaluation.Rejected rejected) {
+                        yield rejected;
+                    }
+                    arguments.add(((Evaluation.Resolved) argumentEvaluation).value());
+                }
+                var argumentTypes = arguments.stream().map(GdConstantValue::type).toList();
+                yield switch (FrontendConstConstructorSupport.selectConstructor(
+                        env.lookup().classRegistry(), targetType, argumentTypes)) {
+                    case FrontendConstConstructorSupport.Selection.Rejected rejected ->
+                            new Evaluation.Rejected(rejected.reason(), call);
+                    case FrontendConstConstructorSupport.Selection.Selected selected ->
+                            constructConstant(call, targetType, selected.constructor(), arguments);
+                };
+            }
+        };
+    }
+
+    /// Normalizes frozen arguments to the selected signature's declared parameter types, then
+    /// runs the pure construction recipe — never the Godot runtime.
+    private static @NotNull Evaluation constructConstant(
+            @NotNull CallExpression call,
+            @NotNull GdType targetType,
+            @NotNull FrontendConstConstructorSupport.WhitelistedConstructor constructor,
+            @NotNull List<GdConstantValue> arguments
+    ) {
+        var normalized = new ArrayList<GdConstantValue>(arguments.size());
+        for (var index = 0; index < arguments.size(); index++) {
+            var normalizedArgument = normalizeArgument(
+                    arguments.get(index), constructor.parameterTypes().get(index));
+            if (normalizedArgument == null) {
+                return new Evaluation.Rejected(
+                        "argument #" + (index + 1) + " of type '"
+                                + arguments.get(index).type().getTypeName()
+                                + "' cannot be converted to declared parameter type '"
+                                + constructor.parameterTypes().get(index).getTypeName() + "'",
+                        call
+                );
+            }
+            normalized.add(normalizedArgument);
+        }
+        return switch (constructor.evaluator().construct(List.copyOf(normalized))) {
+            case ConstCallResult.Resolved resolved -> {
+                // A recipe producing the wrong type is a whitelist-authoring bug, not a source
+                // error — guard instead of disguising it.
+                if (!FrontendConstCallSelectionSupport.sameExactType(
+                        resolved.value().type(), targetType)) {
+                    throw new IllegalStateException(
+                            "constant constructor recipe for '" + targetType.getTypeName()
+                                    + "' produced '" + resolved.value().type().getTypeName() + "'");
+                }
+                yield new Evaluation.Resolved(resolved.value());
+            }
+            case ConstCallResult.Rejected rejected -> new Evaluation.Rejected(rejected.reason(), call);
+        };
+    }
+
     // ---------------------------------------------------------------------
     // Validation pass — proves whitelist/type/name/call legality without values
     // ---------------------------------------------------------------------
@@ -541,6 +628,7 @@ public final class FrontendConstantEvaluator {
             case BinaryExpression binary -> checkBinary(binary, env);
             case ConditionalExpression conditional -> checkConditional(conditional, env);
             case AttributeExpression attribute -> checkAttributeChain(attribute, env);
+            case CallExpression call -> checkCall(call, env);
             default -> new Checked.Failed<>(rejectedShape(expression, env));
         };
     }
@@ -800,13 +888,19 @@ public final class FrontendConstantEvaluator {
                         "member projection '" + property.name() + "'",
                         property
                 );
-                yield new Checked.Failed<GdType>(Objects.requireNonNullElseGet(
-                        denied,
-                        () -> new Evaluation.Rejected(
-                                "member projections are not supported in this constant evaluation",
-                                property
-                        )
-                ));
+                if (denied != null) {
+                    yield new Checked.Failed<GdType>(denied);
+                }
+                var receiverType = ((Checked.Payload<GdType>) receiver).payload();
+                var projectedType = FrontendConstMemberProjectionSupport.projectedType(
+                        receiverType, property.name());
+                yield projectedType != null
+                        ? new Checked.Payload<GdType>(projectedType)
+                        : new Checked.Failed<>(new Evaluation.Rejected(
+                                "member '" + property.name() + "' on type '"
+                                        + receiverType.getTypeName()
+                                        + "' is not a supported constant member",
+                                property));
             }
             case AttributeCallStep call -> {
                 if (receiver instanceof Checked.Namespace<GdType>) {
@@ -848,6 +942,48 @@ public final class FrontendConstantEvaluator {
                                     + "' is not supported in constant expressions",
                             step
                     ));
+        };
+    }
+
+    /// The check-pass twin of `evaluateCall`: verifies the constructor gate, callee namespace,
+    /// argument legality, and the §5.3 whitelist — returning only the target type.
+    private static @NotNull Checked<GdType> checkCall(
+            @NotNull CallExpression call,
+            @NotNull EvaluationEnvironment env
+    ) {
+        if (!env.permits(EvaluationPolicy.Capability.CONSTRUCTOR)) {
+            return new Checked.Failed<>(rejectedShape(call, env));
+        }
+        var callee = checkChainOperand(call.callee(), env);
+        if (callee instanceof Checked.Failed<GdType> failed) {
+            return failed;
+        }
+        if (!(callee instanceof Checked.Namespace<GdType> namespace)) {
+            return new Checked.Failed<>(new Evaluation.Rejected(
+                    "the callee resolves to a constant value, not a type constructor", call));
+        }
+        if (!(namespace.identity() instanceof GdType targetType)) {
+            return new Checked.Failed<>(new Evaluation.Rejected(
+                    "the callee denotes a namespace that is not a builtin type", call));
+        }
+        var argumentTypes = new ArrayList<GdType>(call.arguments().size());
+        for (var argumentExpression : call.arguments()) {
+            var argumentCheck = checkExpression(argumentExpression, env);
+            if (argumentCheck instanceof Checked.Failed<GdType> failed) {
+                return failed;
+            }
+            if (!(argumentCheck instanceof Checked.Payload<GdType> payload)) {
+                return new Checked.Failed<>(new Evaluation.Rejected(
+                        "call arguments must be constant values", call));
+            }
+            argumentTypes.add(payload.payload());
+        }
+        return switch (FrontendConstConstructorSupport.selectConstructor(
+                env.lookup().classRegistry(), targetType, argumentTypes)) {
+            case FrontendConstConstructorSupport.Selection.Selected _ ->
+                    new Checked.Payload<>(targetType);
+            case FrontendConstConstructorSupport.Selection.Rejected rejected ->
+                    new Checked.Failed<>(new Evaluation.Rejected(rejected.reason(), call));
         };
     }
 
@@ -967,9 +1103,17 @@ public final class FrontendConstantEvaluator {
                 if (isBuiltinConstantType(operandType)) {
                     var denied = requireCapability(
                             env, EvaluationPolicy.Capability.BUILTIN_OPERATORS, description, unary);
-                    return new Checked.Failed<>(denied != null
-                            ? denied
-                            : unsupportedPair(description, operandType, unary, env));
+                    if (denied != null) {
+                        return new Checked.Failed<>(denied);
+                    }
+                    // Unary `+`/`-` open exactly where builtin metadata admits them —
+                    // vectors, `*i` vectors, Color, Plane, and Quaternion (§5.1).
+                    var returnType = FrontendBuiltinOperatorSupport.resolveUnaryExactReturnType(
+                            env.lookup().classRegistry(), operator, operandType);
+                    return returnType != null
+                            ? new Checked.Payload<>(returnType)
+                            : new Checked.Failed<>(
+                            unsupportedPair(description, operandType, unary, env));
                 }
                 return new Checked.Failed<>(unsupportedPair(description, operandType, unary, env));
             }
@@ -1062,15 +1206,16 @@ public final class FrontendConstantEvaluator {
                 default -> new Checked.Failed<>(unsupportedPair(description, leftType, rightType, binary, env));
             };
         }
-        // Controlled-builtin pairs belong to the §5.1 vector/Color surface handled by the
-        // builtin-operator stage; while the gate denies them every pair rejects with the
-        // capability reason, and even an opened gate keeps out-of-whitelist pairs rejected.
+        // Controlled-builtin pairs belong to the §5.1 geometry surface: same-type component
+        // arithmetic (`%` for `*i`), component IEEE `==`/`!=`, and the directional scalar
+        // pairs — deliberately narrower than the full metadata operator tables.
         if (isBuiltinConstantType(leftType) || isBuiltinConstantType(rightType)) {
             var denied = requireCapability(
                     env, EvaluationPolicy.Capability.BUILTIN_OPERATORS, description, binary);
-            return new Checked.Failed<>(denied != null
-                    ? denied
-                    : unsupportedPair(description, leftType, rightType, binary, env));
+            if (denied != null) {
+                return new Checked.Failed<>(denied);
+            }
+            return requireBuiltinBinaryOperandTypes(operator, leftType, rightType, binary, env);
         }
         return new Checked.Failed<>(unsupportedPair(description, leftType, rightType, binary, env));
     }
@@ -1088,6 +1233,86 @@ public final class FrontendConstantEvaluator {
                 : new Checked.Payload<>(resultType);
     }
 
+    /// The §5.1 builtin-operand admission table: same-type component arithmetic (`%` on `*i`
+    /// vectors only), component IEEE `==`/`!=`, right-scalar `*`/`/`, and left-scalar `*`.
+    /// Whitelist gates come first; metadata then supplies the declared result type — a pair
+    /// the metadata admits but the whitelist does not (matrix multiplication, transforms,
+    /// `scalar / Vector`, `Vector2i % int`, relational vector comparisons, ...) still rejects.
+    private static @NotNull Checked<GdType> requireBuiltinBinaryOperandTypes(
+            @NotNull GodotOperator operator,
+            @NotNull GdType leftType,
+            @NotNull GdType rightType,
+            @NotNull BinaryExpression binary,
+            @NotNull EvaluationEnvironment env
+    ) {
+        var description = "binary operator '" + binary.operator() + "'";
+        var classRegistry = env.lookup().classRegistry();
+        if (isBuiltinConstantType(leftType)
+                && FrontendConstCallSelectionSupport.sameExactType(leftType, rightType)) {
+            if (operator == GodotOperator.EQUAL || operator == GodotOperator.NOT_EQUAL) {
+                var returnType = FrontendBuiltinOperatorSupport.resolveBinaryExactReturnType(
+                        classRegistry, operator, leftType, rightType);
+                return returnType instanceof GdBoolType
+                        ? new Checked.Payload<>(GdBoolType.BOOL)
+                        : new Checked.Failed<>(
+                        unsupportedPair(description, leftType, rightType, binary, env));
+            }
+            var admittedArithmetic = hasComponentArithmetic(leftType) && switch (operator) {
+                case ADD, SUBTRACT, MULTIPLY, DIVIDE -> true;
+                case MODULE -> leftType instanceof GdIntVectorType;
+                default -> false;
+            };
+            if (!admittedArithmetic) {
+                return new Checked.Failed<>(
+                        unsupportedPair(description, leftType, rightType, binary, env));
+            }
+            var returnType = FrontendBuiltinOperatorSupport.resolveBinaryExactReturnType(
+                    classRegistry, operator, leftType, rightType);
+            return returnType != null
+                    && FrontendConstCallSelectionSupport.sameExactType(returnType, leftType)
+                    ? new Checked.Payload<>(returnType)
+                    : new Checked.Failed<>(
+                    unsupportedPair(description, leftType, rightType, binary, env));
+        }
+        // Right scalar: `*`/`/` only where metadata lists the exact scalar parameter —
+        // `Vector2 * float`, `Vector2i / int`, `Vector2i * float -> Vector2`, and so on.
+        if (isBuiltinConstantType(leftType)
+                && hasComponentArithmetic(leftType)
+                && isNumericScalarType(rightType)
+                && (operator == GodotOperator.MULTIPLY || operator == GodotOperator.DIVIDE)) {
+            var returnType = FrontendBuiltinOperatorSupport.resolveBinaryExactReturnType(
+                    classRegistry, operator, leftType, rightType);
+            return returnType != null
+                    ? new Checked.Payload<>(returnType)
+                    : new Checked.Failed<>(
+                    unsupportedPair(description, leftType, rightType, binary, env));
+        }
+        // Left scalar: `*` only — `scalar / Vector` and every other direction stays rejected.
+        if (isBuiltinConstantType(rightType)
+                && hasComponentArithmetic(rightType)
+                && isNumericScalarType(leftType)
+                && operator == GodotOperator.MULTIPLY) {
+            var returnType = FrontendBuiltinOperatorSupport.resolveBinaryExactReturnType(
+                    classRegistry, operator, leftType, rightType);
+            return returnType != null
+                    ? new Checked.Payload<>(returnType)
+                    : new Checked.Failed<>(
+                    unsupportedPair(description, leftType, rightType, binary, env));
+        }
+        return new Checked.Failed<>(unsupportedPair(description, leftType, rightType, binary, env));
+    }
+
+    /// The §5.1 component-arithmetic family: float vectors, `*i` vectors, and `Color`.
+    private static boolean hasComponentArithmetic(@NotNull GdType type) {
+        return type instanceof GdFloatVectorType
+                || type instanceof GdIntVectorType
+                || type instanceof GdColorType;
+    }
+
+    private static boolean isNumericScalarType(@NotNull GdType type) {
+        return type instanceof GdIntType || type instanceof GdFloatType;
+    }
+
     // ---------------------------------------------------------------------
     // Value computation — runs only after operand admission succeeded
     // ---------------------------------------------------------------------
@@ -1095,7 +1320,8 @@ public final class FrontendConstantEvaluator {
     private static @NotNull Evaluation computeUnary(
             @NotNull GodotOperator operator,
             @NotNull GdConstantValue operand,
-            @NotNull UnaryExpression unary
+            @NotNull UnaryExpression unary,
+            @NotNull EvaluationEnvironment env
     ) {
         if (operand instanceof GdConstantValue.IntValue intValue) {
             return switch (operator) {
@@ -1118,9 +1344,46 @@ public final class FrontendConstantEvaluator {
         if (operand instanceof GdConstantValue.BoolValue boolValue && operator == GodotOperator.NOT) {
             return new Evaluation.Resolved(new GdConstantValue.BoolValue(!boolValue.value()));
         }
+        if (operand instanceof GdConstantValue.BuiltinValue builtin) {
+            return switch (operator) {
+                case POSITIVE -> new Evaluation.Resolved(operand);
+                case NEGATE -> negateBuiltinLeaves(builtin, unary, env);
+                default -> throw new IllegalStateException(
+                        "admitted unary operator '" + operator + "' is not computable on '"
+                                + builtin.type().getTypeName() + "'");
+            };
+        }
         throw new IllegalStateException(
                 "admitted unary operator '" + operator + "' is not computable on '"
                         + operand.type().getTypeName() + "'");
+    }
+
+    /// Per-leaf negation for builtin values; `*i`/`Rect2i` components stay fail-closed on the
+    /// int32 component range, so `-Vector2i(INT32_MIN, ...)` rejects instead of wrapping.
+    private static @NotNull Evaluation negateBuiltinLeaves(
+            @NotNull GdConstantValue.BuiltinValue builtin,
+            @NotNull UnaryExpression unary,
+            @NotNull EvaluationEnvironment env
+    ) {
+        var leaves = new ArrayList<GdConstantValue>(builtin.components().size());
+        for (var leaf : builtin.components()) {
+            switch (leaf) {
+                case GdConstantValue.FloatValue floatLeaf ->
+                        leaves.add(new GdConstantValue.FloatValue(-floatLeaf.value()));
+                case GdConstantValue.IntValue intLeaf -> {
+                    var negated = -intLeaf.value();
+                    if (negated < Integer.MIN_VALUE || negated > Integer.MAX_VALUE) {
+                        return new Evaluation.Rejected(
+                                "component " + negated + " is out of the int32 component range in "
+                                        + expressionSuffix(env), unary);
+                    }
+                    leaves.add(new GdConstantValue.IntValue(negated));
+                }
+                default -> throw new IllegalStateException(
+                        "builtin leaf '" + leaf.type().getTypeName() + "' is not numeric");
+            }
+        }
+        return new Evaluation.Resolved(new GdConstantValue.BuiltinValue(builtin.type(), leaves));
     }
 
     /// Integer arithmetic keeps Java `long` semantics throughout: overflow wraps, division
@@ -1130,6 +1393,7 @@ public final class FrontendConstantEvaluator {
             @NotNull GodotOperator operator,
             @NotNull GdConstantValue leftValue,
             @NotNull GdConstantValue rightValue,
+            @NotNull GdType resultType,
             @NotNull BinaryExpression binary,
             @NotNull EvaluationEnvironment env
     ) {
@@ -1234,9 +1498,199 @@ public final class FrontendConstantEvaluator {
                         "admitted binary operator '" + operator + "' is not computable on String pair");
             };
         }
+        if (leftValue instanceof GdConstantValue.BuiltinValue
+                || rightValue instanceof GdConstantValue.BuiltinValue) {
+            return computeBuiltinBinary(
+                    operator, leftValue, rightValue, resultType, binary, env);
+        }
         throw new IllegalStateException(
                 "admitted operand pair '" + leftValue.type().getTypeName() + "' and '"
                         + rightValue.type().getTypeName() + "' has no computation rule");
+    }
+
+    /// Geometry value computation for admitted builtin pairs: component IEEE `==`/`!=`,
+    /// same-type component arithmetic, and the directional scalar pairs.
+    private static @NotNull Evaluation computeBuiltinBinary(
+            @NotNull GodotOperator operator,
+            @NotNull GdConstantValue leftValue,
+            @NotNull GdConstantValue rightValue,
+            @NotNull GdType resultType,
+            @NotNull BinaryExpression binary,
+            @NotNull EvaluationEnvironment env
+    ) {
+        if (leftValue instanceof GdConstantValue.BuiltinValue leftBuiltin
+                && rightValue instanceof GdConstantValue.BuiltinValue rightBuiltin) {
+            if (operator == GodotOperator.EQUAL || operator == GodotOperator.NOT_EQUAL) {
+                // IEEE component equality: `record.equals` calls `Double.equals`, which treats
+                // `NaN == NaN` and `-0.0 != 0.0` — the opposite of Godot's component `==`, so
+                // comparison happens per leaf with primitive `==`.
+                var equal = builtinLeavesEqual(
+                        leftBuiltin.components(), rightBuiltin.components());
+                return resolvedBool(operator == GodotOperator.EQUAL ? equal : !equal);
+            }
+            return computeBuiltinPairArithmetic(
+                    operator, leftBuiltin, rightBuiltin, binary, env);
+        }
+        return computeScalarBuiltinPair(
+                operator, leftValue, rightValue, resultType, binary, env);
+    }
+
+    private static boolean builtinLeavesEqual(
+            @NotNull List<GdConstantValue> leftLeaves,
+            @NotNull List<GdConstantValue> rightLeaves
+    ) {
+        for (var index = 0; index < leftLeaves.size(); index++) {
+            var same = switch (leftLeaves.get(index)) {
+                case GdConstantValue.FloatValue leftLeaf ->
+                        rightLeaves.get(index) instanceof GdConstantValue.FloatValue rightLeaf
+                                && leftLeaf.value() == rightLeaf.value();
+                case GdConstantValue.IntValue leftLeaf ->
+                        rightLeaves.get(index) instanceof GdConstantValue.IntValue rightLeaf
+                                && leftLeaf.value() == rightLeaf.value();
+                default -> false;
+            };
+            if (!same) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// Same-type component arithmetic on a builtin pair. `*i` leaves run in `long` with the
+    /// int32 component range fail-closed; division/modulo truncation follows Java semantics —
+    /// toward zero, remainder sign of the dividend — matching Godot's `*i` operators.
+    private static @NotNull Evaluation computeBuiltinPairArithmetic(
+            @NotNull GodotOperator operator,
+            @NotNull GdConstantValue.BuiltinValue leftBuiltin,
+            @NotNull GdConstantValue.BuiltinValue rightBuiltin,
+            @NotNull BinaryExpression binary,
+            @NotNull EvaluationEnvironment env
+    ) {
+        var type = leftBuiltin.type();
+        var leafCount = GdConstantValue.BuiltinValue.leafCountOf(type);
+        var leftLeaves = leftBuiltin.components();
+        var rightLeaves = rightBuiltin.components();
+        var result = new ArrayList<GdConstantValue>(leafCount);
+        if (GdConstantValue.BuiltinValue.leafKindOf(type) == GdConstantValue.BuiltinValue.LeafKind.INT) {
+            for (var index = 0; index < leafCount; index++) {
+                var left = ((GdConstantValue.IntValue) leftLeaves.get(index)).value();
+                var right = ((GdConstantValue.IntValue) rightLeaves.get(index)).value();
+                if ((operator == GodotOperator.DIVIDE || operator == GodotOperator.MODULE) && right == 0) {
+                    return new Evaluation.Rejected(
+                            (operator == GodotOperator.DIVIDE ? "division" : "remainder")
+                                    + " by zero in " + expressionSuffix(env), binary);
+                }
+                var computed = switch (operator) {
+                    case ADD -> left + right;
+                    case SUBTRACT -> left - right;
+                    case MULTIPLY -> left * right;
+                    case DIVIDE -> left / right;
+                    case MODULE -> left % right;
+                    default -> throw new IllegalStateException(
+                            "admitted operator '" + operator + "' is not computable on int-leaf builtins");
+                };
+                if (computed < Integer.MIN_VALUE || computed > Integer.MAX_VALUE) {
+                    return new Evaluation.Rejected(
+                            "component " + computed + " is out of the int32 component range in "
+                                    + expressionSuffix(env), binary);
+                }
+                result.add(new GdConstantValue.IntValue(computed));
+            }
+        } else {
+            for (var index = 0; index < leafCount; index++) {
+                var left = ((GdConstantValue.FloatValue) leftLeaves.get(index)).value();
+                var right = ((GdConstantValue.FloatValue) rightLeaves.get(index)).value();
+                if (operator == GodotOperator.DIVIDE && right == 0.0) {
+                    return new Evaluation.Rejected(
+                            "division by zero in " + expressionSuffix(env), binary);
+                }
+                result.add(new GdConstantValue.FloatValue(switch (operator) {
+                    case ADD -> left + right;
+                    case SUBTRACT -> left - right;
+                    case MULTIPLY -> left * right;
+                    case DIVIDE -> left / right;
+                    default -> throw new IllegalStateException(
+                            "admitted operator '" + operator + "' is not computable on float-leaf builtins");
+                }));
+            }
+        }
+        return new Evaluation.Resolved(new GdConstantValue.BuiltinValue(type, result));
+    }
+
+    /// Scalar-paired builtin arithmetic — right-scalar `*`/`/` and left-scalar `*`; the
+    /// metadata-selected result type decides whether leaves compute in `long` (int32
+    /// fail-closed) or `double` (float32 narrowing on construction).
+    private static @NotNull Evaluation computeScalarBuiltinPair(
+            @NotNull GodotOperator operator,
+            @NotNull GdConstantValue leftValue,
+            @NotNull GdConstantValue rightValue,
+            @NotNull GdType resultType,
+            @NotNull BinaryExpression binary,
+            @NotNull EvaluationEnvironment env
+    ) {
+        var scalarOnLeft = !(leftValue instanceof GdConstantValue.BuiltinValue);
+        var builtin = (GdConstantValue.BuiltinValue) (scalarOnLeft ? rightValue : leftValue);
+        var scalar = scalarOnLeft ? leftValue : rightValue;
+        var leaves = builtin.components();
+        var leafCount = GdConstantValue.BuiltinValue.leafCountOf(resultType);
+        var result = new ArrayList<GdConstantValue>(leafCount);
+        if (GdConstantValue.BuiltinValue.leafKindOf(resultType)
+                == GdConstantValue.BuiltinValue.LeafKind.INT) {
+            var scalarValue = ((GdConstantValue.IntValue) scalar).value();
+            if (operator == GodotOperator.DIVIDE && scalarValue == 0) {
+                return new Evaluation.Rejected(
+                        "division by zero in " + expressionSuffix(env), binary);
+            }
+            for (var index = 0; index < leafCount; index++) {
+                var leaf = ((GdConstantValue.IntValue) leaves.get(index)).value();
+                // Left-scalar admits `*` only, so operand order never flips a division.
+                // The scalar is an unrestricted int64: the multiply needs `Math.multiplyExact`
+                // because a wraparound can land back inside the int32 window, which the range
+                // check below would then wrongly admit.
+                long computed;
+                try {
+                    computed = operator == GodotOperator.DIVIDE
+                            ? leaf / scalarValue
+                            : Math.multiplyExact(leaf, scalarValue);
+                } catch (ArithmeticException ex) {
+                    return new Evaluation.Rejected(
+                            "component arithmetic overflows the int32 component range in "
+                                    + expressionSuffix(env),
+                            binary);
+                }
+                if (computed < Integer.MIN_VALUE || computed > Integer.MAX_VALUE) {
+                    return new Evaluation.Rejected(
+                            "component " + computed + " is out of the int32 component range in "
+                                    + expressionSuffix(env), binary);
+                }
+                result.add(new GdConstantValue.IntValue(computed));
+            }
+        } else {
+            var scalarValue = scalar instanceof GdConstantValue.FloatValue floatScalar
+                    ? floatScalar.value()
+                    : (double) ((GdConstantValue.IntValue) scalar).value();
+            if (operator == GodotOperator.DIVIDE && scalarValue == 0.0) {
+                return new Evaluation.Rejected(
+                        "division by zero in " + expressionSuffix(env), binary);
+            }
+            for (var index = 0; index < leafCount; index++) {
+                var leaf = leafAsDouble(leaves.get(index));
+                var computed = scalarOnLeft
+                        ? scalarValue * leaf
+                        : operator == GodotOperator.DIVIDE ? leaf / scalarValue : leaf * scalarValue;
+                result.add(new GdConstantValue.FloatValue(computed));
+            }
+        }
+        return new Evaluation.Resolved(new GdConstantValue.BuiltinValue(resultType, result));
+    }
+
+    private static double leafAsDouble(@NotNull GdConstantValue leaf) {
+        return switch (leaf) {
+            case GdConstantValue.FloatValue floatLeaf -> floatLeaf.value();
+            case GdConstantValue.IntValue intLeaf -> (double) intLeaf.value();
+            default -> throw new IllegalStateException(
+                    "builtin leaf '" + leaf.type().getTypeName() + "' is not numeric");
+        };
     }
 
     /// `MIN / -1` is the only `long` division that throws in Java; the int64 wrap rule yields
