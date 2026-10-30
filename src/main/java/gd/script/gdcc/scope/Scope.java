@@ -5,8 +5,10 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /// Restriction-aware lexical binding protocol shared by frontend binding and shared metadata helpers.
 ///
@@ -127,19 +129,32 @@ public interface Scope {
         return List.of();
     }
 
+    /// Names this layer terminally claims without a usable value — e.g. a failed class `const`
+    /// masks its name. Enumeration must not re-expose such names from outer layers, mirroring
+    /// the terminal-blocked path of `resolveValue(...)`. Default is empty for layers that own
+    /// no terminal name claims.
+    default @NotNull Set<String> blockedValueNamesHere() {
+        return Set.of();
+    }
+
     /// Enumerates the values visible from this scope through the lexical parent chain.
     ///
     /// Nearest-layer shadowing applies: a name contributed by an inner layer hides the same name
     /// from outer layers. The parent hop goes through `enumerationParentScope()` so class layers
     /// keep the same chain shape as `resolveValue(...)` (inner class scopes do not leak outer class
-    /// members into enumeration, mirroring lookup).
+    /// members into enumeration, mirroring lookup). Names terminally blocked at an inner layer
+    /// (`blockedValueNamesHere`) are suppressed even when an outer layer could produce a value.
     default @NotNull List<ScopeValue> collectVisibleValues() {
         var visibleByName = new LinkedHashMap<String, ScopeValue>();
+        var blockedNames = new LinkedHashSet<String>();
         Scope current = this;
         while (current != null) {
             for (var value : current.valuesHere()) {
-                visibleByName.putIfAbsent(value.name(), value);
+                if (!blockedNames.contains(value.name())) {
+                    visibleByName.putIfAbsent(value.name(), value);
+                }
             }
+            blockedNames.addAll(current.blockedValueNamesHere());
             current = current.enumerationParentScope();
         }
         return List.copyOf(visibleByName.values());

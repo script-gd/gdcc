@@ -1,7 +1,16 @@
 package gd.script.gdcc.frontend.sema;
 
 import gd.script.gdcc.frontend.FrontendClassNameContract;
+import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.constant.GdScriptEvaluatedConstant;
+import gd.script.gdcc.frontend.scope.FrontendRejectedClassConstant;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendAnnotationCollector;
+import gd.script.gdcc.frontend.sema.analyzer.support.EvaluationPolicy;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendAncestorMemberBlocker;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendClassConstPrepassContext;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendClassConstPrepassLookup;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendConstDeclaredTypeSupport;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendConstantEvaluator;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendEnumConstantEvaluator;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExportAnnotationSupport;
 import gd.script.gdcc.frontend.scope.ClassScope;
@@ -26,6 +35,7 @@ import gd.script.gdcc.scope.ScopeTypeMeta;
 import gd.script.gdcc.scope.ScopeTypeMetaKind;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
@@ -105,6 +115,9 @@ public final class FrontendClassSkeletonBuilder {
         // member filling follows source order, not inheritance order, so an ancestor's properties
         // are only guaranteed to exist in the registry after this loop completes.
         var pendingStaticPropertyChecks = new ArrayList<PendingStaticPropertyConflictCheck>();
+        // Failed class `const` records accumulate across the whole module so scope/chain readers
+        // see one frozen mask keyed by owner canonical name.
+        var rejectedClassConstants = new LinkedHashMap<String, Map<String, FrontendRejectedClassConstant>>();
         for (var sourceClassRelation : sourceClassRelations) {
             var context = new SkeletonBuildContext(
                     classRegistry,
@@ -117,10 +130,14 @@ public final class FrontendClassSkeletonBuilder {
                     sourceClassRelation,
                     context,
                     pendingStaticPropertyChecks,
-                    relationsByCanonicalName
+                    relationsByCanonicalName,
+                    rejectedClassConstants
             );
         }
         validateStaticPropertyHierarchyConflicts(pendingStaticPropertyChecks, classRegistry, diagnosticManager, analysisData);
+        // The failed-const mask is complete exactly once — before scope analysis builds scopes —
+        // so it is published as one immutable snapshot instead of a mutable side table.
+        analysisData.publishRejectedClassConstants(rejectedClassConstants);
 
         return new FrontendModuleSkeleton(
                 module.moduleName(),
@@ -195,7 +212,8 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull FrontendSourceClassRelation sourceClassRelation,
             @NotNull SkeletonBuildContext context,
             @NotNull List<PendingStaticPropertyConflictCheck> pendingStaticPropertyChecks,
-            @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName
+            @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName,
+            @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> rejectedClassConstants
     ) {
         var declaredTypeScopes = buildDeclaredTypeScopes(sourceClassRelation, context.classRegistry());
         fillClassMembers(
@@ -204,7 +222,8 @@ public final class FrontendClassSkeletonBuilder {
                 requireDeclaredTypeScope(declaredTypeScopes, sourceClassRelation.astOwner()),
                 context,
                 pendingStaticPropertyChecks,
-                relationsByCanonicalName
+                relationsByCanonicalName,
+                rejectedClassConstants
         );
         for (var innerClassRelation : sourceClassRelation.innerClassRelations()) {
             fillClassMembers(
@@ -213,7 +232,8 @@ public final class FrontendClassSkeletonBuilder {
                     requireDeclaredTypeScope(declaredTypeScopes, innerClassRelation.astOwner()),
                     context,
                     pendingStaticPropertyChecks,
-                    relationsByCanonicalName
+                    relationsByCanonicalName,
+                    rejectedClassConstants
             );
         }
     }
@@ -322,9 +342,17 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull ClassScope declaredTypeScope,
             @NotNull SkeletonBuildContext context,
             @NotNull List<PendingStaticPropertyConflictCheck> pendingStaticPropertyChecks,
-            @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName
+            @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName,
+            @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> rejectedClassConstants
     ) {
-        runEnumConstantPrePass(classDef, statements, declaredTypeScope, context, relationsByCanonicalName);
+        runConstEnumJointPrePass(
+                classDef,
+                statements,
+                declaredTypeScope,
+                context,
+                relationsByCanonicalName,
+                rejectedClassConstants
+        );
         for (var statement : statements) {
             switch (statement) {
                 case SignalStatement signalStatement -> {
@@ -408,85 +436,250 @@ public final class FrontendClassSkeletonBuilder {
         }
     }
 
-    /// Validates and evaluates every `EnumDeclaration` of one class body before regular member
-    /// filling starts.
+    /// Validates and evaluates every `const`/`enum` declaration of one class body in original
+    /// statement source order, before regular member filling starts.
     ///
     /// Running ahead of the main loop gives two guarantees:
     /// - constant facts land on the `ClassDef` constant table before any member type resolution
-    ///   runs, so declaration order between enums and properties does not matter;
+    ///   runs, so declaration order between constants, enums, and properties does not matter;
     /// - named enum groups publish their `GDCC_ENUM` type-meta onto the declared-type scaffold
     ///   before `var x: State` style annotations are resolved.
     ///
-    /// Enums succeed or fail independently: a rejected enum produces exactly one
-    /// `sema.class_skeleton` diagnostic, skips its own subtree, and leaves sibling enums/members
-    /// untouched. Nothing is published for a failed enum — no constant rows and no type-meta — so
-    /// downstream phases never observe half-evaluated enum facts.
-    private void runEnumConstantPrePass(
+    /// `const` and `enum` share one source-ordered pass because initializers may only reference
+    /// names that are already usable: an earlier `const` is visible to a later enum, a later
+    /// `const` is not, and a failed `const` keeps its name blocked for everything after it.
+    /// Declarations succeed or fail independently — a rejected one produces exactly one
+    /// `sema.class_skeleton` diagnostic, skips its own subtree, and leaves siblings untouched.
+    /// Nothing usable is published for a failed declaration — no constant row and no type-meta —
+    /// but a failed `const` still records a `FrontendRejectedClassConstant` so the name stays
+    /// terminally blocked instead of falling through to outer names.
+    private void runConstEnumJointPrePass(
             @NotNull LirClassDef classDef,
             @NotNull List<Statement> statements,
             @NotNull ClassScope declaredTypeScope,
             @NotNull SkeletonBuildContext context,
-            @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName
+            @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName,
+            @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> rejectedClassConstants
     ) {
-        var enumDeclarations = new ArrayList<EnumDeclaration>();
+        var hasPrepassWork = false;
         for (var statement : statements) {
-            if (statement instanceof EnumDeclaration enumDeclaration) {
-                enumDeclarations.add(enumDeclaration);
+            if (statement instanceof EnumDeclaration
+                    || (statement instanceof VariableDeclaration variableDeclaration
+                            && variableDeclaration.kind() == DeclarationKind.CONST)) {
+                hasPrepassWork = true;
+                break;
             }
         }
-        if (enumDeclarations.isEmpty()) {
+        if (!hasPrepassWork) {
             return;
         }
-        // The main loop has not filled the class shell yet, so the conflict table is collected
-        // from the AST directly: property/signal/function names plus direct inner-class source
-        // names. Named enum members are intentionally absent — they never enter the class-level
-        // namespace, so `enum State {IDLE}` may coexist with a same-named class member `IDLE`.
-        var reservedNames = getReserveNames(statements);
-        var ancestorEnumNames = collectAncestorEnumNames(classDef.getSuperName(), relationsByCanonicalName);
-        for (var enumDeclaration : enumDeclarations) {
-            processEnumDeclaration(
-                    classDef,
-                    enumDeclaration,
-                    reservedNames,
-                    declaredTypeScope,
-                    context,
-                    ancestorEnumNames
-            );
-        }
-    }
-
-    private static @NotNull HashSet<String> getReserveNames(@NotNull List<Statement> statements) {
-        var reservedNames = new HashSet<String>();
+        // The two name views are collected once per class and then shared by every declaration:
+        // `claimedMemberNames` powers conflict diagnostics (initially all non-constant member
+        // names, growing as each const/enum claims its names in source order), while
+        // `declaredMemberNames` is the complete structural inventory — including later, failed,
+        // and non-constant declarations — used purely as a terminal lookup mask.
+        var nameViews = buildPrepassNameViews(classDef, statements, relationsByCanonicalName, context);
+        var classContext = new FrontendClassConstPrepassContext(
+                classDef.getScriptConstants(),
+                nameViews.declaredMemberNames(),
+                nameViews.rejectedConstantsByName().keySet(),
+                nameViews.ancestorMemberBlocker()
+        );
         for (var statement : statements) {
             switch (statement) {
-                case SignalStatement signalStatement -> reservedNames.add(signalStatement.name().trim());
+                case EnumDeclaration enumDeclaration -> processEnumDeclaration(
+                        classDef,
+                        enumDeclaration,
+                        nameViews,
+                        classContext,
+                        declaredTypeScope,
+                        context
+                );
                 case VariableDeclaration variableDeclaration -> {
-                    if (variableDeclaration.kind() == DeclarationKind.VAR) {
-                        reservedNames.add(variableDeclaration.name().trim());
+                    if (variableDeclaration.kind() == DeclarationKind.CONST) {
+                        processClassConstDeclaration(
+                                classDef,
+                                variableDeclaration,
+                                nameViews,
+                                classContext,
+                                declaredTypeScope,
+                                context
+                        );
                     }
                 }
-                case FunctionDeclaration functionDeclaration -> reservedNames.add(functionDeclaration.name().trim());
-                // Constructors share the `_init` slot with same-named functions.
-                case ConstructorDeclaration _ -> reservedNames.add("_init");
-                case ClassDeclaration classDeclaration -> reservedNames.add(classDeclaration.name().trim());
                 default -> {
                 }
             }
         }
-        return reservedNames;
+        if (!nameViews.rejectedConstantsByName().isEmpty()) {
+            rejectedClassConstants.put(classDef.getName(), nameViews.rejectedConstantsByName());
+        }
+    }
+
+    /// Name views collected once per class for the joint const/enum pre-pass.
+    ///
+    /// @param claimedMemberNames     name -> declaration identity for conflict-claim checks:
+    ///                               starts with every non-constant member name (var, functions,
+    ///                               `_init`, signals, inner classes) and grows as each
+    ///                               const/enum claims its names in source order
+    /// @param declaredMemberNames    name -> first declaration across every member kind (const
+    ///                               and enum-exposed names included); lookup mask only, never a
+    ///                               conflict-claim source
+    /// @param rejectedConstantsByName name -> failure record for class `const` declarations that
+    ///                                could not produce a usable value this pre-pass; mutable
+    ///                                because failed names must stay blocked for later statements
+    /// @param ancestorMemberBlocker  script+engine ancestor member-name blocker shared by all
+    ///                               initializers of this class
+    private record PrepassNameViews(
+            @NotNull Map<String, Node> claimedMemberNames,
+            @NotNull Map<String, Node> declaredMemberNames,
+            @NotNull Map<String, FrontendRejectedClassConstant> rejectedConstantsByName,
+            @NotNull FrontendAncestorMemberBlocker ancestorMemberBlocker
+    ) {
+    }
+
+    private @NotNull PrepassNameViews buildPrepassNameViews(
+            @NotNull LirClassDef classDef,
+            @NotNull List<Statement> statements,
+            @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName,
+            @NotNull SkeletonBuildContext context
+    ) {
+        var claimedMemberNames = new LinkedHashMap<String, Node>();
+        var declaredMemberNames = new LinkedHashMap<String, Node>();
+        for (var statement : statements) {
+            switch (statement) {
+                case SignalStatement signalStatement -> {
+                    claimedMemberNames.putIfAbsent(signalStatement.name().trim(), signalStatement);
+                    declaredMemberNames.putIfAbsent(signalStatement.name().trim(), signalStatement);
+                }
+                case VariableDeclaration variableDeclaration -> {
+                    declaredMemberNames.putIfAbsent(variableDeclaration.name().trim(), variableDeclaration);
+                    if (variableDeclaration.kind() == DeclarationKind.VAR) {
+                        claimedMemberNames.putIfAbsent(variableDeclaration.name().trim(), variableDeclaration);
+                    }
+                }
+                case FunctionDeclaration functionDeclaration -> {
+                    claimedMemberNames.putIfAbsent(functionDeclaration.name().trim(), functionDeclaration);
+                    declaredMemberNames.putIfAbsent(functionDeclaration.name().trim(), functionDeclaration);
+                }
+                // Constructors share the `_init` slot with same-named functions.
+                case ConstructorDeclaration constructorDeclaration -> {
+                    claimedMemberNames.putIfAbsent("_init", constructorDeclaration);
+                    declaredMemberNames.putIfAbsent("_init", constructorDeclaration);
+                }
+                case ClassDeclaration classDeclaration -> {
+                    claimedMemberNames.putIfAbsent(classDeclaration.name().trim(), classDeclaration);
+                    declaredMemberNames.putIfAbsent(classDeclaration.name().trim(), classDeclaration);
+                }
+                case EnumDeclaration enumDeclaration -> {
+                    var groupName = StringUtil.trimToNull(enumDeclaration.name());
+                    if (groupName != null) {
+                        declaredMemberNames.putIfAbsent(groupName, enumDeclaration);
+                    } else {
+                        // Named enum members never enter the class-level namespace, so
+                        // `enum State {IDLE}` may coexist with a member named `IDLE`; anonymous
+                        // enum members occupy one class-level name each.
+                        for (var member : enumDeclaration.members()) {
+                            var memberName = member.name().trim();
+                            if (!memberName.isEmpty()) {
+                                declaredMemberNames.putIfAbsent(memberName, member);
+                            }
+                        }
+                    }
+                }
+                default -> {
+                }
+            }
+        }
+        return new PrepassNameViews(
+                claimedMemberNames,
+                declaredMemberNames,
+                new LinkedHashMap<>(),
+                buildAncestorMemberBlocker(
+                        classDef.getSuperName(),
+                        relationsByCanonicalName,
+                        context.classRegistry()
+                )
+        );
+    }
+
+    /// Collects the ancestor-side member blocker for one class.
+    ///
+    /// The scan is purely structural, so it never depends on ancestor fill order: script
+    /// ancestors contribute every member-name category (enum-exposed names separately so
+    /// diagnostics can keep the inherited-enum wording), and the first non-module ancestor name
+    /// is handed to the engine/native probe — no GDCC class can sit above an engine layer, so
+    /// the walk stops there.
+    private @NotNull FrontendAncestorMemberBlocker buildAncestorMemberBlocker(
+            @NotNull String superClassCanonicalName,
+            @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName,
+            @NotNull ClassRegistry classRegistry
+    ) {
+        var enumNames = new HashSet<String>();
+        var memberNames = new HashSet<String>();
+        var visited = new HashSet<String>();
+        var currentSuperName = superClassCanonicalName;
+        String engineRootClassName = null;
+        while (!currentSuperName.isBlank() && visited.add(currentSuperName)) {
+            var relation = relationsByCanonicalName.get(currentSuperName);
+            if (relation == null) {
+                engineRootClassName = currentSuperName;
+                break;
+            }
+            collectAncestorMemberNames(classBodyStatementsOf(relation), enumNames, memberNames);
+            currentSuperName = relation.superClassRef().canonicalName();
+        }
+        return new FrontendAncestorMemberBlocker(
+                enumNames,
+                memberNames,
+                engineRootClassName,
+                classRegistry
+        );
+    }
+
+    /// Distributes one ancestor class body's member names into the two structural blocker
+    /// buckets: enum-exposed names (named group or anonymous members) versus every other member
+    /// kind (`var`/`const`/functions/`_init`/signals/inner classes).
+    private static void collectAncestorMemberNames(
+            @NotNull List<Statement> statements,
+            @NotNull Set<String> enumNames,
+            @NotNull Set<String> memberNames
+    ) {
+        for (var statement : statements) {
+            switch (statement) {
+                case EnumDeclaration enumDeclaration -> {
+                    if (enumDeclaration.name() != null) {
+                        enumNames.add(enumDeclaration.name().trim());
+                    } else {
+                        for (var member : enumDeclaration.members()) {
+                            enumNames.add(member.name().trim());
+                        }
+                    }
+                }
+                case SignalStatement signalStatement -> memberNames.add(signalStatement.name().trim());
+                case VariableDeclaration variableDeclaration ->
+                        memberNames.add(variableDeclaration.name().trim());
+                case FunctionDeclaration functionDeclaration ->
+                        memberNames.add(functionDeclaration.name().trim());
+                case ConstructorDeclaration _ -> memberNames.add("_init");
+                case ClassDeclaration classDeclaration -> memberNames.add(classDeclaration.name().trim());
+                default -> {
+                }
+            }
+        }
     }
 
     /// Validates and evaluates one enum declaration, publishing its facts only when every member
     /// resolves. Anonymous enums publish one constant row per member; named enums publish one
     /// Dictionary-typed group row plus the `GDCC_ENUM` type-meta on the declared-type scaffold.
-    /// Successfully published names join the class-level conflict table for later enums.
+    /// Successfully published names join the class-level conflict table for later declarations.
     private void processEnumDeclaration(
             @NotNull LirClassDef classDef,
             @NotNull EnumDeclaration enumDeclaration,
-            @NotNull Set<String> reservedNames,
+            @NotNull PrepassNameViews nameViews,
+            @NotNull FrontendClassConstPrepassContext classContext,
             @NotNull ClassScope declaredTypeScope,
-            @NotNull SkeletonBuildContext context,
-            @NotNull Set<String> ancestorEnumNames
+            @NotNull SkeletonBuildContext context
     ) {
         var groupName = StringUtil.trimToNull(enumDeclaration.name());
         var members = enumDeclaration.members();
@@ -532,7 +725,7 @@ public final class FrontendClassSkeletonBuilder {
         // Class-level conflict check: anonymous enums occupy one name per member, named enums
         // occupy only the group name (their members stay inside the Dictionary value).
         if (groupName != null) {
-            if (reservedNames.contains(groupName)) {
+            if (nameViews.claimedMemberNames().containsKey(groupName)) {
                 rejectEnumDeclaration(
                         enumDeclaration,
                         enumDeclaration,
@@ -545,7 +738,7 @@ public final class FrontendClassSkeletonBuilder {
         } else {
             for (var member : members) {
                 var memberName = member.name().trim();
-                if (reservedNames.contains(memberName)) {
+                if (nameViews.claimedMemberNames().containsKey(memberName)) {
                     rejectEnumDeclaration(
                             enumDeclaration,
                             enumDeclaration,
@@ -569,8 +762,8 @@ public final class FrontendClassSkeletonBuilder {
                 var evaluation = FrontendEnumConstantEvaluator.evaluate(
                         member.value(),
                         earlierMemberValues,
-                        classDef.getScriptConstants(),
-                        ancestorEnumNames,
+                        classContext,
+                        member,
                         context.classRegistry()
                 );
                 switch (evaluation) {
@@ -613,11 +806,13 @@ public final class FrontendClassSkeletonBuilder {
                     enumGroup,
                     true
             ));
-            reservedNames.add(groupName);
+            nameViews.claimedMemberNames().put(groupName, enumDeclaration);
         } else {
             for (var member : evaluatedMembers) {
                 classDef.addScriptConstant(new GdScriptClassConstant(member.memberName(), GdIntType.INT, member));
-                reservedNames.add(member.memberName());
+            }
+            for (var member : members) {
+                nameViews.claimedMemberNames().put(member.name().trim(), member);
             }
         }
     }
@@ -640,15 +835,216 @@ public final class FrontendClassSkeletonBuilder {
         markSkippedSubtreeRoots(List.of(enumDeclaration), context.analysisData());
     }
 
-    /// Checks whether the parser already reported an error inside this enum's source range. Parse
-    /// diagnostics live in the same shared manager (parse runs before skeleton), and enum bodies
-    /// contain only members, so any `parse.*` diagnostic whose range is contained in the enum
-    /// declaration range marks the whole enum as parse-broken.
-    private boolean hasParserDiagnosticInside(
-            @NotNull EnumDeclaration enumDeclaration,
+    /// Validates and evaluates one class-level `const` declaration, then either publishes its
+    /// frozen value into the class constant table or records it in the failed-const mask.
+    ///
+    /// A failed const always keeps its name: it claims the name against later declarations, and
+    /// its `FrontendRejectedClassConstant` record lets scope/chain probes answer terminally
+    /// blocked instead of leaking to globals or ancestors — while never entering the usable
+    /// constant table itself.
+    private void processClassConstDeclaration(
+            @NotNull LirClassDef classDef,
+            @NotNull VariableDeclaration variableDeclaration,
+            @NotNull PrepassNameViews nameViews,
+            @NotNull FrontendClassConstPrepassContext classContext,
+            @NotNull ClassScope declaredTypeScope,
             @NotNull SkeletonBuildContext context
     ) {
-        var enumRange = FrontendRange.fromAstRange(enumDeclaration.range());
+        var name = variableDeclaration.name().trim();
+        // Conflict claims run before anything else: the name belongs to whatever declared it
+        // first in the claim order, and this const can only lose. A conflict-rejected const is
+        // diagnosed and facted but must NOT mask the name — the mask would poison the
+        // legitimate owner (a var that claimed the name, or an earlier successful const).
+        var claimant = nameViews.claimedMemberNames().get(name);
+        if (claimant != null && claimant != variableDeclaration) {
+            context.diagnostics().error(
+                    "sema.class_skeleton",
+                    "Constant '" + name + "' on class '" + classDef.getName()
+                            + "' conflicts with an existing class member of the same name",
+                    context.sourcePath(),
+                    FrontendRange.fromAstRange(variableDeclaration.range())
+            );
+            context.analysisData().constantFacts().put(
+                    variableDeclaration,
+                    new Evaluation.Rejected(
+                            "conflicts with an existing class member of the same name",
+                            variableDeclaration
+                    )
+            );
+            markSkippedSubtreeRoots(List.of(variableDeclaration), context.analysisData());
+            return;
+        }
+        // The const owns the name from here on: every failure after this point poisons the name
+        // through the failed-const mask.
+        nameViews.claimedMemberNames().put(name, variableDeclaration);
+        // Parse-damaged subtrees stay the parser's diagnostic property (the same single-owner
+        // recovery rule the enum path applies); the name still masks so references terminate
+        // instead of leaking to outer names.
+        if (hasParserDiagnosticInside(variableDeclaration, context)) {
+            maskRejectedClassConstant(
+                    variableDeclaration,
+                    "the constant declaration is damaged and could not be evaluated",
+                    variableDeclaration,
+                    nameViews,
+                    context
+            );
+            markSkippedSubtreeRoots(List.of(variableDeclaration), context.analysisData());
+            return;
+        }
+
+        GdType declaredType = null;
+        switch (FrontendConstDeclaredTypeSupport.checkDeclaredType(
+                variableDeclaration.type(),
+                declaredTypeScope,
+                context.moduleTopLevelCanonicalNameMap()
+        )) {
+            case FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.Rejected rejected -> {
+                rejectClassConstDeclaration(
+                        classDef,
+                        variableDeclaration,
+                        variableDeclaration,
+                        "Constant '" + name + "' on class '" + classDef.getName() + "': "
+                                + rejected.reason(),
+                        nameViews,
+                        context
+                );
+                return;
+            }
+            case FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.Resolved resolved ->
+                    declaredType = resolved.declaredType();
+            case FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.NoAnnotation _ -> {
+            }
+        }
+
+        var initializer = variableDeclaration.value();
+        if (initializer == null) {
+            rejectClassConstDeclaration(
+                    classDef,
+                    variableDeclaration,
+                    variableDeclaration,
+                    "Constant '" + name + "' on class '" + classDef.getName()
+                            + "' requires an initializer",
+                    nameViews,
+                    context
+            );
+            return;
+        }
+        var evaluation = FrontendConstantEvaluator.evaluate(
+                initializer,
+                FrontendClassConstPrepassLookup.forClassConst(
+                        classContext,
+                        variableDeclaration,
+                        context.classRegistry()
+                ),
+                EvaluationPolicy.general()
+        );
+        if (evaluation instanceof Evaluation.Rejected rejected) {
+            var anchor = rejected.offendingNode() != null ? rejected.offendingNode() : variableDeclaration;
+            rejectClassConstDeclaration(
+                    classDef,
+                    variableDeclaration,
+                    anchor,
+                    "Constant '" + name + "' on class '" + classDef.getName()
+                            + "' has no supported constant value: " + rejected.reason(),
+                    nameViews,
+                    context
+            );
+            return;
+        }
+        var value = ((Evaluation.Resolved) evaluation).value();
+        if (declaredType != null) {
+            var converted = FrontendConstDeclaredTypeSupport.convertToDeclaredType(
+                    context.classRegistry(),
+                    value,
+                    declaredType
+            );
+            if (converted == null) {
+                rejectClassConstDeclaration(
+                        classDef,
+                        variableDeclaration,
+                        variableDeclaration,
+                        "Constant '" + name + "' on class '" + classDef.getName()
+                                + "' produces type '" + value.type().getTypeName()
+                                + "', which cannot be converted to declared type '"
+                                + declaredType.getTypeName() + "'",
+                        nameViews,
+                        context
+                );
+                return;
+            }
+            value = converted;
+        }
+
+        var evaluated = new GdScriptEvaluatedConstant(name, classDef.getName(), value);
+        recordDeclarationOrigin(evaluated, variableDeclaration, context);
+        classDef.addScriptConstant(new GdScriptClassConstant(
+                name,
+                declaredType != null ? declaredType : value.type(),
+                evaluated
+        ));
+        context.analysisData().constantFacts().put(
+                variableDeclaration,
+                new Evaluation.Resolved(value)
+        );
+    }
+
+    /// Emits the single `sema.class_skeleton` diagnostic for one rejected class `const`, then
+    /// performs the recovery bookkeeping: subtree skipped, fact recorded, name kept blocked.
+    /// `diagnosticAnchor` stays as precise as the failure allows (the offending initializer node
+    /// for evaluation errors, the declaration itself for structural errors).
+    private void rejectClassConstDeclaration(
+            @NotNull LirClassDef classDef,
+            @NotNull VariableDeclaration variableDeclaration,
+            @NotNull Node diagnosticAnchor,
+            @NotNull String message,
+            @NotNull PrepassNameViews nameViews,
+            @NotNull SkeletonBuildContext context
+    ) {
+        context.diagnostics().error(
+                "sema.class_skeleton",
+                message,
+                context.sourcePath(),
+                FrontendRange.fromAstRange(diagnosticAnchor.range())
+        );
+        maskRejectedClassConstant(
+                variableDeclaration,
+                message,
+                diagnosticAnchor,
+                nameViews,
+                context
+        );
+        markSkippedSubtreeRoots(List.of(variableDeclaration), context.analysisData());
+    }
+
+    /// Recovery bookkeeping shared by every class-const failure path: the failed name joins the
+    /// class's poison mask (first failure wins on duplicate names) and the declaration records
+    /// its `Rejected` fact for downstream poison-aware diagnostics.
+    private void maskRejectedClassConstant(
+            @NotNull VariableDeclaration variableDeclaration,
+            @NotNull String reason,
+            @NotNull Node diagnosticAnchor,
+            @NotNull PrepassNameViews nameViews,
+            @NotNull SkeletonBuildContext context
+    ) {
+        nameViews.rejectedConstantsByName().putIfAbsent(
+                variableDeclaration.name().trim(),
+                new FrontendRejectedClassConstant(variableDeclaration, reason, diagnosticAnchor)
+        );
+        context.analysisData().constantFacts().put(
+                variableDeclaration,
+                new Evaluation.Rejected(reason, diagnosticAnchor)
+        );
+    }
+
+    /// Checks whether the parser already reported an error inside this declaration's source
+    /// range. Parse diagnostics live in the same shared manager (parse runs before skeleton), so
+    /// any `parse.*` diagnostic whose range is contained in the declaration range marks the
+    /// whole declaration as parse-broken and owned by the parser's recovery rule.
+    private boolean hasParserDiagnosticInside(
+            @NotNull Node node,
+            @NotNull SkeletonBuildContext context
+    ) {
+        var nodeRange = FrontendRange.fromAstRange(node.range());
         var sourcePath = context.sourcePath().toString().replace('\\', '/');
         for (var diagnostic : context.diagnostics().snapshot().asList()) {
             if (!diagnostic.category().startsWith("parse.")) {
@@ -659,45 +1055,11 @@ public final class FrontendClassSkeletonBuilder {
                     || !diagnostic.sourcePath().equals(sourcePath)) {
                 continue;
             }
-            if (range.startByte() >= enumRange.startByte() && range.endByte() <= enumRange.endByte()) {
+            if (range.startByte() >= nodeRange.startByte() && range.endByte() <= nodeRange.endByte()) {
                 return true;
             }
         }
         return false;
-    }
-
-    /// Collects the enum names declared by the GDCC ancestor chain of one class: named enum group
-    /// names plus anonymous enum member names.
-    ///
-    /// The scan is purely structural, so it never depends on ancestor fill order. The walk stops
-    /// at the first non-module (engine/native) ancestor: those classes expose no bare-visible
-    /// script enums, and no GDCC class can sit above them on the chain.
-    private @NotNull Set<String> collectAncestorEnumNames(
-            @NotNull String superClassCanonicalName,
-            @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName
-    ) {
-        var names = new HashSet<String>();
-        var visited = new HashSet<String>();
-        var currentSuperName = superClassCanonicalName;
-        while (!currentSuperName.isBlank() && visited.add(currentSuperName)) {
-            var relation = relationsByCanonicalName.get(currentSuperName);
-            if (relation == null) {
-                break;
-            }
-            for (var statement : classBodyStatementsOf(relation)) {
-                if (statement instanceof EnumDeclaration enumDeclaration) {
-                    if (enumDeclaration.name() != null) {
-                        names.add(enumDeclaration.name().trim());
-                    } else {
-                        for (var member : enumDeclaration.members()) {
-                            names.add(member.name().trim());
-                        }
-                    }
-                }
-            }
-            currentSuperName = relation.superClassRef().canonicalName();
-        }
-        return names;
     }
 
     private @NotNull List<Statement> classBodyStatementsOf(@NotNull FrontendOwnedClassRelation relation) {

@@ -21,6 +21,7 @@ import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.util.StringUtil;
+import gd.script.gdcc.frontend.constant.GdScriptEvaluatedConstant;
 import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.scope.GdScriptEnumConstant;
@@ -174,6 +175,13 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                     }
                     if (binding.declarationSite() instanceof GdScriptEnumGroup enumGroup) {
                         session.materializeEnumGroupDictionary(block, enumGroup, resultSlotId);
+                        return block;
+                    }
+                    // Class-level `const` declarations evaluate to an immutable typed value at
+                    // skeleton time; the bare reference materializes that frozen value through
+                    // the shared literal/component-construction path — never a runtime load.
+                    if (binding.declarationSite() instanceof GdScriptEvaluatedConstant evaluatedConstant) {
+                        session.materializeConstantValue(block, evaluatedConstant.value(), resultSlotId);
                         return block;
                     }
                     throw session.unsupportedSequenceItem(

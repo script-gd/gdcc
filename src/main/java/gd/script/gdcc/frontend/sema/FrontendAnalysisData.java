@@ -7,6 +7,8 @@ import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
+import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.scope.FrontendRejectedClassConstant;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendPublishedFactTypeGuard;
@@ -25,6 +27,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -106,6 +109,16 @@ public final class FrontendAnalysisData {
     /// same freezable identity map.
     private final @NotNull FreezableIdentityMap<Object, FrontendDeclarationOrigin> declarationOrigins =
             new FreezableIdentityMap<>();
+    /// Compile-time evaluation facts keyed by the `const` declaration AST node. Written by the
+    /// class const/enum joint pre-pass (and later by the local-const owner); carries both
+    /// `Resolved` payloads and `Rejected` records so downstream owners can tell an invalid
+    /// constant from a never-evaluated one without re-running the evaluator.
+    private final @NotNull FrontendAstSideTable<Evaluation> constantFacts;
+    /// Failed class-`const` recovery mask keyed by owner canonical class name, then by member
+    /// name. Produced once by the class skeleton before scope analysis starts and consumed
+    /// read-only afterwards (`ClassScope` value lookups and qualified chain reduction), so the
+    /// map is replaced as a whole instead of being incrementally mutable.
+    private @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> rejectedClassConstants = Map.of();
     /// Set once the owning analysis generation is published inside a snapshot. Volatile because snapshots
     /// are read concurrently off-latch.
     private volatile boolean frozen;
@@ -127,7 +140,8 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<FrontendLambdaIdentity> lambdaIdentities,
             @NotNull Set<LirFunctionDef> coroutineFunctions,
             @NotNull Set<LambdaExpression> coroutineLambdaOwners,
-            @NotNull List<FrontendAwaitCallPending> awaitCallPendings
+            @NotNull List<FrontendAwaitCallPending> awaitCallPendings,
+            @NotNull FrontendAstSideTable<Evaluation> constantFacts
     ) {
         this.annotationsByAst = Objects.requireNonNull(annotationsByAst, "annotationsByAst must not be null");
         this.skippedSubtreeRoots = Objects.requireNonNull(
@@ -161,6 +175,7 @@ public final class FrontendAnalysisData {
                 "coroutineLambdaOwners must not be null"
         );
         this.awaitCallPendings = Objects.requireNonNull(awaitCallPendings, "awaitCallPendings must not be null");
+        this.constantFacts = Objects.requireNonNull(constantFacts, "constantFacts must not be null");
     }
 
     /// Creates an empty analysis data carrier with the full side-table topology already present.
@@ -182,7 +197,8 @@ public final class FrontendAnalysisData {
                 new FrontendAstSideTable<>(),
                 Collections.newSetFromMap(new IdentityHashMap<>()),
                 Collections.newSetFromMap(new IdentityHashMap<>()),
-                new ArrayList<>()
+                new ArrayList<>(),
+                new FrontendAstSideTable<>()
         );
     }
 
@@ -218,6 +234,7 @@ public final class FrontendAnalysisData {
         lambdaPlans.freeze();
         lambdaIdentities.freeze();
         declarationOrigins.freeze();
+        constantFacts.freeze();
     }
 
     public boolean isFrozen() {
@@ -494,6 +511,34 @@ public final class FrontendAnalysisData {
     /// together with the owning generation — every mutation channel closes on `freeze()`.
     public @NotNull Map<Object, FrontendDeclarationOrigin> declarationOrigins() {
         return declarationOrigins;
+    }
+
+    /// Compile-time evaluation facts keyed by `const` declaration AST identity.
+    public @NotNull FrontendAstSideTable<Evaluation> constantFacts() {
+        return constantFacts;
+    }
+
+    /// Read-only view of the failed class-`const` mask (owner canonical name → member name →
+    /// rejection record). Empty before the skeleton publishes it.
+    public @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> rejectedClassConstants() {
+        return rejectedClassConstants;
+    }
+
+    /// Replaces the whole failed class-`const` mask with the skeleton's collected generation
+    /// data. Called exactly once per analysis generation, right after member filling ends and
+    /// before scope analysis starts; the deep unmodifiable copy keeps later readers independent
+    /// of the builder's working collections.
+    public void publishRejectedClassConstants(
+            @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> collected
+    ) {
+        requireWritable();
+        Objects.requireNonNull(collected, "collected must not be null");
+        var snapshot = new LinkedHashMap<String, Map<String, FrontendRejectedClassConstant>>(collected.size());
+        collected.forEach((ownerName, byName) -> snapshot.put(
+                ownerName,
+                Collections.unmodifiableMap(new LinkedHashMap<>(byName))
+        ));
+        rejectedClassConstants = Collections.unmodifiableMap(snapshot);
     }
 
     /// Read-only view of the coroutine callable set; mutation goes through `markCoroutineFunction`.

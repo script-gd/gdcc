@@ -34,6 +34,7 @@ import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
@@ -882,6 +883,18 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             publishScopeValueBinding(context, identifierExpression, valueResolution);
             if (valueResolution.status() == FrontendVisibleValueStatus.FOUND_BLOCKED
                     && !context.isParameterDefaultIsland()) {
+                // A blocked CONSTANT binding whose declaration failed constant evaluation is a
+                // poison hit, not a permission problem: report the dependency-invalid diagnostic
+                // and leave the declaration's root cause to its skeleton diagnostic.
+                if (isRejectedConstantBinding(context, valueResolution.visibleValue())) {
+                    reportBindingError(
+                            context,
+                            identifierExpression,
+                            "Constant '" + identifierExpression.name()
+                                    + "' failed to evaluate at its declaration; the reference depends on an invalid constant"
+                    );
+                    return;
+                }
                 reportBindingError(
                         context,
                         identifierExpression,
@@ -929,6 +942,22 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 identifierExpression,
                 "Unable to resolve value binding '" + identifierExpression.name() + "'"
         );
+    }
+
+    /// Poison check for a blocked binding: only a `CONSTANT` binding whose declaration is a
+    /// `const` AST node that failed evaluation counts. Published usable constants carry model
+    /// declarations (`GdScriptEnumConstant`/`GdScriptEvaluatedConstant`/extension metadata), so
+    /// a `VariableDeclaration` site with a `Rejected` fact can only come from the failed-const
+    /// mask — and the check stays correct when local `const` declarations start producing
+    /// `CONSTANT` bindings of their own.
+    private boolean isRejectedConstantBinding(
+            @NotNull FrontendSuiteContext context,
+            @NotNull ScopeValue value
+    ) {
+        return value.kind() == ScopeValueKind.CONSTANT
+                && value.declaration() instanceof VariableDeclaration declaration
+                && context.analysisData().constantFacts().get(declaration)
+                        instanceof Evaluation.Rejected;
     }
 
     /// `super` publishes only the keyword binding; availability rules (property-initializer

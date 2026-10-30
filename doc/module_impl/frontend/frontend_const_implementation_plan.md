@@ -4,7 +4,7 @@
 > 文中除「§2 核实的代码基线」与「§13 执行记录」外均为建议方案，
 > 建议与事实严格分开，不以本文档内容回写任何事实源文档。
 > §12 的 A1 已由用户确认 earlier-only，不再是待确认项。
-> 阶段状态：P0、P1、P2、P3 已实施（见 §10 各阶段条目与 §13 记录）；P4–P7 未实施。
+> 阶段状态：P0–P4 已实施（见 §10 各阶段条目与 §13 记录）；P5–P7 未实施。
 
 - 适用范围（计划触及，均为相对仓库根路径）：
   - `src/main/java/gd/script/gdcc/frontend/constant/**`（新增值族与求值事实模型）
@@ -459,7 +459,19 @@
   成功物化，不算伪造可用 Variant 值）。
 - qualified 侧 `FrontendChainReductionHelper.ReductionRequest` 本有 analysisData：
   `reduceGdccStaticLoad` 传入同一 mask view、用同一单层 helper 结果；blocked 时
-  发 BLOCKED trace、停止祖先搜索。
+  发 BLOCKED trace、停止祖先搜索；`reduceStaticMethodStep` 前置同一逐层
+  claim 走查——本层同名方法交给原 resolver，usable const 终止为 FAILED，
+  masked const 终止为 BLOCKED，父类 static 同名方法不得穿透子类 const 占名。
+- **mask 域边界（已确认）**：失败 const 的毒化域 = 常量可见域——裸标识符
+  （`resolveValue`）与限定 type-meta 面（`Child.C`/`Child.C()`）。实例成员面
+  `instance.member`/`self.member` 不属于 mask 域：该面经 `ScopePropertyResolver`/
+  `ScopeMethodResolver`/`ScopeSignalResolver` 解析，本就不暴露任何常量
+  （成功 const/enum 成员在 `self.C`/`d.C` 同样不可达），mask 域与常量可见域
+  精确同构。因此父 `var hp` + 子 `const hp = MISSING` 时 `child.hp` 仍解析
+  `Parent.hp`——`hp` 与 `self.hp` 的诊断差异是恢复模式下的已知边界，而非
+  正确性漏洞（skeleton error 已致模块编译失败，分歧事实不进产物）。若未来
+  实现 Godot 兼容的成功常量实例访问（`self.C`/`d.C`），mask 探针须随该面
+  一并扩展到三个 resolver——属彼时的自然组成而非本阶段扩界。
 - 不只在局部 reservedNames 保留 mask；不改 shared `ScopeLookupStatus`。
 - 该项是 frontend 局部数据接线，不引入公共 registry 新体系，不扩大为 A1。
 - 标注类型验证：class skeleton 是该声明标注的唯一验证 owner（local 侧由
@@ -937,7 +949,7 @@
       `FrontendTypeCheckAnalyzerTest`、`FrontendCompileCheckAnalyzerTest`、
       `FrontendEnumBodyBindingExprTypeTest`、`FrontendEnumChainBindingTest`
       回归全绿。
-- P4 class 联合 prepass / binding / qualified / lowering
+- P4 class 联合 prepass / binding / qualified / lowering（已实施）
   - 目标：§6 全部接线（name reservations、联合 prepass、ClassScope 泛化、
     `FrontendChainReductionHelper`、lowering 使用处物化）；class
     `LookupContext` 接同一 immutable registry（§5.5）；无引擎注册、无
@@ -958,6 +970,113 @@
   - 退出门槛：失败声明名称 mask 生效（`Parent.C` 成功 / `Child.C` 失败场景）；
     earlier class int const 被 enum 引用成功；前向 / 祖先 / 跨类按 §12 冻结
     拒绝矩阵断言拒绝。
+  - 实施结果：
+    - 新文件：`FrontendRejectedClassConstant`（mask 记录：AST 声明身份 +
+      reason + anchor）、`FrontendClassConstPrepassContext`（每类共享名视图：
+      live usable 常量表 + 全量已声明名 mask + live 失败名集 + 祖先 blocker）、
+      `FrontendAncestorMemberBlocker`（script enum 名 / script 其他成员 /
+      engine/native 三桶探测，`findEngineClassConstantInHierarchy` +
+      `findEngineClassEnumValueInHierarchy` + 属性/方法/信号 metadata 查询）、
+      `FrontendConstDeclaredTypeSupport`（严格三态标注验证 + 隐式矩阵
+      `ALLOW_DIRECT`/`ALLOW_WITH_INTRINSIC_CAST` 负载转换，int→float 与
+      同维 Vector*i→Vector*）、`FrontendClassConstantLookup`（scope/chain 共享
+      单层 probe：mask 先于 usable，`Usable`/`TerminalBlocked`/`Miss`）、
+      `FrontendClassConstPrepassLookup`（双模式 `LookupContext`——
+      CLASS_CONST_INITIALIZER 全开 + 名空间下行；ENUM_PREP_PASS int-only 保
+      legacy 措辞；自引用/后声明/enum 暴露名/非 const 成员按声明节点形状分措辞）。
+    - `FrontendAnalysisData`：`constantFacts`（`FrontendAstSideTable<Evaluation>`
+      按声明 AST 身份，冻结入 bootstrap/freeze/update 全通道）+
+      `rejectedClassConstants`（owner canonical → name → record 不可变快照，
+      skeleton 成员填充完成后一次性 publish）。
+    - `FrontendClassSkeletonBuilder`：`runConstEnumJointPrePass` 以语句源码序
+      联合处理 `const`/`enum`；`claimedMemberNames`（VAR/func/`_init`/signal/
+      inner 预置 + const/enum 处理后占名）与 `declaredMemberNames`（全量已声明
+      名含 const/enum 暴露名，纯 lookup mask）分离；enum 保持 per-enum 原子性
+      （失败不发布、子树 skip、单条 `sema.class_skeleton`）；const 失败也占名，
+      但**仅当自身 claim 成功才进 mask**——conflict 拒绝不 mask（名属主仍在），
+      parse-damage/标注/求值失败 mask + fact + skip；`GdScriptEvaluatedConstant`
+      经 `recordDeclarationOrigin` 记录 provenance 后入常量表（行类型 =
+      标注类型或值类型）；enum evaluator 改接 `classContext` + self member。
+    - `ClassScope`：4 参构造接 mask；`resolveValueHere` 直接命中优先后查 mask
+      （terminal `FOUND_BLOCKED`，不经 restriction）；`resolveInheritedValueMember`
+      每层在成员检查后接共享 probe——`Usable` 按原 CONSTANT 绑定发布、
+      `TerminalBlocked` 无条件 blocked；blocked `ScopeValue` 携
+      `VariableDeclaration` 声明 + `CONSTANT` kind + Variant 占位 + `isConstantBound`。
+    - `FrontendScopeAnalyzer`：两处 `ClassScope` 构造注入
+      `analysisData.rejectedClassConstants()`。
+    - `FrontendChainReductionHelper.reduceGdccStaticLoad`：层序探针替换
+      enum-only 查找——method → static property → 共享 probe（`Usable` 发
+      `resolvedStaticLoadTrace` CONSTANT/GDCC，`TerminalBlocked` 发新
+      `rejectedConstantLoadTrace` Status.BLOCKED + RouteKind.STATIC_LOAD +
+      `FrontendResolvedMember.blocked` CONSTANT/TYPE_META/GDCC/VARIANT +
+      declaration=const AST）→ 非静态成员遮蔽 break；usable 仅消费
+      `GdScriptEnumConstant`/`GdScriptEnumGroup`/`GdScriptEvaluatedConstant`
+      三种声明形状（防御性过滤保留）。
+    - `FrontendBodyOwnerProcedures.bindIdentifier`：FOUND_BLOCKED 在通用
+      accessibility 诊断前先查 poison——`CONSTANT` kind + `VariableDeclaration`
+      声明 + `constantFacts` Rejected 三重结构判别（P5 local const 亦安全），
+      命中发「depends on an invalid constant」，否则保留原「not accessible」。
+    - `FrontendInterfacePhase.recordPropertyInitializer`：kind==VAR 门——
+      class `const` initializer 永不再走 property-initializer 通道。
+    - `FrontendOpaqueExprInsnLoweringProcessors` CONSTANT 分派新增
+      `GdScriptEvaluatedConstant` → `session.materializeConstantValue`；
+      `FrontendMemberLoadInsnLoweringProcessor` 新增同形状拦截（`Other.C` /
+      内层类 / 继承限定路由同样物化为字面量/受控构造链，绝不发
+      `LoadStaticInsn`）。CFG 侧 `buildTypeMetaHeadMemberStep` 的 receiverless
+      `MemberLoadItem` 形状已直接兼容，无需新 CFG 接线。
+    - `FrontendAnnotationUsageAnalyzer` 无需改动：`@onready`/`@export`/`@tool`
+      placement 校验已按 `kind()!=VAR` 拒绝 const 上的 annotation（唯一
+      owner 合同满足）。
+    - 测试：新 `FrontendConstSkeletonTest`（12 用例——标量/几何构造/源码序双向/
+      mask 收集/自引用/conflict/标注转换/祖先屏蔽/全局与 engine 名空间/named
+      enum group 名空间/provenance）与新 `FrontendConstLoweringTest`（10 用例——
+      bare/限定/继承/static/表达式内物化、builtin 构造链、依赖无效 vs
+      accessibility vs unknown 三向诊断区分、运行时成员初始化拒绝）；
+      `FrontendEnumSkeletonTest` 两处断言按新合同修订（`const FOO=5`+`C=FOO`
+      现为成功；`A=B,B=1` 前向改为 declared-not-usable 措辞）。回归
+      `FrontendEnumConstantEvaluatorTest`/`FrontendEnumBodyBindingExprTypeTest`/
+      `FrontendEnumChainBindingTest`/`FrontendLoweringBodyInsnPassTest`/
+      `FrontendLoweringAnalysisPassTest`/`FrontendBodyOwnerProceduresExprTypeTest`/
+      `FrontendTypeCheckAnalyzerTest`/`FrontendCompileCheckAnalyzerTest`/
+      `FrontendConstantMaterializationTest`/`ClassScopeTest`/
+      `FrontendScopeAnalyzerTest`/`FrontendConstantEvaluatorTest`/
+      `FrontendBuiltinConstantDecoderTest`/`FrontendConstCallableRegistryTest`/
+      `GdConstantValueTest` 全绿。
+    - 评审修复（review-expert-c 首轮 4 条 medium 全确认）：
+      - `FrontendClassConstPrepassLookup.resolveGlobalOrNamespace` 的
+        type-meta 兜底按 `ScopeTypeMetaKind` 分流——只有 `BUILTIN`/
+        `ENGINE_CLASS` 才成为名空间；`GLOBAL_ENUM`/`GDCC_ENUM`（instance
+        type 是 int，`Error(1)` 会伪装成 `int` 构造）与 `GDCC_CLASS`
+        返回 `NonConstant` 精确措辞，堵死 `Error(1)`/`OtherTop.C`
+        类初始化器逃逸。
+      - `FrontendChainReductionHelper.reduceStaticMethodStep` 前置
+        `classConstCallClaimTrace` 逐层 claim 走查——本层有任何同名方法
+        则交给原 resolver；usable const 终止为 FAILED「not a method」、
+        masked const 终止为 BLOCKED「invalid constant」，父类 static
+        同名方法不再能穿透子类 const 占名（`Child.C()` 回归测试锚定）。
+      - 值枚举泄漏修复——`Scope.blockedValueNamesHere()` 新默认方法 +
+        `collectVisibleValues`/`FrontendVisibleValueEnumerator` 累计
+        抑制；`ClassScope.valuesHere` 逐层应用自身与祖先 mask；IDE 侧
+        `FrontendSnapshotCompletionService` static/instance 两条走查都
+        吸收 rejected 名集。
+      - `FrontendClassConstPrepassLookup` 的 `earlierEnumMembers` 改
+        `Collections.unmodifiableMap` 借读视图，消掉 per-initializer
+        `Map.copyOf` 的 Θ(n²) 累计拷贝。
+      - 复审补充（identifier 补全路径）：
+        `ClassScope.blockedValueNamesHere` 升级为当前类 + 全部祖先层 mask
+        union（与 `resolveInheritedValueMember` 的逐层 blocked 等效），
+        `ReadOnlyScope` 补转发，`identifierCandidates` 在值枚举后沿同一
+        词法链吸收 blocked 名集到 value/method 两套 claim——masked
+        `PI`/`INF` 不再经 `collectGlobalNamespace` 回漏；snapshot 级
+        `CompletionServiceTest` 两个回归锚定（自身+继承 mask、更近合法
+        声明胜过失败祖先名）。
+      - 三轮复审补充：instance 补全面不做 mask 过滤——`instance.member`
+        解析走 `ScopePropertyResolver`/`ScopeMethodResolver`（不查 const
+        mask），补全必须与解析一致；
+        `memberAccessBelowFailedConstStaysConsistentWithInstanceResolution`
+        锚定（父 `var hp` + 子 `const hp = MISSING` → `c.hp` 仍给出
+        PROPERTY 候选）。**决策已确认**：mask 域 = 常量可见域（裸/限定），
+        不扩至实例成员面——见 §6 mask 边界条目。
 - P5 local 全链路
   - 目标：§7.1–§7.7（inventory、`ORDINARY_CONST`、index/certificate、
     `CONST_RESOLUTION` owner、overlay、invalid masking、lambda const view、CFG、

@@ -247,7 +247,12 @@ public class FrontendInterfacePhase {
                 @NotNull VariableDeclaration variableDeclaration
         ) {
             if (supportedBodyDepth <= 0) {
-                recordPropertyInitializer(variableDeclaration);
+                // Class-level `const` is owned by the skeleton pre-pass: its initializer is a
+                // compile-time evaluated expression, not a runtime property initializer, so it
+                // must never enter this channel.
+                if (variableDeclaration.kind() == DeclarationKind.VAR) {
+                    recordPropertyInitializer(variableDeclaration);
+                }
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             if (variableDeclaration.kind() == DeclarationKind.CONST) {

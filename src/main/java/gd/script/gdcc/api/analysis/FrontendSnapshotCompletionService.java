@@ -22,6 +22,7 @@ import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.GdScriptClassConstant;
 import gd.script.gdcc.scope.GdScriptEnumConstant;
 import gd.script.gdcc.scope.GdScriptEnumGroup;
+import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdArrayType;
@@ -392,6 +393,7 @@ public final class FrontendSnapshotCompletionService {
                     collectOwnMembers(current, true, out, shadowedNames);
                     collectConstantSurface(current, out, shadowedNames);
                     claimMemberNames(current, shadowedNames);
+                    shadowedNames.addAll(rejectedConstantNames(snapshot, current));
                     current = snapshot.classRegistry().resolveSuperclass(current);
                 }
                 return List.copyOf(out.values());
@@ -454,6 +456,9 @@ public final class FrontendSnapshotCompletionService {
         var visited = new HashSet<String>();
         var current = start;
         while (current != null && visited.add(current.getName())) {
+            // Instance member resolution (`instance.member`) walks properties/methods without
+            // consulting const masks, so the completion surface must not filter them either —
+            // masking here would disagree with the published resolution facts.
             collectOwnMembers(current, false, out);
             current = snapshot.classRegistry().resolveSuperclass(current);
         }
@@ -513,6 +518,17 @@ public final class FrontendSnapshotCompletionService {
         for (var scriptConstant : classDef.getScriptConstants()) {
             shadowedNames.add(scriptConstant.name());
         }
+    }
+
+    /// Names of failed `const` declarations on one hierarchy level; these names stay claimed
+    /// even though they never published a usable member.
+    private static @NotNull Set<String> rejectedConstantNames(
+            @NotNull ModuleAnalysisSnapshot snapshot,
+            @NotNull ClassDef classDef
+    ) {
+        return snapshot.analysisData().rejectedClassConstants()
+                .getOrDefault(classDef.getName(), Map.of())
+                .keySet();
     }
 
     /// Constant surface for class-name receivers: GDCC script constants (enum values/groups),
@@ -633,6 +649,14 @@ public final class FrontendSnapshotCompletionService {
                     var candidate = valueCandidate(value);
                     putIfAbsent(out, valueKey(value), candidate);
                     claimedValueNames.add(value.name());
+                }
+                // Terminal name claims (e.g. a failed `const` that masks its name) never emit a
+                // usable value, so enumeration alone cannot claim them; collect the blocked
+                // names along the same lexical chain so a same-named global constant, enum or
+                // method cannot reappear at the fallback layer.
+                for (Scope current = scope; current != null; current = current.enumerationParentScope()) {
+                    claimedValueNames.addAll(current.blockedValueNamesHere());
+                    claimedMethodNames.addAll(current.blockedValueNamesHere());
                 }
                 var owningClass = scope.owningClassOrNull();
                 if (owningClass != null) {

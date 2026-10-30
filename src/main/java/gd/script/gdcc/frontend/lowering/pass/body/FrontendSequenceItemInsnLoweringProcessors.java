@@ -43,6 +43,7 @@ import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
+import gd.script.gdcc.frontend.constant.GdScriptEvaluatedConstant;
 import gd.script.gdcc.scope.GdScriptEnumConstant;
 import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.PropertyDef;
@@ -1166,6 +1167,14 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             if (resolvedMember.status() == FrontendMemberResolutionStatus.RESOLVED
                     && resolvedMember.declarationSite() instanceof GdScriptEnumGroup enumGroup) {
                 session.materializeEnumGroupDictionary(block, enumGroup, resultSlotId);
+                return block;
+            }
+            // Evaluated class `const` members fold to their frozen value through the shared
+            // materialization helper — qualified loads such as `Other.C` or inner-class const
+            // routes never become a runtime static load.
+            if (resolvedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                    && resolvedMember.declarationSite() instanceof GdScriptEvaluatedConstant evaluatedConstant) {
+                session.materializeConstantValue(block, evaluatedConstant.value(), resultSlotId);
                 return block;
             }
             switch (resolvedMember.receiverKind()) {

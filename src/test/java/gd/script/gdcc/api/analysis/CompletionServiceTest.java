@@ -204,6 +204,36 @@ class CompletionServiceTest {
                 var x = true if  else false
             """;
 
+    private static final String MASK_BASE_PATH = "/src/comp_mask_base.gd";
+    private static final String MASK_BASE_SOURCE = """
+            class_name CompMaskBase
+            extends Node
+            
+            const INF = MISSING
+            const TAU = MISSING
+            var hp = 1
+            """;
+
+    private static final String MASK_PATH = "/src/comp_mask.gd";
+    private static final String MASK_SOURCE = """
+            class_name CompMaskUser
+            extends CompMaskBase
+            
+            const PI = MISSING
+            const hp = MISSING
+            var safe = 1
+            var TAU = 1
+            
+            func probe() -> void:
+                var ok = cu
+                var t = 1
+            
+            func probe2() -> void:
+                var c: CompMaskUser
+                var x = c.hp
+                var t2 = 1
+            """;
+
     private static API api;
     private static ModuleAnalysisSnapshot snapshot;
 
@@ -216,7 +246,9 @@ class CompletionServiceTest {
                 file(STATIC_PATH, STATIC_SOURCE),
                 file(IDENT_PATH, IDENT_SOURCE),
                 file(TYPE_PATH, TYPE_SOURCE),
-                file(SKIP_PATH, SKIP_SOURCE)
+                file(SKIP_PATH, SKIP_SOURCE),
+                file(MASK_BASE_PATH, MASK_BASE_SOURCE),
+                file(MASK_PATH, MASK_SOURCE)
         ), Map.of("CompTypeUser", "CompTypeUser"));
     }
 
@@ -527,6 +559,46 @@ class CompletionServiceTest {
         // `after` is declared above this line, so it IS visible here — unlike at the earlier
         // cursor of identifierPrefixListsVisibleValuesAndGlobalNamespace.
         assertHas(result, "after", CompletionCandidateKind.VALUE);
+    }
+
+    @Test
+    void identifierCompletionSuppressesFailedConstNamesFromGlobalNamespace() {
+        // The cursor sits inside a healthy method; the class's own failed `const PI` claims
+        // the name terminally, so the global language constant PI must not be offered —
+        // matching single-name resolution, which reports blocked instead of falling back.
+        var result = FrontendSnapshotCompletionService.completionCandidatesAt(
+                snapshot, MASK_PATH, endOf(MASK_SOURCE, "var ok = cu", 0));
+        assertEquals(CompletionContextKind.IDENTIFIER, result.contextKind());
+        assertLacks(result, "PI");
+        // The parent's failed `const INF` is an inherited mask and equally blocks the global.
+        assertLacks(result, "INF");
+        // Legitimate visible values still enumerate normally.
+        assertHas(result, "safe", CompletionCandidateKind.PROPERTY);
+    }
+
+    @Test
+    void identifierCompletionNearerValidDeclarationShadowsFailedAncestor() {
+        var result = FrontendSnapshotCompletionService.completionCandidatesAt(
+                snapshot, MASK_PATH, endOf(MASK_SOURCE, "var ok = cu", 0));
+        // `var TAU` on the child is a nearer legitimate declaration of the same name the
+        // parent's failed `const TAU` masks — the value claim wins over both the inherited
+        // mask and the global language constant TAU, so it appears exactly once, as a property.
+        var tauCandidates = result.candidates().stream()
+                .filter(candidate -> candidate.name().equals("TAU"))
+                .toList();
+        assertEquals(1, tauCandidates.size());
+        assertEquals(CompletionCandidateKind.PROPERTY, tauCandidates.getFirst().kind());
+    }
+
+    @Test
+    void memberAccessBelowFailedConstStaysConsistentWithInstanceResolution() {
+        // Instance member resolution (`c.hp`) walks properties without consulting const masks:
+        // the child's failed `const hp` masks bare/qualified lookup only. The completion surface
+        // must mirror resolution — the parent's `var hp` is still offered.
+        var result = FrontendSnapshotCompletionService.completionCandidatesAt(
+                snapshot, MASK_PATH, endOf(MASK_SOURCE, "var x = c.", 0));
+        assertEquals(CompletionContextKind.MEMBER_ACCESS, result.contextKind());
+        assertHas(result, "hp", CompletionCandidateKind.PROPERTY);
     }
 
     @Test

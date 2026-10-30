@@ -13,6 +13,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /// Read-only view over a published `Scope` (`frontend_lsp_foundation_implementation.md` §2.1:
 /// query services must reach container-held model objects only through views that expose no
@@ -103,6 +104,11 @@ final class ReadOnlyScope implements Scope {
         // Snapshot the values: some scope implementations return live views over their
         // internal tables, and the query side must not observe structural mutation.
         return List.copyOf(delegate.valuesHere());
+    }
+
+    @Override
+    public @NotNull Set<String> blockedValueNamesHere() {
+        return delegate.blockedValueNamesHere();
     }
 
     @Override
