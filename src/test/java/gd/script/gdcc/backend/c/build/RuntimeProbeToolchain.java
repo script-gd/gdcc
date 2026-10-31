@@ -34,6 +34,13 @@ final class RuntimeProbeToolchain {
     private static final Duration COMPILE_TIMEOUT = Duration.ofSeconds(180);
     private static final Duration RUN_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration CLEANUP_TIMEOUT = Duration.ofSeconds(10);
+    /// The one-time zig runtime-artifact generation can take many minutes on a loaded host
+    /// (see [RuntimeProbeToolchain#warmZigRuntimeCache]), far beyond [COMPILE_TIMEOUT].
+    private static final Duration WARMUP_TIMEOUT = Duration.ofMinutes(10);
+
+    /// Serializes the zig cache warm-up so concurrent probe rounds pay the generation once.
+    private static final Object zigWarmupLock = new Object();
+    private static volatile boolean zigCacheWarmed;
 
     private final boolean tcc;
     private final @NotNull Path binary;
@@ -115,11 +122,49 @@ final class RuntimeProbeToolchain {
         command.add(executable.toString());
         if (!tcc) {
             ZigTestUtil.addMacosNativeTarget(command);
+            warmZigRuntimeCache(workDir);
         }
 
         var build = runProcess(command, COMPILE_TIMEOUT, null);
         assertEquals(0, build.exitCode(), build::diagnostic);
         return runProcess(List.of(executable.toString()), RUN_TIMEOUT, null);
+    }
+
+    /// zig generates the target runtime (compiler_rt archive, CRT objects, import libraries —
+    /// tens of megabytes) into the global cache the first time a host-target `zig cc` links
+    /// against a cold cache. CI restores a `~/AppData/Local/zig` snapshot that can predate
+    /// those artifacts, so whichever probe compiles first in a run pays that generation under
+    /// full machine load — minutes on a busy Windows runner, well past [COMPILE_TIMEOUT].
+    /// Pay it once per test worker here under a dedicated generous budget, with the same flag
+    /// profile as the real compile, so every actual probe lands on a warm cache and keeps the
+    /// tight per-compile deadline for genuine hangs. A warm-up that times out or fails is a
+    /// real toolchain problem and fails the calling test just like a probe compile would.
+    private void warmZigRuntimeCache(@NotNull Path workDir) throws IOException, InterruptedException {
+        if (zigCacheWarmed) {
+            return;
+        }
+        synchronized (zigWarmupLock) {
+            if (zigCacheWarmed) {
+                return;
+            }
+            var warmupSource = workDir.resolve("zig_cache_warmup.c");
+            Files.writeString(warmupSource, "int main(void) { return 0; }\n", StandardCharsets.UTF_8);
+            var warmupExe = workDir.resolve("zig_cache_warmup" + (isWindowsHost() ? ".exe" : ""));
+            var command = new ArrayList<String>();
+            command.add(binary.toString());
+            command.add("cc");
+            command.add("-std=c23");
+            command.add("-D_DEFAULT_SOURCE");
+            command.add("-I" + GODOT_INCLUDE_DIR);
+            command.add("-I" + GDCC_INCLUDE_DIR);
+            command.add(warmupSource.toString());
+            command.add("-o");
+            command.add(warmupExe.toString());
+            ZigTestUtil.addMacosNativeTarget(command);
+            var warm = runProcess(command, WARMUP_TIMEOUT, null);
+            assertEquals(0, warm.exitCode(), warm::diagnostic);
+            zigCacheWarmed = true;
+        }
     }
 
     /// Runs a process to completion with a hard deadline. Output goes to a temporary FILE (merged
