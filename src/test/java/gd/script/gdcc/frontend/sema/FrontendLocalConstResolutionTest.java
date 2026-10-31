@@ -885,6 +885,35 @@ class FrontendLocalConstResolutionTest {
         );
     }
 
+    /// The frozen-root guard is value-type neutral: a String const rejects compound and
+    /// subscript writes exactly like a builtin constant does (`S[0] = ...` would attempt a
+    /// write-back into the frozen value).
+    @Test
+    void writesThroughStringConstantsAreRejected() throws Exception {
+        var input = analyze("local_const_string_writes.gd", """
+                class_name LocalConstStringWrites
+                extends RefCounted
+
+                func get():
+                    const S = "seed"
+                    S += "x"
+                    S[0] = "y"
+                    var copy = S
+                    copy += "x"
+                    return 0
+                """);
+        var errors = errorDiagnostics(input.diagnostics());
+        assertAll(
+                () -> assertEquals(2, errors.size(), errors::toString),
+                () -> assertEquals(1, errors.stream()
+                        .filter(diagnostic -> diagnostic.message().contains("read-only"))
+                        .count(), errors::toString),
+                () -> assertEquals(1, errors.stream()
+                        .filter(diagnostic -> diagnostic.message().contains("frozen"))
+                        .count(), errors::toString)
+        );
+    }
+
     /// `var x := C` must infer the constant's exact type, not the Variant baseline the binding
     /// carried before `CONST_RESOLUTION` — the overlay view lets `VAR_TYPE_POST` see the frozen
     /// type the moment the const statement commits.
@@ -931,6 +960,39 @@ class FrontendLocalConstResolutionTest {
                 """);
         assertTrue(errorDiagnostics(input.diagnostics()).isEmpty(),
                 () -> "Unexpected diagnostics: " + input.diagnostics());
+    }
+
+    /// String const keys ride the same Resolved-fact gate as scalars — a resolved String local
+    /// const is a legal compile-time match key on a String scrutinee.
+    @Test
+    void matchPatternAcceptsResolvedStringLocalConstKey() throws Exception {
+        var input = analyze("local_const_match_string_key.gd", """
+                class_name LocalConstMatchStringKey
+                extends RefCounted
+
+                func get(v: String):
+                    const K = "key"
+                    match v:
+                        K:
+                            pass
+                        _:
+                            pass
+                    return 0
+                """);
+        var get = findFunction(input.unit().ast(), "get");
+        var matchStatement = findNode(get.body(), MatchStatement.class, _ -> true);
+        var keyUse = findNode(matchStatement, IdentifierExpression.class,
+                identifier -> identifier.name().equals("K"));
+
+        assertAll(
+                () -> assertTrue(errorDiagnostics(input.diagnostics()).isEmpty(),
+                        () -> "Unexpected diagnostics: " + input.diagnostics()),
+                () -> assertEquals(new Evaluation.Resolved(new GdConstantValue.StringValue("key")),
+                        input.constantFact(findLocalConst(get, "K"))),
+                () -> assertTrue(FrontendMatchSupport.isConstantPatternOperand(
+                                input.analysisData(), keyUse),
+                        "a resolved String const must classify as a constant match key")
+        );
     }
 
     /// A rejected const must not be a constant match key: the key falls back to a runtime
@@ -1007,6 +1069,34 @@ class FrontendLocalConstResolutionTest {
                         () -> "Unexpected diagnostics: " + input.diagnostics()),
                 () -> assertEquals(new Evaluation.Resolved(new GdConstantValue.IntValue(1L)),
                         input.constantFact(findLocalConst(get, "X")))
+        );
+    }
+
+    /// A String class const is a legal parameter default — the island publishes the resolved
+    /// constant binding and the synthetic default materializes the owning `literal_string`
+    /// (lowering side anchored in `FrontendConstLoweringTest`).
+    @Test
+    void parameterDefaultReadsStringClassConst() throws Exception {
+        var input = analyze("local_const_default_string_class.gd", """
+                class_name LocalConstDefaultStringClass
+                extends RefCounted
+
+                const GREETING = "hello"
+
+                func get(a = GREETING):
+                    return a
+                """);
+        var get = findFunction(input.unit().ast(), "get");
+        var defaultUse = findNode(get, IdentifierExpression.class,
+                identifier -> identifier.name().equals("GREETING"));
+        var binding = input.analysisData().symbolBindings().get(defaultUse);
+
+        assertAll(
+                () -> assertTrue(errorDiagnostics(input.diagnostics()).isEmpty(),
+                        () -> "Unexpected diagnostics: " + input.diagnostics()),
+                () -> assertNotNull(binding),
+                () -> assertEquals(ScopeLookupStatus.FOUND_ALLOWED, binding.valueAccessStatus()),
+                () -> assertEquals(FrontendBindingKind.CONSTANT, binding.kind())
         );
     }
 

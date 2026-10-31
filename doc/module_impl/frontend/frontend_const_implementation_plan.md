@@ -4,7 +4,7 @@
 > 文中除「§2 核实的代码基线」与「§13 执行记录」外均为建议方案，
 > 建议与事实严格分开，不以本文档内容回写任何事实源文档。
 > §12 的 A1 已由用户确认 earlier-only，不再是待确认项。
-> 阶段状态：P0–P5 已实施（见 §10 各阶段条目与 §13 记录）；P6–P7 未实施。
+> 阶段状态：P0–P6 已实施（见 §10 各阶段条目与 §13 记录）；P7 未实施。
 
 - 适用范围（计划触及，均为相对仓库根路径）：
   - `src/main/java/gd/script/gdcc/frontend/constant/**`（新增值族与求值事实模型）
@@ -1220,8 +1220,7 @@
         报——且循环前快照 upstream 诊断集防止同 pass 内已发诊断干扰迭代
         顺序（`(1+1.0)+1` 嵌套失败确定性双报）；`Missing` 恰一条、`NEXT`
         依赖恰一条、独立失败各归其主验收用例落地。
-- P6 String 长度感知 + LIR 文本序列化 + consumer 集成（可与 P3 并行，端到端
-  门槛依赖 P4/P5）
+- P6 String 长度感知 + LIR 文本序列化 + consumer 集成 —— **已实施（2026-10-30）**
   - 目标：§8.3 全部（含 simple `StringOperand` / DOM XML-safe 转义与对称解析）；
     default / match / writability 集成。
   - 文件定位：`lir/parser/`（`ParsedLirInstruction` StringOperand、
@@ -1237,6 +1236,48 @@
     `CNewDataInsnGenTest` / `CFloatLiteralSupportTest` 全绿。
   - 退出门槛：const 不绕 `GD_STATIC_S` NUL 终止路径；copy / return / Variant /
     ref target / registry shutdown 无寿命问题；LIR 序列化不因 XML 丢值。
+  - 实施结果：
+    - `StringUtil` 新增 `escapeCUtf8BytesLiteral(String)` / `escapeCUtf8Bytes(byte[])`
+      （UTF-8 byte 级、固定 3 位八进制含 `\000`、仅 `"`/`\` 专门转义、无 UCN）
+      与 `escapeLirStringLiteral` / `unescapeLirStringLiteral`（`\n \r \t \\ \"`
+      兼容 + 控制字符 / U+FFFE / U+FFFF / 孤立 surrogate → 固定 `\uXXXX`；
+      decoder 严格 4 hex、畸形 / 截断 / 未知转义 / 未闭合一律拒绝，不再静默丢
+      反斜杠）。`escapeStringLiteral` 其它用途语义不变。
+    - `SimpleLirBlockInsnSerializer` 字符串 operand 改经 `escapeLirStringLiteral`；
+      `SimpleLirBlockInsnParser` tokenizer 先按 `\\` 配对扫描原始转义内容再交
+      `unescapeLirStringLiteral` 解码，未闭合 token 报
+      `LirInsnParsingException`。DOM 路径零改动复用同一对 helper——text node
+      只承载 XML-safe 文本。
+    - `CBodyBuilder` 新增 `valueOfCUtf8BytesLiteral` + `CUtf8BytesLiteralValue`
+      （存预编码 byte[]，literal 与长度同数组导出；sealed `ValueRef` permits /
+      `renderValueAddress` 字面量直通 / 三处 alias-safety switch 同步）；
+      `NewDataInsnGen.emitStringLiteral` 统一改走
+      `godot_new_String_with_utf8_chars_and_len` /
+      `godot_string_new_with_utf8_chars_and_len`（inplace ref target 同覆盖），
+      `p_size` 为同一 UTF-8 byte[] 长度。StringName / NodePath / `GD_STATIC_S`
+      路径不动。
+    - consumer 集成为类型无关既有路径的回归锚定：String class const 参数默认值、
+      String local const match key（`Resolved`-fact 门）、String const `+=` /
+      下标写拒绝；`frontend_parameter_default_implementation.md` 与
+      `frontend_match_statement_implementation.md` 中 const deferred 表述同步
+      转正。
+    - 测试：`StringUtilTest`（octal/LIR escape/unescape 正反）、
+      `SimpleLirBlockInsnParserTest`（`\uXXXX` 严格解码 + 畸形 / 未闭合拒绝）、
+      `SimpleLirBlockInsnSerializerTest`（XML-unsafe 序列化形态 + roundtrip）、
+      `FrontendConstantMaterializationTest`（`a\0b` DOM roundtrip 保真 +
+      simple/DOM payload 相等）、`CNewDataInsnGenTest`（`_and_len` + byte 长度
+      + 八进制文本）、新增 `CUtf8StringLiteralRuntimeProbeTest`（DOM roundtrip →
+      C codegen → zig/tcc 编译运行，fake wrapper 断言 `a\0b` 3 bytes 与 `é中`
+      5 bytes）、`FrontendLocalConstResolutionTest`（String default/match/
+      writability）；受影响面 ~480 用例零回归。
+    - 评审：`review-expert-c` 首轮 2 项 MEDIUM 已修复——`unescapeLirStringLiteral`
+      在 `parseInt` 前显式校验 4 位 ASCII hex（拒绝 `+`/`-` 号与非 ASCII 数字，
+      helper 与 parser 双层补负例）；`CUtf8StringLiteralRuntimeProbeTest` 的
+      工具链列表改经数组承载以容忍 `zig()`/`tcc()` 任一返回 `null`。LOW 建议
+      已采纳：String default/match 用例补 `Resolved` fact、`isConstantPatternOperand`
+      与 binding 状态断言，`FrontendConstLoweringTest` 新增 String class const
+      参数默认值物化用例锚定 `_default_` island 的 `literal_string` 产出。
+      复审确认全部关闭、无新增问题：**APPROVE**。
 - P7 targeted AOT smoke + 负例/回归 + 文档转正
   - 目标：planned `GdccConstRuntimeSmokeTest` 端到端；负例回归；实现完成后才把
     相关事实写入事实源文档（届时另案，不改本计划为事实源）。

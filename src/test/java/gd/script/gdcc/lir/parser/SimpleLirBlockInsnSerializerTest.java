@@ -244,4 +244,53 @@ public class SimpleLirBlockInsnSerializerTest {
                     () -> "instruction " + index + ": " + expected);
         }
     }
+
+    @Test
+    public void serialize_stringOperandEscapesXmlUnsafeChars() throws Exception {
+        // The serialized text must stay inside the XML 1.0 character set so DOM embedding
+        // never sees a real NUL/control char, while the five named escapes keep their
+        // historical short spellings.
+        var insnList = List.<LirInstruction>of(
+                new LiteralStringInsn("with_nul", "a\0b"),
+                new LiteralStringInsn("with_controls", "\u0001\u001F\u007F"),
+                new LiteralStringInsn("lone_surrogate", "\uD800"),
+                new LiteralStringInsn("noncharacter", "\uFFFE"),
+                new LiteralStringInsn("backslash_u", "a\\u0000b"),
+                new LiteralStringInsn("kept_raw", "中文\uD83D\uDE00")
+        );
+        var sw = new StringWriter();
+        new SimpleLirBlockInsnSerializer().serialize(insnList, sw);
+        var out = sw.toString();
+        assertAll(
+                () -> assertTrue(out.contains("\"a\\u0000b\""), out),
+                () -> assertTrue(out.contains("\"\\u0001\\u001F\\u007F\""), out),
+                () -> assertTrue(out.contains("\"\\uD800\""), out),
+                () -> assertTrue(out.contains("\"\\uFFFE\""), out),
+                // A real backslash escapes first, so literal `\u0000` text stays distinct
+                // from the serialized form of a real NUL.
+                () -> assertTrue(out.contains("\"a\\\\u0000b\""), out),
+                // XML-legal text (multi-byte and valid surrogate pairs) passes through raw.
+                () -> assertTrue(out.contains("\"中文\uD83D\uDE00\""), out)
+        );
+    }
+
+    @Test
+    public void serialize_stringOperandRoundTripsXmlUnsafePayloads() throws Exception {
+        var payloads = List.of("plain", "a\0b", "\u0001\u001F\u007F\u0085", "\uFFFE",
+                "中文\uD83D\uDE00", "a\\u0000b", "a\0" + "1", "\uD800", "line\nand\ttab");
+        var insnList = payloads.stream()
+                .<LirInstruction>map(payload -> new LiteralStringInsn("s", payload))
+                .toList();
+
+        var sw = new StringWriter();
+        new SimpleLirBlockInsnSerializer().serialize(insnList, sw);
+        var reparsed = new SimpleLirBlockInsnParser().parse(new StringReader(sw.toString()));
+
+        assertEquals(payloads.size(), reparsed.size());
+        for (var i = 0; i < payloads.size(); i++) {
+            var literal = assertInstanceOf(LiteralStringInsn.class, reparsed.get(i));
+            var index = i;
+            assertEquals(payloads.get(i), literal.value(), () -> "payload " + index);
+        }
+    }
 }

@@ -111,6 +111,53 @@ public class SimpleLirBlockInsnParserTest {
     }
 
     @Test
+    public void parse_stringLiteralDecodesUnicodeEscapesStrictly() {
+        var input = """
+                $0 = literal_string "a\\u0000b";
+                $1 = literal_string "caf\\u00E9";
+                $2 = literal_string "nul\\u00001";
+                $3 = literal_string "text\\\\u0000";
+                """;
+
+        var insns = parse(input);
+        var s0 = assertInstanceOf(LiteralStringInsn.class, insns.get(0));
+        var s1 = assertInstanceOf(LiteralStringInsn.class, insns.get(1));
+        var s2 = assertInstanceOf(LiteralStringInsn.class, insns.get(2));
+        var s3 = assertInstanceOf(LiteralStringInsn.class, insns.get(3));
+
+        assertAll(
+                // A serialized real NUL decodes back to the character, keeping the tail intact.
+                () -> assertEquals("a\0b", s0.value()),
+                () -> assertEquals(3, s0.value().length()),
+                () -> assertEquals('b', s0.value().charAt(2)),
+                () -> assertEquals("café", s1.value()),
+                // Exactly four hex digits: `\u0000` consumed, the trailing `1` stays literal.
+                () -> assertEquals("nul\0" + "1", s2.value()),
+                // `\\u0000` is escaped backslash + literal text — never confused with a real NUL.
+                () -> assertEquals("text\\u0000", s3.value())
+        );
+    }
+
+    @Test
+    public void parse_stringLiteralRejectsMalformedEscapes() {
+        // Unknown escape letters lose their backslash silently under the old lax decode; the
+        // strict decoder turns every malformed sequence into a positioned parse error.
+        assertParseError("$0 = literal_string \"a\\u000\";", 1, 21, "truncated");
+        assertParseError("$0 = literal_string \"a\\u00G1\";", 1, 21, "malformed");
+        // A leading sign is not a hex digit, even though Integer.parseInt would accept it.
+        assertParseError("$0 = literal_string \"a\\u+041\";", 1, 21, "malformed");
+        assertParseError("$0 = literal_string \"a\\qb\";", 1, 21, "unsupported escape");
+        assertParseError("$0 = literal_string \"a\\U0001F600\";", 1, 21, "unsupported escape");
+    }
+
+    @Test
+    public void parse_stringLiteralRejectsUnterminatedTokens() {
+        assertParseError("$0 = literal_string \"abc", 1, 21, "Unterminated string literal");
+        // A trailing backslash cannot close the token either — the escape swallows the quote.
+        assertParseError("$0 = literal_string \"abc\\", 1, 21, "Unterminated string literal");
+    }
+
+    @Test
     public void parse_moreOpcodes() {
         var input = """
                 $1 = literal_int 42;

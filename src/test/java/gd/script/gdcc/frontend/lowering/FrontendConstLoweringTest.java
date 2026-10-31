@@ -615,6 +615,42 @@ class FrontendConstLoweringTest {
         );
     }
 
+    /// A String class const read by a parameter default materializes the owning
+    /// `literal_string` inside the synthetic `_default_` island — the island reuses the generic
+    /// frozen-value route and never touches runtime static storage.
+    @Test
+    void stringClassConstParameterDefaultMaterializesLiteral() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_const_default_string.gd",
+                """
+                        class_name BodyInsnConstDefaultString
+                        extends RefCounted
+                        
+                        const GREETING = "hi"
+                        
+                        func get(a = GREETING) -> String:
+                            return a
+                        """,
+                Map.of("BodyInsnConstDefaultString", "RuntimeBodyInsnConstDefaultString")
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var defaultContext = prepared.context().requireFunctionLoweringContexts().stream()
+                .filter(context -> context.kind() == FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing parameter-default lowering context"));
+        var literalInsn = requireOnlyInstruction(defaultContext.targetFunction(), LiteralStringInsn.class);
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("hi", literalInsn.value()),
+                () -> assertTrue(
+                        allInstructions(defaultContext.targetFunction()).stream()
+                                .noneMatch(LoadStaticInsn.class::isInstance),
+                        "default island must materialize the frozen String, not a runtime static load")
+        );
+    }
+
     /// `n` inside the lambda binds the class property because the later `const n` is not yet
     /// source-visible; the planner must emit the `self` capture or lowering fails with a missing
     /// receiver slot instead of a diagnostic.

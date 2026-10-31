@@ -3,6 +3,7 @@ package gd.script.gdcc.util;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -427,6 +428,130 @@ public final class StringUtil {
             }
         }
         return sb.toString();
+    }
+
+    /// Escapes decoded string content for a C UTF-8 string literal (`u8"..."`):
+    /// the input is encoded to UTF-8 first, then every byte outside the printable-ASCII safe
+    /// set is emitted as a fixed three-digit octal escape (embedded NUL becomes `\000`). Only
+    /// `"` and `\` keep dedicated escapes — no `\n`/`\t` spellings — so the fixed-width octal
+    /// can never absorb a following digit, and the low-code-point `\\uXXXX` UCN forms that C
+    /// forbids never appear. Unlike [escapeStringLiteral] the output is byte-oriented: the
+    /// literal decodes to exactly the UTF-8 byte count callers hand to `*_and_len` APIs.
+    public static @NotNull String escapeCUtf8BytesLiteral(@NotNull String decoded) {
+        return escapeCUtf8Bytes(decoded.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /// Byte-level companion of [escapeCUtf8BytesLiteral] for callers that already hold the
+    /// UTF-8 bytes, keeping the literal text and any explicit byte-length argument derived
+    /// from the same array.
+    public static @NotNull String escapeCUtf8Bytes(byte @NotNull [] utf8Bytes) {
+        var sb = new StringBuilder(utf8Bytes.length);
+        for (var b : utf8Bytes) {
+            switch (b) {
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                default -> {
+                    var ub = Byte.toUnsignedInt(b);
+                    if (ub >= 0x20 && ub <= 0x7E) {
+                        sb.append((char) ub);
+                    } else {
+                        // Fixed three digits: C octal escapes stop after three anyway, so a
+                        // trailing literal digit can never extend the escape (`"\0001"`).
+                        sb.append('\\')
+                                .append((char) ('0' + (ub >> 6)))
+                                .append((char) ('0' + ((ub >> 3) & 7)))
+                                .append((char) ('0' + (ub & 7)));
+                    }
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    /// Escapes decoded string content for the LIR text format's quoted string operands.
+    /// `\\`, `\"`, `\n`, `\r` and `\t` keep dedicated escapes; control characters without a
+    /// named escape, the XML noncharacters U+FFFE/U+FFFF, and unpaired UTF-16 surrogates are
+    /// emitted as fixed-width `\\uXXXX` so the output stays inside the XML 1.0 character set
+    /// and survives embedding in DOM text nodes. Valid surrogate pairs and all other
+    /// characters (including non-ASCII text) pass through raw.
+    public static @NotNull String escapeLirStringLiteral(@NotNull String content) {
+        var sb = new StringBuilder(content.length());
+        for (var i = 0; i < content.length(); i++) {
+            var c = content.charAt(i);
+            switch (c) {
+                case '\\' -> sb.append("\\\\");
+                case '"' -> sb.append("\\\"");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (Character.isHighSurrogate(c) && i + 1 < content.length()
+                            && Character.isLowSurrogate(content.charAt(i + 1))) {
+                        // A valid pair encodes a supplementary code point — XML-legal raw text.
+                        sb.append(c).append(content.charAt(++i));
+                    } else if (isLirXmlUnsafeChar(c)) {
+                        sb.append("\\u").append(String.format("%04X", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    /// Inverse of [escapeLirStringLiteral]. Only the escapes the LIR format may contain are
+    /// accepted — `\n`, `\r`, `\t`, `\\`, `\"` and fixed four-hex-digit `\\uXXXX`. A truncated
+    /// `\\u`, non-hex digits, any other escape letter, or a trailing lone backslash is a hard
+    /// error: silently dropping the backslash would turn a serialized `\\u0000` into the
+    /// literal text `u0000` instead of reporting the corruption.
+    public static @NotNull String unescapeLirStringLiteral(@NotNull String content) {
+        var out = new StringBuilder(content.length());
+        for (var i = 0; i < content.length(); i++) {
+            var c = content.charAt(i);
+            if (c != '\\') {
+                out.append(c);
+                continue;
+            }
+            if (++i >= content.length()) {
+                throw new IllegalArgumentException("truncated escape: lone trailing backslash");
+            }
+            switch (content.charAt(i)) {
+                case 'n' -> out.append('\n');
+                case 'r' -> out.append('\r');
+                case 't' -> out.append('\t');
+                case '\\' -> out.append('\\');
+                case '"' -> out.append('"');
+                case 'u' -> {
+                    if (i + 4 >= content.length()) {
+                        throw new IllegalArgumentException("truncated \\uXXXX escape");
+                    }
+                    var hex = content.substring(i + 1, i + 5);
+                    // `Integer.parseInt` would silently accept a leading sign or non-ASCII
+                    // digits, so the four characters are verified before parsing.
+                    for (var h = 0; h < hex.length(); h++) {
+                        var digit = hex.charAt(h);
+                        var isAsciiHex = (digit >= '0' && digit <= '9')
+                                || (digit >= 'a' && digit <= 'f') || (digit >= 'A' && digit <= 'F');
+                        if (!isAsciiHex) {
+                            throw new IllegalArgumentException("malformed \\uXXXX escape: '" + hex + "'");
+                        }
+                    }
+                    out.append((char) Integer.parseInt(hex, 16));
+                    i += 4;
+                }
+                default -> throw new IllegalArgumentException(
+                        "unsupported escape '\\" + content.charAt(i) + "'");
+            }
+        }
+        return out.toString();
+    }
+
+    /// XML 1.0 cannot represent control characters (the named-escape trio was filtered
+    /// earlier), surrogate code units, or U+FFFE/U+FFFF, so each becomes a textual `\\uXXXX`.
+    private static boolean isLirXmlUnsafeChar(char c) {
+        return c < 0x20 || (c >= 0x7F && c <= 0x9F) || (c >= 0xD800 && c <= 0xDFFF)
+                || c == 0xFFFE || c == 0xFFFF;
     }
 
     /// Decodes a full GDScript source lexeme into the runtime payload stored by LIR.

@@ -595,6 +595,34 @@ class FrontendConstantMaterializationTest {
         }
     }
 
+    @Test
+    void stringConstantWithXmlUnsafePayloadRoundTripsThroughDomSerializer() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        // Embedded NUL and control chars cannot live inside an XML 1.0 text node — the
+        // serialized `\\uXXXX` escapes must carry them through the DOM roundtrip losslessly.
+        session.materializeConstantValue(block, new GdConstantValue.StringValue("a\0b"), "with_nul");
+        session.materializeConstantValue(block, new GdConstantValue.StringValue("控制\u0001符"), "multibyte");
+        session.materializeConstantValue(block, new GdConstantValue.StringValue("a\\u0000b"), "literal_escape_text");
+
+        var domParsed = domRoundTrip(block.getNonTerminatorInstructions(), session);
+        var simpleParsed = simpleRoundTrip(block.getNonTerminatorInstructions());
+        // simple→parse and DOM→parse must yield byte-identical payloads.
+        assertEquals(simpleParsed.size(), domParsed.size());
+        for (var i = 0; i < domParsed.size(); i++) {
+            var domLiteral = assertInstanceOf(LiteralStringInsn.class, domParsed.get(i));
+            var simpleLiteral = assertInstanceOf(LiteralStringInsn.class, simpleParsed.get(i));
+            assertEquals(simpleLiteral.value(), domLiteral.value());
+        }
+
+        var nulLiteral = (LiteralStringInsn) domParsed.get(0);
+        assertEquals("a\0b", nulLiteral.value());
+        assertEquals(3, nulLiteral.value().length());
+        assertEquals('b', nulLiteral.value().charAt(2));
+        // A literal `\u0000` text payload round-trips as text, never confused with real NUL.
+        assertEquals("a\\u0000b", ((LiteralStringInsn) domParsed.get(2)).value());
+    }
+
     // --- helpers ---
 
     private static @NotNull List<String> variableOperandIds(@NotNull ConstructBuiltinInsn insn) {

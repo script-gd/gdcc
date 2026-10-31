@@ -5,6 +5,7 @@ import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.exception.LirInsnParsingException;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirInstruction.*;
+import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.BufferedReader;
@@ -53,7 +54,7 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
 
     @NotNull
     private static LirInstruction parseLine(@NotNull String line, int lineNo) {
-        var tr = new Tokenizer(line);
+        var tr = new Tokenizer(line, lineNo);
         tr.skipWhitespace();
 
         String resultId = null;
@@ -234,11 +235,13 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
     // Simple tokenizer
     private static final class Tokenizer {
         private final String s;
+        private final int lineNo;
         private int pos = 0;
         private int col = 1;
 
-        Tokenizer(String s) {
+        Tokenizer(String s, int lineNo) {
             this.s = s;
+            this.lineNo = lineNo;
         }
 
         char peek() {
@@ -287,32 +290,38 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
                 return new Token(TokenKind.VARIABLE, id, tokenCol);
             } else if (c == '"') {
                 consume();
-                var sb = new StringBuilder();
-                boolean escaped = false;
+                // Collect the raw escaped content first so the closing quote is found with
+                // correct `\\` pairing (`"a\\"` ends the token, `"a\"` does not). The strict
+                // [StringUtil#unescapeLirStringLiteral] decode then rejects unknown/truncated
+                // escapes instead of silently dropping their backslashes.
+                var raw = new StringBuilder();
+                var escaped = false;
+                var closed = false;
                 while (!eof()) {
                     var ch = peek();
                     consume();
                     if (escaped) {
-                        switch (ch) {
-                            case 'n' -> sb.append('\n');
-                            case 'r' -> sb.append('\r');
-                            case 't' -> sb.append('\t');
-                            case '\\' -> sb.append('\\');
-                            case '"' -> sb.append('"');
-                            default -> sb.append(ch);
-                        }
+                        raw.append('\\').append(ch);
                         escaped = false;
+                    } else if (ch == '\\') {
+                        escaped = true;
+                    } else if (ch == '"') {
+                        closed = true;
+                        break;
                     } else {
-                        if (ch == '\\') {
-                            escaped = true;
-                        } else if (ch == '"') {
-                            break;
-                        } else {
-                            sb.append(ch);
-                        }
+                        raw.append(ch);
                     }
                 }
-                return new Token(TokenKind.STRING, sb.toString(), tokenCol);
+                if (!closed) {
+                    throw new LirInsnParsingException(lineNo, tokenCol, s, "Unterminated string literal");
+                }
+                final String decoded;
+                try {
+                    decoded = StringUtil.unescapeLirStringLiteral(raw.toString());
+                } catch (IllegalArgumentException e) {
+                    throw new LirInsnParsingException(lineNo, tokenCol, s, e.getMessage());
+                }
+                return new Token(TokenKind.STRING, decoded, tokenCol);
             } else {
                 // unquoted token
                 var txt = consumeWhile(c2 -> !Character.isWhitespace(c2) && c2 != ';');

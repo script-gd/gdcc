@@ -5,6 +5,7 @@ import gd.script.gdcc.exception.LirInsnSerializationException;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirInstruction.*;
 import gd.script.gdcc.lir.insn.LifecycleInstruction;
+import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
@@ -50,7 +51,7 @@ public final class SimpleLirBlockInsnSerializer implements LirBlockInsnSerialize
         switch (op) {
             case VariableOperand v -> sb.append('$').append(v.id());
             case BasicBlockOperand b -> sb.append(b.bbId());
-            case StringOperand s -> sb.append('"').append(escapeString(s.value())).append('"');
+            case StringOperand s -> sb.append('"').append(StringUtil.escapeLirStringLiteral(s.value())).append('"');
             case IntOperand it -> sb.append(it.value());
             // Canonical float output is Java `Double.toString`: `NaN`, `Infinity`,
             // `-Infinity`, `-0.0`, and float-shaped integers like `1.0` — the parser
@@ -79,21 +80,5 @@ public final class SimpleLirBlockInsnSerializer implements LirBlockInsnSerialize
             return;
         }
         sb.append(' ').append('"').append(provenance.name()).append('"');
-    }
-
-    private static String escapeString(String s) {
-        var sb = new StringBuilder(s.length());
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '\\' -> sb.append("\\\\");
-                case '"' -> sb.append("\\\"");
-                case '\n' -> sb.append("\\n");
-                case '\r' -> sb.append("\\r");
-                case '\t' -> sb.append("\\t");
-                default -> sb.append(c);
-            }
-        }
-        return sb.toString();
     }
 }
