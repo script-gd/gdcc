@@ -34,7 +34,10 @@ import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.constant.GdConstantValue;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
@@ -65,8 +68,13 @@ import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacad
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainStatusBridge;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendDualRoleTypeMetaRouteSupport;
+import gd.script.gdcc.frontend.sema.analyzer.support.EvaluationPolicy;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendConstantEvaluator;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendConstDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticSupport;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendLocalConstLookupContext;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
+import gd.script.gdcc.frontend.sema.patch.FrontendConstTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolution;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolver;
@@ -120,6 +128,9 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     private static final @NotNull String TYPE_TEST_UNRESOLVED_OBJECT_CATEGORY =
             "sema.type_test_unresolved_object";
     private static final @NotNull String TYPE_CHECK_CATEGORY = "sema.type_check";
+    /// Diagnostic owner for block-local `const` evaluation rejections — fires only when no
+    /// upstream owner already anchored an error inside the initializer.
+    private static final @NotNull String CONST_RESOLUTION_CATEGORY = "sema.constant_resolution";
     private static final @NotNull String UNSUPPORTED_BINDING_SUBTREE_CATEGORY =
             "sema.unsupported_binding_subtree";
     private static final @NotNull String UNSUPPORTED_CHAIN_ROUTE_CATEGORY = "sema.unsupported_chain_route";
@@ -144,7 +155,11 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             } else if (expression instanceof SelfExpression selfExpression) {
                 bindSelf(context, selfExpression);
             } else if (expression instanceof LambdaExpression lambdaExpression) {
-                if (!tryResolveRecordedLambda(context, lambdaExpression)) {
+                // A lambda inside a local const initializer belongs to the const-resolution
+                // owner's single rejection — binding must not report the same subtree again.
+                if (!(root instanceof VariableDeclaration declaration
+                        && declaration.kind() == DeclarationKind.CONST)
+                        && !tryResolveRecordedLambda(context, lambdaExpression)) {
                     reportUnsupportedBinding(context, lambdaExpression, "lambda subtree");
                 }
             }
@@ -277,9 +292,13 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     publishReduction(context, reduced);
                 }
             } else if (expression instanceof LambdaExpression lambdaExpression) {
-                // Recorded lambdas were already resolved by the top-binding trigger of this same
-                // statement; only unrecorded ones stay fail-closed here.
-                if (!context.interfaceSurface().suiteEntryRoots().containsCallableOwner(lambdaExpression)) {
+                // Same boundary as top binding: lambdas inside a local const initializer are
+                // diagnosed once by the const-resolution owner, not by the chain walk.
+                if (!(root instanceof VariableDeclaration declaration
+                        && declaration.kind() == DeclarationKind.CONST)
+                        // Recorded lambdas were already resolved by the top-binding trigger of this
+                        // same statement; only unrecorded ones stay fail-closed here.
+                        && !context.interfaceSurface().suiteEntryRoots().containsCallableOwner(lambdaExpression)) {
                     reportUnsupportedChain(context, lambdaExpression, "lambda subtree");
                 }
             }
@@ -411,6 +430,176 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 FrontendSemanticStage.VAR_TYPE_POST,
                 variableDeclaration,
                 effectiveSlot.type()
+        );
+    }
+
+    /// `CONST_RESOLUTION` owner for one block-local `const` declaration.
+    ///
+    /// The declaration's initializer has already been through the ordinary binding/chain/expr
+    /// pipeline (upstream name/type errors exist as diagnostics); this owner only evaluates it
+    /// against the const whitelist and publishes the `Evaluation` fact plus the exact slot type
+    /// update. Declarations that already carry a fact — the inventory's annotation-validation
+    /// rejection — and declarations that lost their name conflict never reach the evaluator:
+    /// a rejected annotation is final, and a rejected duplicate has no surviving binding.
+    ///
+    /// Diagnostic ownership follows the split contract: upstream binding/chain/type failures are
+    /// suppressed here (they already produced their own diagnostics, and the initializer's error
+    /// anchors prove it), while const-domain rejections — a mutable local, an unregistered call,
+    /// an unsupported shape, a taken-branch domain error — are first-reported by this owner.
+    @Override
+    public void runConstResolution(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+        if (!(root instanceof VariableDeclaration variableDeclaration)
+                || variableDeclaration.kind() != DeclarationKind.CONST) {
+            return;
+        }
+        if (!(context.analysisData().scopesByAst().get(variableDeclaration)
+                instanceof BlockScope blockScope)) {
+            return;
+        }
+        var constantName = variableDeclaration.name().trim();
+        var binding = blockScope.resolveValueHere(constantName);
+        if (binding == null
+                || binding.kind() != ScopeValueKind.CONSTANT
+                || binding.declaration() != variableDeclaration) {
+            return;
+        }
+        if (context.typedEnvironment().constantFact(variableDeclaration) != null) {
+            return;
+        }
+        var initializer = variableDeclaration.value();
+        if (initializer == null) {
+            var rejection = new Evaluation.Rejected(
+                    "constant '" + constantName + "' must be initialized at its declaration",
+                    variableDeclaration
+            );
+            context.typedEnvironment().putConstantFact(
+                    FrontendSemanticStage.CONST_RESOLUTION,
+                    variableDeclaration,
+                    rejection
+            );
+            reportConstResolutionError(context, variableDeclaration, rejection);
+            return;
+        }
+        var evaluation = FrontendConstantEvaluator.evaluate(
+                initializer,
+                new FrontendLocalConstLookupContext(variableDeclaration, blockScope, context),
+                EvaluationPolicy.general()
+        );
+        if (evaluation instanceof Evaluation.Resolved resolved) {
+            evaluation = applyConstDeclaredTypeConversion(
+                    context,
+                    variableDeclaration,
+                    blockScope,
+                    resolved.value()
+            );
+        }
+        context.typedEnvironment().putConstantFact(
+                FrontendSemanticStage.CONST_RESOLUTION,
+                variableDeclaration,
+                evaluation
+        );
+        switch (evaluation) {
+            case Evaluation.Resolved resolved -> context.typedEnvironment().addConstTypeUpdate(
+                    FrontendSemanticStage.CONST_RESOLUTION,
+                    new FrontendConstTypeUpdate(
+                            blockScope,
+                            constantName,
+                            variableDeclaration,
+                            resolved.value().type()
+                    )
+            );
+            case Evaluation.Rejected rejected -> {
+                if (!upstreamErrorInside(context, initializer)) {
+                    reportConstResolutionError(context, variableDeclaration, rejected);
+                }
+            }
+        }
+    }
+
+    /// Applies the implicit-conversion boundary between a frozen payload and an explicit const
+    /// annotation. Only a `Resolved` annotation reaches conversion — a rejected annotation stored
+    /// its fact during inventory and never re-enters evaluation.
+    private static @NotNull Evaluation applyConstDeclaredTypeConversion(
+            @NotNull FrontendSuiteContext context,
+            @NotNull VariableDeclaration variableDeclaration,
+            @NotNull BlockScope blockScope,
+            @NotNull GdConstantValue value
+    ) {
+        var declaredCheck = FrontendConstDeclaredTypeSupport.checkDeclaredType(
+                variableDeclaration.type(),
+                blockScope,
+                context.analysisData().moduleSkeleton().topLevelCanonicalNameMap()
+        );
+        if (!(declaredCheck
+                instanceof FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.Resolved resolvedDeclared)) {
+            return new Evaluation.Resolved(value);
+        }
+        var converted = FrontendConstDeclaredTypeSupport.convertToDeclaredType(
+                context.classRegistry(),
+                value,
+                resolvedDeclared.declaredType()
+        );
+        return converted != null
+                ? new Evaluation.Resolved(converted)
+                : new Evaluation.Rejected(
+                "constant value of type '" + value.type().getTypeName()
+                        + "' cannot be assigned to declared type '"
+                        + resolvedDeclared.declaredType().getTypeName() + "'",
+                variableDeclaration
+        );
+    }
+
+    /// Whether an error diagnostic already anchors inside `subtree` — the suppression signal that
+    /// keeps one upstream failure (unbound name, blocked member, failed call, poisoned constant)
+    /// from being reported a second time by the const-resolution owner. Byte ranges are
+    /// file-local, so candidates must come from this file before containment applies.
+    private static boolean upstreamErrorInside(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Expression subtree
+    ) {
+        return upstreamErrorInside(context, context.diagnosticManager().snapshot().asList(), subtree);
+    }
+
+    /// Diagnostic-list variant: `publishExpressionType` evaluates suppression against one
+    /// pre-loop snapshot so a diagnostic reported earlier in the same pass can never decide
+    /// whether a later entry's own error survives.
+    private static boolean upstreamErrorInside(
+            @NotNull FrontendSuiteContext context,
+            @NotNull List<FrontendDiagnostic> diagnostics,
+            @NotNull Expression subtree
+    ) {
+        var subtreeRange = subtree.range();
+        if (subtreeRange == null) {
+            return false;
+        }
+        var ownSourcePath = FrontendDiagnostic.sourcePathText(context.sourcePath());
+        for (var diagnostic : diagnostics) {
+            if (diagnostic.severity() != FrontendDiagnosticSeverity.ERROR
+                    || diagnostic.range() == null
+                    || !Objects.equals(diagnostic.sourcePath(), ownSourcePath)) {
+                continue;
+            }
+            var range = diagnostic.range();
+            if (range.startByte() >= subtreeRange.startByte()
+                    && range.endByte() <= subtreeRange.endByte()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void reportConstResolutionError(
+            @NotNull FrontendSuiteContext context,
+            @NotNull VariableDeclaration fallbackAnchor,
+            @NotNull Evaluation.Rejected rejected
+    ) {
+        var anchor = rejected.offendingNode() != null ? rejected.offendingNode() : fallbackAnchor;
+        context.diagnosticManager().error(
+                CONST_RESOLUTION_CATEGORY,
+                "Constant '" + fallbackAnchor.name().trim() + "' failed to evaluate: "
+                        + rejected.reason(),
+                context.sourcePath(),
+                FrontendRange.fromAstRange(anchor.range())
         );
     }
 
@@ -880,13 +1069,23 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         var valueResolution = resolveVisibleValue(context, identifierExpression);
         if (valueResolution.status() == FrontendVisibleValueStatus.FOUND_ALLOWED
                 || valueResolution.status() == FrontendVisibleValueStatus.FOUND_BLOCKED) {
-            publishScopeValueBinding(context, identifierExpression, valueResolution);
-            if (valueResolution.status() == FrontendVisibleValueStatus.FOUND_BLOCKED
+            // A binding whose declaration already failed constant evaluation is a poison hit
+            // even when scope lookup itself allows it — block-local const bindings are always
+            // allowed by their scope, so the rejected fact is what makes them blocked here.
+            var poisoned = isRejectedConstantBinding(
+                    context,
+                    Objects.requireNonNull(
+                            valueResolution.visibleValue(),
+                            "found value resolution must carry a visible value"
+                    )
+            );
+            publishScopeValueBinding(context, identifierExpression, valueResolution, poisoned);
+            if ((valueResolution.status() == FrontendVisibleValueStatus.FOUND_BLOCKED || poisoned)
                     && !context.isParameterDefaultIsland()) {
-                // A blocked CONSTANT binding whose declaration failed constant evaluation is a
-                // poison hit, not a permission problem: report the dependency-invalid diagnostic
-                // and leave the declaration's root cause to its skeleton diagnostic.
-                if (isRejectedConstantBinding(context, valueResolution.visibleValue())) {
+                if (poisoned) {
+                    // The dependency-invalid diagnostic: the root cause already fired at the
+                    // declaration site, so the use site reports one terminal error and the
+                    // binding stays blocked to stop Variant materialization.
                     reportBindingError(
                             context,
                             identifierExpression,
@@ -947,16 +1146,17 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     /// Poison check for a blocked binding: only a `CONSTANT` binding whose declaration is a
     /// `const` AST node that failed evaluation counts. Published usable constants carry model
     /// declarations (`GdScriptEnumConstant`/`GdScriptEvaluatedConstant`/extension metadata), so
-    /// a `VariableDeclaration` site with a `Rejected` fact can only come from the failed-const
-    /// mask — and the check stays correct when local `const` declarations start producing
-    /// `CONSTANT` bindings of their own.
+    /// a `VariableDeclaration` site with a `Rejected` fact can only come from a failed const —
+    /// class-level through the mask, block-local through its own binding. The check reads the
+    /// overlay-aware fact view so a fact still pending/committed in this suite is honored, not
+    /// just the stable table.
     private boolean isRejectedConstantBinding(
             @NotNull FrontendSuiteContext context,
             @NotNull ScopeValue value
     ) {
         return value.kind() == ScopeValueKind.CONSTANT
                 && value.declaration() instanceof VariableDeclaration declaration
-                && context.analysisData().constantFacts().get(declaration)
+                && context.typedEnvironment().constantFact(declaration)
                         instanceof Evaluation.Rejected;
     }
 
@@ -1036,7 +1236,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             return null;
         }
         var hit = bodyScope.resolveValueHere(name);
-        return hit != null && hit.kind() == ScopeValueKind.LOCAL ? hit : null;
+        return hit != null
+                && (hit.kind() == ScopeValueKind.LOCAL || hit.kind() == ScopeValueKind.CONSTANT)
+                ? hit
+                : null;
     }
 
     private void bindLiteral(
@@ -1074,10 +1277,11 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     private void publishScopeValueBinding(
             @NotNull FrontendSuiteContext context,
             @NotNull IdentifierExpression identifierExpression,
-            @NotNull FrontendVisibleValueResolution resolution
+            @NotNull FrontendVisibleValueResolution resolution,
+            boolean forceBlocked
     ) {
         var resolvedValue = Objects.requireNonNull(resolution.visibleValue(), "visibleValue must not be null");
-        var accessStatus = resolution.status() == FrontendVisibleValueStatus.FOUND_ALLOWED
+        var accessStatus = resolution.status() == FrontendVisibleValueStatus.FOUND_ALLOWED && !forceBlocked
                 ? ScopeLookupStatus.FOUND_ALLOWED
                 : ScopeLookupStatus.FOUND_BLOCKED;
         context.typedEnvironment().putSymbolBinding(
@@ -1338,7 +1542,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                             resolver,
                             variableDeclaration.value(),
                             false,
-                            declaredInitializerExpectedType(context, variableDeclaration)
+                            declaredInitializerExpectedType(context, variableDeclaration),
+                            variableDeclaration.kind() == DeclarationKind.CONST
                     );
             case ExpressionStatement expressionStatement ->
                     publishExpressionType(context, resolver, expressionStatement.expression(), true, null);
@@ -1403,12 +1608,36 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             boolean allowStatementResult,
             @Nullable GdType expectedType
     ) {
+        publishExpressionType(context, resolver, expression, allowStatementResult, expectedType, false);
+    }
+
+    /// `suppressUpstreamConsequenceDiagnostics` narrows a `const` initializer's failure
+    /// reporting to each failure's true owner, per expression: an entry whose own subtree
+    /// already carries an upstream (binding/chain) error is a consequence and stays silent,
+    /// while an independent expression failure with no upstream error inside still reports —
+    /// `(1 + 1.0) + Missing` costs the binding error plus the mixed-operand error, not one.
+    private static void publishExpressionType(
+            @NotNull FrontendSuiteContext context,
+            @NotNull BodyExpressionResolver resolver,
+            @NotNull Expression expression,
+            boolean allowStatementResult,
+            @Nullable GdType expectedType,
+            boolean suppressUpstreamConsequenceDiagnostics
+    ) {
         resolver.populateRootExpressionTransientCaches(expression, allowStatementResult, expectedType);
+        // Frozen at pass start: only binding/chain-stage diagnostics may classify an entry as a
+        // consequence — reports emitted by this very loop must not influence later checks.
+        var upstreamDiagnostics = suppressUpstreamConsequenceDiagnostics
+                ? context.diagnosticManager().snapshot().asList()
+                : List.<FrontendDiagnostic>of();
         for (var entry : resolver.finalizedExpressionTypes().entrySet()) {
             if (resolver.isRouteHeadOnlyTypeMeta(entry.getKey())) {
                 continue;
             }
-            if (!resolver.isAssignmentTargetPrefixExpression(entry.getKey())
+            var suppress = suppressUpstreamConsequenceDiagnostics
+                    && upstreamErrorInside(context, upstreamDiagnostics, entry.getKey());
+            if (!suppress
+                    && !resolver.isAssignmentTargetPrefixExpression(entry.getKey())
                     && resolver.rootOwnsExpressionDiagnostic(entry.getKey())) {
                 reportExpressionDiagnostic(context, resolver, entry.getKey(), entry.getValue());
             }

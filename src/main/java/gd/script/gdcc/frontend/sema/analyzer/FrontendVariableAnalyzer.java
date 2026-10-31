@@ -1,5 +1,6 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
+import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.scope.BlockScope;
@@ -14,6 +15,7 @@ import gd.script.gdcc.frontend.sema.FrontendLambdaCapturePlanner;
 import gd.script.gdcc.frontend.sema.FrontendMatchSupport;
 import gd.script.gdcc.frontend.sema.FrontendModuleSkeleton;
 import gd.script.gdcc.frontend.sema.LambdaCaptureEntry;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendConstDeclaredTypeSupport;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
@@ -67,7 +69,8 @@ import java.util.function.Consumer;
 /// - bind lambda parameters/locals and derive `CAPTURE` bindings (names plus `sourceDeclaration`,
 ///   `Variant` placeholder types) for lambdas inside supported executable bodies
 /// - bind match pattern bindings into each section `MATCH_SECTION_BODY` as `LOCAL` inventory
-/// - keep block-local `const` inventory outside the current support boundary
+/// - bind block-local `const` declarations as read-only `CONSTANT` inventory with a structural
+///   baseline type; the `CONST_RESOLUTION` body owner evaluates and refines them later
 /// - emit explicit recovery diagnostics instead of letting unsupported inventory sources fail silently
 public class FrontendVariableAnalyzer {
     private static final @NotNull String VARIABLE_BINDING_CATEGORY = "sema.variable_binding";
@@ -107,6 +110,7 @@ public class FrontendVariableAnalyzer {
                     sourceClassRelation.unit().path(),
                     moduleSkeleton,
                     scopesByAst,
+                    analysisData.constantFacts(),
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
         }
@@ -128,6 +132,7 @@ public class FrontendVariableAnalyzer {
         private final @NotNull Path sourcePath;
         private final @NotNull FrontendModuleSkeleton moduleSkeleton;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
+        private final @NotNull FrontendAstSideTable<Evaluation> constantFacts;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull UnsupportedVariableBoundaryReporter unsupportedBoundaryReporter;
@@ -163,11 +168,13 @@ public class FrontendVariableAnalyzer {
                 @NotNull Path sourcePath,
                 @NotNull FrontendModuleSkeleton moduleSkeleton,
                 @NotNull FrontendAstSideTable<Scope> scopesByAst,
+                @NotNull FrontendAstSideTable<Evaluation> constantFacts,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath");
             this.moduleSkeleton = Objects.requireNonNull(moduleSkeleton, "moduleSkeleton");
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst");
+            this.constantFacts = Objects.requireNonNull(constantFacts, "constantFacts");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager");
             this.astWalker = new ASTWalker(this);
             unsupportedBoundaryReporter = new UnsupportedVariableBoundaryReporter(
@@ -286,7 +293,7 @@ public class FrontendVariableAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             if (variableDeclaration.kind() == DeclarationKind.CONST) {
-                reportUnsupportedBlockLocalConst(variableDeclaration);
+                bindLocalConst(variableDeclaration);
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             if (variableDeclaration.kind() != DeclarationKind.VAR) {
@@ -430,10 +437,13 @@ public class FrontendVariableAnalyzer {
                             }
                             // Transfer only when the source lives outside this lambda and this
                             // lambda does not shadow the name (planner returns null otherwise).
+                            // The nested lambda node anchors declaration order: a parent-local
+                            // declared after it can never feed this capture.
                             var transferred = FrontendLambdaCapturePlanner.transferredCapture(
                                     lambdaScope,
                                     lambdaBodyScope,
-                                    childCapture
+                                    childCapture,
+                                    nestedLambdaEvent.lambda()
                             );
                             if (transferred != null) {
                                 capturesByName.put(transferred.name(), transferred);
@@ -480,9 +490,12 @@ public class FrontendVariableAnalyzer {
                 if (capturedNames.contains(use.name())) {
                     continue;
                 }
-                var valueResult = use.startingScope().resolveValue(use.name(), ResolveRestriction.unrestricted());
-                if (valueResult.isFound()) {
-                    var value = valueResult.requireValue();
+                var value = FrontendLambdaCapturePlanner.firstVisibleValueHit(
+                        use.startingScope(),
+                        use.name(),
+                        use.useSite()
+                );
+                if (value != null) {
                     var kind = value.kind();
                     if ((kind == ScopeValueKind.PROPERTY || kind == ScopeValueKind.SIGNAL)
                             && !value.staticMember()) {
@@ -694,6 +707,79 @@ public class FrontendVariableAnalyzer {
             }
         }
 
+        /// Binds a block-local `const` declaration as a surviving `CONSTANT` inventory row.
+        ///
+        /// Name-claim rules are identical to `var` (same-block and same-callable duplicate checks,
+        /// first binding wins). The slot starts at `Variant` — or at the explicitly declared type —
+        /// because the frozen payload's exact type is only known after the body const-resolution
+        /// owner evaluates the initializer; `BlockScope.resetConstantType` backfills it at export.
+        ///
+        /// The annotation is part of the frozen contract, so inventory validates it strictly and
+        /// keeps the rejection as a `constantFacts` fact: an unresolvable or unsupported `const`
+        /// annotation reports an error here instead of the warning+`Variant` fallback ordinary
+        /// `var` annotations use, and the failed declaration keeps poisoning the name so later
+        /// reads cannot fall back to outer bindings.
+        private void bindLocalConst(@NotNull VariableDeclaration variableDeclaration) {
+            var variableName = variableDeclaration.name().trim();
+            var targetScope = scopesByAst.get(variableDeclaration);
+            if (!(targetScope instanceof BlockScope blockScope)) {
+                reportBindingError(
+                        variableDeclaration,
+                        "Local constant '" + variableName + "' expected BlockScope, but found "
+                                + (targetScope != null ? targetScope.getClass().getSimpleName() : "null")
+                );
+                return;
+            }
+            if (!FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind())) {
+                reportBindingError(
+                        variableDeclaration,
+                        "Local constant '" + variableName
+                                + "' is not allowed in unsupported or skipped body '"
+                                + blockScope.kind() + "'"
+                );
+                return;
+            }
+            var existingLocal = blockScope.resolveValueHere(variableName);
+            if (existingLocal != null) {
+                reportLocalConflict(variableDeclaration, blockScope, existingLocal, false);
+                return;
+            }
+            var sameCallableConflict = findSameCallableConflict(blockScope, variableName);
+            if (sameCallableConflict != null) {
+                reportLocalConflict(variableDeclaration, blockScope, sameCallableConflict, true);
+                return;
+            }
+            var baselineType = switch (FrontendConstDeclaredTypeSupport.checkDeclaredType(
+                    variableDeclaration.type(),
+                    blockScope,
+                    moduleSkeleton.topLevelCanonicalNameMap()
+            )) {
+                case FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.NoAnnotation _ -> GdVariantType.VARIANT;
+                case FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.Resolved resolved ->
+                        resolved.declaredType();
+                case FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.Rejected rejected -> {
+                    reportBindingError(
+                            variableDeclaration,
+                            "Constant '" + variableName + "' has an invalid declared type: "
+                                    + rejected.reason()
+                    );
+                    constantFacts.put(
+                            variableDeclaration,
+                            new Evaluation.Rejected(rejected.reason(), variableDeclaration.type())
+                    );
+                    yield GdVariantType.VARIANT;
+                }
+            };
+            try {
+                blockScope.defineConstant(variableName, baselineType, variableDeclaration);
+            } catch (IllegalArgumentException exception) {
+                reportBindingError(
+                        variableDeclaration,
+                        "Duplicate local constant '" + variableName + "' in the same block"
+                );
+            }
+        }
+
         private void bindForIterator(@NotNull ForStatement forStatement) {
             var iteratorName = forStatement.iterator().trim();
             var targetScope = scopesByAst.get(forStatement.body());
@@ -889,17 +975,6 @@ public class FrontendVariableAnalyzer {
             );
         }
 
-        private void reportUnsupportedBlockLocalConst(@NotNull VariableDeclaration variableDeclaration) {
-            diagnosticManager.error(
-                    UNSUPPORTED_VARIABLE_INVENTORY_SUBTREE_CATEGORY,
-                    "Variable analysis does not support block-local `const` declarations yet; constant '"
-                            + variableDeclaration.name().trim()
-                            + "' is not bound into the current executable scope yet",
-                    sourcePath,
-                    FrontendRange.fromAstRange(variableDeclaration.range())
-            );
-        }
-
         private void reportBindingError(
                 @NotNull Node declaration,
                 @NotNull String message
@@ -927,8 +1002,8 @@ public class FrontendVariableAnalyzer {
     /// Lambdas found inside supported executable bodies are no longer reported; they are handed
     /// to the binder's lambda-inventory pipeline instead. Match subtrees are bound by the main
     /// walker, so this reporter no longer treats them as an unsupported inventory boundary.
-    /// Block-local `const` subtrees stay sealed here as well: the binder already reports the
-    /// declaration itself, and names inside such a subtree belong to a not-yet-supported domain.
+    /// Block-local `const` subtrees stay sealed for lambda inventory: the const-resolution owner
+    /// rejects any lambda inside an initializer, so nothing in the subtree may bind one here.
     private static final class UnsupportedVariableBoundaryReporter implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
         private final @NotNull DiagnosticManager diagnosticManager;
@@ -994,8 +1069,8 @@ public class FrontendVariableAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleVariableDeclaration(
                 @NotNull VariableDeclaration variableDeclaration
         ) {
-            // Block-local `const` inventory stays unsupported; the binder reports the declaration
-            // and nothing inside its initializer subtree may bind inventory here.
+            // Block-local `const` initializers are evaluated by the const-resolution owner; the
+            // subtree is sealed here because a lambda inside one can never be recorded.
             if (variableDeclaration.kind() == DeclarationKind.CONST) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
@@ -1011,7 +1086,9 @@ public class FrontendVariableAnalyzer {
     /// - direct nested lambdas, whose completed plans may transfer captures upward
     ///
     /// The scanner skips nested lambda bodies (bound and planned on their own) and block-local
-    /// `const` subtrees: names inside not-yet-supported domains must never become captures.
+    /// `const` subtrees: a const initializer may only name frozen constants — which are read
+    /// through the environment's constant-fact view — and everything else is rejected by the
+    /// const-resolution owner, so nothing in the subtree is ever a capture.
     /// Match sections are walked so bare identifiers and nested lambdas inside them participate
     /// in capture planning. Explicit `self` expressions and get-node expressions (`$` / `%`) are
     /// flagged separately because both need the enclosing instance receiver without being an
@@ -1089,7 +1166,8 @@ public class FrontendVariableAnalyzer {
             if (useSiteScope != null) {
                 events.add(new IdentifierEvent(new FrontendLambdaCapturePlanner.IdentifierUse(
                         identifierExpression.name().trim(),
-                        useSiteScope
+                        useSiteScope,
+                        identifierExpression
                 )));
             }
             return FrontendASTTraversalDirective.CONTINUE;

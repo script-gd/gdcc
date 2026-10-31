@@ -252,6 +252,11 @@ public final class FrontendCfgGraphBuilder {
                     processExpressionStatement(state, expressionStatement.expression());
             case VariableDeclaration variableDeclaration when variableDeclaration.kind() == DeclarationKind.VAR ->
                     processLocalDeclaration(state, variableDeclaration);
+            // A block-local `const` owns no mutable local slot and emits no runtime statement:
+            // the frozen payload only materializes where use-site bindings read it, so the
+            // declaration itself is a pure source anchor like `pass`.
+            case VariableDeclaration variableDeclaration when variableDeclaration.kind() == DeclarationKind.CONST ->
+                    requireCurrentSequence(state).items().add(new SourceAnchorItem(variableDeclaration));
             case ReturnStatement returnStatement -> processReturnStatement(state, returnStatement);
             case AssertStatement assertStatement -> processAssertStatement(state, assertStatement);
             case IfStatement ifStatement -> processIfStatement(state, ifStatement);

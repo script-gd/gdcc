@@ -1,9 +1,11 @@
 package gd.script.gdcc.frontend.scope;
 
 import gd.script.gdcc.scope.ClassDef;
+import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.GdScriptClassConstant;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 
@@ -63,5 +65,59 @@ public final class FrontendClassConstantLookup {
             }
         }
         return new ProbeResult.Miss();
+    }
+
+    /// Nearest-layer-wins walk over the inheritance chain: each layer probes the failed-const
+    /// mask and the usable table, and the first hit ends the walk. A layer that declares any
+    /// non-constant member with the same name — function, property, or signal — shadows
+    /// ancestor constants for qualified access, mirroring the unified member-namespace rule
+    /// the chain reducer applies. `Miss` therefore means "no reachable constant", whether the
+    /// walk ran out of layers or a nearer member claimed the name first.
+    public static @NotNull ProbeResult probeInHierarchy(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ClassDef startClass,
+            @NotNull String name,
+            @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> rejectedClassConstants
+    ) {
+        Objects.requireNonNull(classRegistry, "classRegistry must not be null");
+        Objects.requireNonNull(startClass, "startClass must not be null");
+        var visited = new HashSet<String>();
+        for (var current = startClass;
+                current != null && visited.add(current.getName());
+                current = classRegistry.resolveSuperclass(current)) {
+            var result = probe(current, name, rejectedClassConstants);
+            if (!(result instanceof ProbeResult.Miss)) {
+                return result;
+            }
+            if (declaresNonConstantMemberOnLayer(current, name)) {
+                return new ProbeResult.Miss();
+            }
+        }
+        return new ProbeResult.Miss();
+    }
+
+    /// Any non-constant member declared directly on this layer claims the name for qualified
+    /// access — an instance member can never be read through `Class.member` anyway, so the
+    /// walk must not leak through to an ancestor constant.
+    private static boolean declaresNonConstantMemberOnLayer(
+            @NotNull ClassDef owner,
+            @NotNull String memberName
+    ) {
+        for (var function : owner.getFunctions()) {
+            if (function.getName().equals(memberName)) {
+                return true;
+            }
+        }
+        for (var property : owner.getProperties()) {
+            if (property.getName().equals(memberName)) {
+                return true;
+            }
+        }
+        for (var signal : owner.getSignals()) {
+            if (signal.getName().equals(memberName)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

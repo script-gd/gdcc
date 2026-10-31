@@ -6,6 +6,11 @@ public enum FrontendSemanticStage {
     LOCAL_TYPE_STABILIZATION,
     CHAIN_BINDING,
     EXPR_TYPE,
+    /// Block-local `const` resolution: publishes the `Evaluation` fact keyed by the
+    /// `VariableDeclaration` and the constant type update that backfills the exact slot type.
+    /// Ordered after expression typing (it consumes bound/typed initializer facts) and before
+    /// var-type-post, which must never rewrite a constant slot.
+    CONST_RESOLUTION,
     /// For-in iteration resolution: publishes the `FrontendForIterationPlan` and the restricted
     /// iterator slot refinement keyed by the owning `ForStatement`. Ordered after expression typing
     /// (it consumes iterable/argument typed facts) and before var-type-post (which publishes the

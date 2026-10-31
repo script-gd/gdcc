@@ -100,6 +100,13 @@ final class FrontendSuiteResolverStageTestSupport {
             }
 
             @Override
+            public void runConstResolution(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+                if (checkedStages.contains(FrontendSemanticStage.CONST_RESOLUTION)) {
+                    delegate.runConstResolution(context, root);
+                }
+            }
+
+            @Override
             public void runForIterationResolution(
                     @NotNull FrontendSuiteContext context,
                     @NotNull ForStatement forStatement

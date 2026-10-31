@@ -13,7 +13,6 @@ import gd.script.gdcc.scope.GdScriptEnumConstant;
 import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.ScopeTypeMetaKind;
 import gd.script.gdcc.type.GdObjectType;
-import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -268,31 +267,17 @@ public final class FrontendClassConstPrepassLookup implements LookupContext {
 
     /// Engine classes expose integer metadata constants and enum values qualified by class name
     /// (`Control.PRESET_CENTER`); anything else — including GDCC class names, which never reach
-    /// the engine hierarchy finders — stays `Unknown` and is rejected by the caller domain.
+    /// the engine hierarchy finders — stays `Unknown` and is rejected by the caller domain. The
+    /// decoding itself lives in `FrontendLocalConstLookupContext` so both contexts share one
+    /// implementation.
     private @NotNull LookupResult resolveEngineClassMember(
             @NotNull String engineClassName,
             @NotNull String memberName
     ) {
-        var constant = classRegistry.findEngineClassConstantInHierarchy(engineClassName, memberName);
-        if (constant != null) {
-            var parsed = parseEngineConstantInt(constant.constant().value());
-            return parsed != null
-                    ? new LookupResult.ResolvedConstant(parsed)
-                    : new LookupResult.Unknown();
-        }
-        var enumValue = classRegistry.findEngineClassEnumValueInHierarchy(engineClassName, memberName);
-        return enumValue != null
-                ? new LookupResult.ResolvedConstant(new GdConstantValue.IntValue(enumValue.enumValue().value()))
-                : new LookupResult.Unknown();
-    }
-
-    /// Engine constant metadata carries the source literal as text; only plain signed-decimal
-    /// ints are decodable here, anything richer stays `Unknown` rather than guessed.
-    private static @Nullable GdConstantValue.IntValue parseEngineConstantInt(@NotNull String valueText) {
-        var text = valueText.trim();
-        var negative = text.startsWith("-");
-        var magnitude = negative ? text.substring(1) : text;
-        var parsed = StringUtil.parseGdUnsignedIntegerLexeme(magnitude);
-        return parsed == null ? null : new GdConstantValue.IntValue(negative ? -parsed : parsed);
+        return FrontendLocalConstLookupContext.resolveEngineClassMember(
+                classRegistry,
+                engineClassName,
+                memberName
+        );
     }
 }

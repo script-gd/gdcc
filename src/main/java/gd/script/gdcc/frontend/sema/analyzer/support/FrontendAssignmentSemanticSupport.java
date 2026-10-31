@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema.analyzer.support;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
+import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendModuleSkeleton;
@@ -13,6 +14,7 @@ import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.PropertyDefAccessSupport;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
+import gd.script.gdcc.scope.ScopeLookupStatus;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdType;
@@ -24,6 +26,7 @@ import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
+import dev.superice.gdparser.frontend.ast.EnumDeclaration;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
@@ -396,6 +399,24 @@ public final class FrontendAssignmentSemanticSupport {
             );
         }
 
+        // The published use-site binding is authoritative: it already applied declaration-order
+        // filtering and invalid-constant masking, so `n = 1` written before `const n` keeps
+        // targeting the outer property while the same write after the declaration hits the
+        // constant. A bare scope resolve would see the later declaration early and misattribute
+        // the write.
+        var writeBinding = context.symbolBindingResolver().apply(identifierExpression);
+        if (writeBinding != null && writeBinding.resolvedValue() != null) {
+            if (writeBinding.valueAccessStatus() == ScopeLookupStatus.FOUND_BLOCKED) {
+                return AssignmentTargetResult.blocked(
+                        AssignmentTargetKind.IDENTIFIER,
+                        false,
+                        "Binding '" + identifierExpression.name()
+                                + "' is not accessible in the current context"
+                );
+            }
+            return resolveWritableIdentifierValue(identifierExpression, writeBinding.resolvedValue());
+        }
+
         var valueResult = currentScope.resolveValue(identifierExpression.name(), currentRestriction(context));
         if (valueResult.isAllowed()) {
             return resolveWritableIdentifierValue(identifierExpression, valueResult.requireValue());
@@ -526,6 +547,14 @@ public final class FrontendAssignmentSemanticSupport {
                     "Type-meta receivers cannot be used as subscript assignment targets"
             );
         }
+        var frozenHeadIssue = frozenConstantHeadIssue(
+                context,
+                subscriptExpression.base(),
+                AssignmentTargetKind.SUBSCRIPT
+        );
+        if (frozenHeadIssue != null) {
+            return frozenHeadIssue;
+        }
 
         var argumentResolution = resolveArgumentTypes(subscriptExpression.arguments(), nestedResolver, finalizeWindow);
         if (argumentResolution.issue() != null) {
@@ -604,10 +633,20 @@ public final class FrontendAssignmentSemanticSupport {
             return targetFromReductionStatus(targetKind, finalTrace.status(), false, finalTrace.detailReason());
         }
         return switch (finalTrace.status()) {
-            case RESOLVED -> classifyResolvedPropertyTarget(
-                    targetKind,
-                    Objects.requireNonNull(finalTrace.suggestedMember(), "suggestedMember must not be null")
-            );
+            case RESOLVED -> {
+                var frozenIssue = frozenConstantTargetIssue(
+                        context,
+                        attributeExpression,
+                        reduced,
+                        targetKind
+                );
+                yield frozenIssue != null
+                        ? frozenIssue
+                        : classifyResolvedPropertyTarget(
+                        targetKind,
+                        Objects.requireNonNull(finalTrace.suggestedMember(), "suggestedMember must not be null")
+                );
+            }
             case DYNAMIC -> AssignmentTargetResult.dynamic(
                     targetKind,
                     Objects.requireNonNull(finalTrace.detailReason(), "detailReason must not be null")
@@ -625,6 +664,82 @@ public final class FrontendAssignmentSemanticSupport {
                     finalTrace.detailReason()
             );
         };
+    }
+
+    /// Frozen constants must not become a write-back root: `V.x`, `V[0]`, `V.position.x`,
+    /// `Other.C.x`, and `Vector3.ONE.x` all mutate through a constant value even though each
+    /// member step resolves as an ordinary writable property. The head identifier carries the
+    /// constant contract directly; later steps only need a CONSTANT member before the write
+    /// position — the terminal step itself is still classified by the ordinary target rules so
+    /// its own CONSTANT case keeps the established "not assignable" message. An enum-group
+    /// member (`Other.State`) stays a container namespace, so element writes through it keep
+    /// the ordinary Dictionary mutation semantics. And a value-producing call step severs the
+    /// provenance: `V.normalized().x` writes to a fresh temporary, not to `V` itself, so only
+    /// steps after the last call boundary can freeze the write.
+    private static @Nullable AssignmentTargetResult frozenConstantTargetIssue(
+            @NotNull Context context,
+            @NotNull AttributeExpression attributeExpression,
+            @NotNull FrontendChainReductionHelper.ReductionResult reduced,
+            @NotNull AssignmentTargetKind targetKind
+    ) {
+        var stepTraces = reduced.stepTraces();
+        var lastCallBoundary = -1;
+        for (var i = stepTraces.size() - 1; i >= 0; i--) {
+            if (stepTraces.get(i).suggestedCall() != null) {
+                lastCallBoundary = i;
+                break;
+            }
+        }
+        if (lastCallBoundary < 0) {
+            var headIssue = frozenConstantHeadIssue(context, attributeExpression.base(), targetKind);
+            if (headIssue != null) {
+                return headIssue;
+            }
+        }
+        for (var i = lastCallBoundary + 1; i < stepTraces.size() - 1; i++) {
+            var member = stepTraces.get(i).suggestedMember();
+            if (member == null
+                    || member.bindingKind() != FrontendBindingKind.CONSTANT
+                    || member.declarationSite() instanceof GdScriptEnumGroup
+                    || member.declarationSite() instanceof EnumDeclaration) {
+                continue;
+            }
+            return AssignmentTargetResult.failed(
+                    targetKind,
+                    true,
+                    "Constant '" + member.memberName()
+                            + "' is frozen and cannot be assigned through a member or element write"
+            );
+        }
+        return null;
+    }
+
+    /// The head identifier is the only constant root a chain can hide before its first step:
+    /// `V` in `V.x` never becomes a `StepTrace`, so its CONSTANT binding must be checked here.
+    private static @Nullable AssignmentTargetResult frozenConstantHeadIssue(
+            @NotNull Context context,
+            @NotNull Expression baseExpression,
+            @NotNull AssignmentTargetKind targetKind
+    ) {
+        if (!(baseExpression instanceof IdentifierExpression identifierExpression)) {
+            return null;
+        }
+        var binding = context.symbolBindingResolver().apply(identifierExpression);
+        if (binding == null
+                || binding.kind() != FrontendBindingKind.CONSTANT
+                || binding.declarationSite() instanceof EnumDeclaration
+                || binding.declarationSite() instanceof GdScriptEnumGroup) {
+            // An enum-group binding shares the CONSTANT kind but names a Dictionary-like
+            // container namespace — subscript writes through it keep ordinary container
+            // semantics instead of the frozen-constant write protection.
+            return null;
+        }
+        return AssignmentTargetResult.failed(
+                targetKind,
+                true,
+                "Constant '" + identifierExpression.name()
+                        + "' is frozen and cannot be assigned through a member or element write"
+        );
     }
 
     private static @NotNull AssignmentTargetResult classifyResolvedPropertyTarget(

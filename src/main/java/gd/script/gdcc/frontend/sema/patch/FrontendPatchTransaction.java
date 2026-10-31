@@ -57,10 +57,11 @@ public record FrontendPatchTransaction(@NotNull List<FrontendOwnerPatch> patches
             case LOCAL_TYPE_STABILIZATION -> 1;
             case CHAIN_BINDING -> 2;
             case EXPR_TYPE -> 3;
-            case FOR_ITERATION_RESOLUTION -> 4;
-            case MATCH_PATTERN_RESOLUTION -> 5;
-            case VAR_TYPE_POST -> 6;
-            case LAMBDA_RESOLUTION -> 7;
+            case CONST_RESOLUTION -> 4;
+            case FOR_ITERATION_RESOLUTION -> 5;
+            case MATCH_PATTERN_RESOLUTION -> 6;
+            case VAR_TYPE_POST -> 7;
+            case LAMBDA_RESOLUTION -> 8;
         };
     }
 

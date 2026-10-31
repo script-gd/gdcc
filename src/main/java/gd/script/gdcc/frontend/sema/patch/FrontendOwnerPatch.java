@@ -1,5 +1,6 @@
 package gd.script.gdcc.frontend.sema.patch;
 
+import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
@@ -25,6 +26,7 @@ public sealed interface FrontendOwnerPatch permits
         FrontendLocalTypeStabilizationPatch,
         FrontendChainBindingPatch,
         FrontendExprTypePatch,
+        FrontendConstResolutionPatch,
         FrontendForIterationResolutionPatch,
         FrontendMatchResolutionPatch,
         FrontendVarTypePostPatch,
@@ -72,6 +74,15 @@ public sealed interface FrontendOwnerPatch permits
     }
 
     default @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates() {
+        return List.of();
+    }
+
+    /// Constant evaluation facts keyed by their owning `const` declaration node.
+    default @NotNull FrontendAstSideTable<Evaluation> constantFacts() {
+        return FrontendPatchTables.emptySideTable();
+    }
+
+    default @NotNull List<FrontendConstTypeUpdate> constantTypeUpdates() {
         return List.of();
     }
 }

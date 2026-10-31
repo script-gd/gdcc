@@ -20,6 +20,7 @@ import gd.script.gdcc.scope.GdScriptEnumConstant;
 import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.GdScriptLanguageConstant;
 import gd.script.gdcc.scope.PropertyDef;
+import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeLookupStatus;
 import gd.script.gdcc.scope.ScopeOwnerKind;
@@ -326,10 +327,15 @@ public final class FrontendSnapshotQueryService {
         var kind = classifyKind(declarationSite, fact.binding());
         // Locals and parameters have no class owner; member kinds recover the declaring class
         // from the scope recorded at the FIRST LOCATED declaration (provenance order =
-        // resolution order, i.e. the nearest declaration wins).
+        // resolution order, i.e. the nearest declaration wins). A CONSTANT kind can still be a
+        // body-local `const` — its nearest scope is a BlockScope, not the class, so it reports
+        // no owner exactly like LOCAL_VARIABLE.
         String ownerName = switch (kind) {
-            case PROPERTY, METHOD, SIGNAL, CONSTANT, ENUM_GROUP, ENUM_VALUE, TYPE ->
+            case PROPERTY, METHOD, SIGNAL, ENUM_GROUP, ENUM_VALUE, TYPE ->
                     declaringClassName(snapshot, firstDeclarationNode);
+            case CONSTANT -> isBodyLocalDeclaration(snapshot, firstDeclarationNode)
+                    ? null
+                    : declaringClassName(snapshot, firstDeclarationNode);
             case LOCAL_VARIABLE, PARAMETER, UTILITY_FUNCTION -> null;
         };
         return Optional.of(new SymbolDocDescriptor(kind, DocNamespace.GDCC, ownerName, fact.memberName(), candidates));
@@ -681,6 +687,17 @@ public final class FrontendSnapshotQueryService {
     private static @Nullable ClassDef enclosingClass(@NotNull ModuleAnalysisSnapshot snapshot, @NotNull CursorFact fact) {
         var scope = nearestScope(snapshot, fact.unitIndex(), fact.node());
         return scope == null ? null : scope.owningClassOrNull();
+    }
+
+    /// `true` when the declaration sits inside a body-level `BlockScope` — the marker that
+    /// separates a function-local `const` (no class owner) from a class-level `const`. The raw
+    /// `scopesByAst` entry answers directly: `nearestScope` would return a `ReadOnlyScope`
+    /// wrapper that hides the concrete scope type this check depends on.
+    private static boolean isBodyLocalDeclaration(
+            @NotNull ModuleAnalysisSnapshot snapshot,
+            @NotNull Node declarationNode
+    ) {
+        return snapshot.analysisData().scopesByAst().get(declarationNode) instanceof BlockScope;
     }
 
     /// Declaring class of a normalized GDCC declaration node: the scope recorded at (or above)

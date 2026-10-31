@@ -1,6 +1,7 @@
 package gd.script.gdcc.frontend.sema.patch;
 
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
+import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
@@ -17,6 +18,7 @@ import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.List;
 import java.util.Objects;
 
 /// Shared compiler-only guard for every source-facing typed publication surface.
@@ -39,6 +41,25 @@ public final class FrontendPublishedFactTypeGuard {
         checkContainerLiteralPlans(patch.containerLiteralPlans());
         checkLambdaPlans(patch.lambdaPlans());
         checkLocalSlotTypeUpdates(patch.localSlotTypeUpdates());
+        checkConstantFacts(patch.constantFacts());
+        checkConstTypeUpdates(patch.constantTypeUpdates());
+    }
+
+    /// Constant facts carry `GdConstantValue` payloads whose types are scalars or controlled
+    /// builtins by construction; the check still walks them so a hand-built patch can never leak
+    /// a compiler-only type through the const channel.
+    public static void checkConstantFacts(@NotNull FrontendAstSideTable<Evaluation> constantFacts) {
+        for (var evaluation : constantFacts.values()) {
+            if (evaluation instanceof Evaluation.Resolved resolved) {
+                checkNoCompilerOnlyLeak(resolved.value().type(), "constantFacts() value");
+            }
+        }
+    }
+
+    public static void checkConstTypeUpdates(@NotNull List<FrontendConstTypeUpdate> updates) {
+        for (var update : updates) {
+            checkNoCompilerOnlyLeak(update.type(), "constantTypeUpdates() type for '" + update.name() + "'");
+        }
     }
 
     public static void checkSymbolBindings(@NotNull FrontendAstSideTable<FrontendBinding> bindings) {

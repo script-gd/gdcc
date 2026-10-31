@@ -9,6 +9,7 @@ import org.jetbrains.annotations.*;
 import dev.superice.gdparser.frontend.ast.*;
 import gd.script.gdcc.frontend.diagnostic.*;
 import gd.script.gdcc.frontend.lowering.ForLoweringContractRegistry;
+import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.*;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
@@ -96,6 +97,7 @@ public class FrontendCompileCheckAnalyzer {
                     analysisData.forIterationPlans(),
                     analysisData.matchPlans(),
                     analysisData.lambdaPlans(),
+                    analysisData.constantFacts(),
                     analysisData.coroutineFunctions(),
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
@@ -232,6 +234,7 @@ public class FrontendCompileCheckAnalyzer {
         private final @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans;
         private final @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans;
         private final @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans;
+        private final @NotNull FrontendAstSideTable<Evaluation> constantFacts;
         private final @NotNull Set<LirFunctionDef> coroutineFunctions;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
@@ -263,6 +266,7 @@ public class FrontendCompileCheckAnalyzer {
                 @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans,
                 @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans,
                 @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans,
+                @NotNull FrontendAstSideTable<Evaluation> constantFacts,
                 @NotNull Set<LirFunctionDef> coroutineFunctions,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
@@ -280,6 +284,7 @@ public class FrontendCompileCheckAnalyzer {
             this.forIterationPlans = Objects.requireNonNull(forIterationPlans, "forIterationPlans must not be null");
             this.matchPlans = Objects.requireNonNull(matchPlans, "matchPlans must not be null");
             this.lambdaPlans = Objects.requireNonNull(lambdaPlans, "lambdaPlans must not be null");
+            this.constantFacts = Objects.requireNonNull(constantFacts, "constantFacts must not be null");
             this.coroutineFunctions = Objects.requireNonNull(coroutineFunctions, "coroutineFunctions must not be null");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
             astWalker = new ASTWalker(this);
@@ -406,11 +411,17 @@ public class FrontendCompileCheckAnalyzer {
                 @NotNull VariableDeclaration variableDeclaration
         ) {
             if (supportedExecutableBlockDepth > 0) {
-                if (variableDeclaration.kind() != DeclarationKind.VAR) {
+                if (variableDeclaration.kind() != DeclarationKind.VAR
+                        && variableDeclaration.kind() != DeclarationKind.CONST) {
                     return FrontendASTTraversalDirective.SKIP_CHILDREN;
                 }
                 markCompileSurfaceNode(variableDeclaration);
-                if (variableDeclaration.value() != null) {
+                // Only `var` initializers join the runtime expression surface: a `const`
+                // initializer is compile-time data (its facts live in `constantFacts`), so the
+                // gate checks the declaration row itself rather than re-walking dead expression
+                // nodes.
+                if (variableDeclaration.kind() == DeclarationKind.VAR
+                        && variableDeclaration.value() != null) {
                     walkExpression(variableDeclaration.value());
                 }
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
@@ -757,6 +768,56 @@ public class FrontendCompileCheckAnalyzer {
             scanBareValueReferenceCompileBlocks();
             scanSuperPositionCompileBlocks();
             scanSlotTypeCompileBlocks();
+            scanConstResolutionCompileBlocks();
+        }
+
+        /// Every reachable local `const` must carry a `Resolved` fact whose type matches the
+        /// exported slot type. A rejected fact always pairs with an upstream error, so the gate
+        /// reports one compile blocker per failed declaration; a fact missing entirely means the
+        /// const-resolution owner never ran — an invariant break, not a recoverable block.
+        private void scanConstResolutionCompileBlocks() {
+            for (var compileSurfaceNode : compileSurfaceNodes) {
+                if (!(compileSurfaceNode instanceof VariableDeclaration variableDeclaration)
+                        || variableDeclaration.kind() != DeclarationKind.CONST) {
+                    continue;
+                }
+                var fact = constantFacts.get(variableDeclaration);
+                if (fact instanceof Evaluation.Resolved resolved) {
+                    if (scopesByAst.get(variableDeclaration) instanceof BlockScope blockScope) {
+                        var binding = blockScope.resolveValueHere(variableDeclaration.name().trim());
+                        if (binding == null
+                                || binding.declaration() != variableDeclaration
+                                || !FrontendAnalysisData.sameType(binding.type(), resolved.value().type())) {
+                            throw new IllegalStateException(
+                                    "Local constant '" + variableDeclaration.name().trim()
+                                            + "' has a resolved fact but no matching constant slot type"
+                            );
+                        }
+                    }
+                    continue;
+                }
+                var rejectionReason = fact instanceof Evaluation.Rejected rejected
+                        ? rejected.reason()
+                        : null;
+                var coveringDiagnostic = findPublishedDiagnosticAt(
+                        variableDeclaration,
+                        diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                );
+                if (rejectionReason == null && coveringDiagnostic == null) {
+                    throw new IllegalStateException(
+                            "Local constant '" + variableDeclaration.name().trim()
+                                    + "' reached compile surface with no constant fact and no diagnostic"
+                    );
+                }
+                reportCompileBlock(
+                        variableDeclaration,
+                        "Local constant '" + variableDeclaration.name().trim()
+                                + "' is missing a resolved constant fact in compile mode: "
+                                + (rejectionReason != null
+                                ? rejectionReason
+                                : coveringDiagnostic.message())
+                );
+            }
         }
 
         /// Any blocked/deferred expression type that still sits on compile surface must stop compilation.

@@ -21,6 +21,7 @@ import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.util.StringUtil;
+import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.frontend.constant.GdScriptEvaluatedConstant;
 import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
@@ -39,6 +40,7 @@ import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.PreloadExpression;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -182,6 +184,16 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                     // the shared literal/component-construction path — never a runtime load.
                     if (binding.declarationSite() instanceof GdScriptEvaluatedConstant evaluatedConstant) {
                         session.materializeConstantValue(block, evaluatedConstant.value(), resultSlotId);
+                        return block;
+                    }
+                    // Block-local `const` bindings carry their `VariableDeclaration` as the
+                    // declaration site; the frozen value lives in `constantFacts` keyed by that
+                    // declaration and materializes through the same path. A missing or rejected
+                    // fact cannot reach lowering — the compile gate has already failed the body.
+                    if (binding.declarationSite() instanceof VariableDeclaration variableDeclaration
+                            && session.constantFact(variableDeclaration)
+                                    instanceof Evaluation.Resolved resolved) {
+                        session.materializeConstantValue(block, resolved.value(), resultSlotId);
                         return block;
                     }
                     throw session.unsupportedSequenceItem(

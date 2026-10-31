@@ -47,6 +47,10 @@ public record FrontendBodyLocalDeclaration(
         PATTERN_BIND,
         /// Ordinary `var` published into a supported body inventory after any leading iterator or
         /// pattern-bind prefix.
-        ORDINARY_VAR
+        ORDINARY_VAR,
+        /// Ordinary `const` published into a supported body inventory after any leading iterator or
+        /// pattern-bind prefix. The entry is structural only: its frozen value and exact slot type
+        /// are published later by the `CONST_RESOLUTION` owner, never by this inventory.
+        ORDINARY_CONST
     }
 }

@@ -14,6 +14,7 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
+import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
@@ -507,6 +508,140 @@ class FrontendConstLoweringTest {
 
     // ------------------------------------------------------------------
     // Harness
+    /// A block-local const materializes exactly like a class const at the use site — one literal,
+    /// and no local slot is ever declared or loaded for the constant itself.
+    @Test
+    void localConstReferenceLowersToLiteralWithoutLocalSlot() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_local_const.gd",
+                """
+                        class_name BodyInsnLocalConst
+                        extends RefCounted
+                        
+                        func get() -> int:
+                            const C = 7
+                            return C
+                        """,
+                Map.of("BodyInsnLocalConst", "RuntimeBodyInsnLocalConst")
+        );
+        var getContext = requireContext(prepared, "RuntimeBodyInsnLocalConst", "get");
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = getContext.targetFunction();
+        var literalInsn = requireOnlyInstruction(function, LiteralIntInsn.class);
+        var returnInsn = requireOnlyReturnInsn(function);
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(7L, literalInsn.value()),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId()),
+                // A `var` declaration emits an AssignInsn into its source-local slot; the const
+                // declaration must emit nothing — its only trace is the use-site literal.
+                () -> assertTrue(
+                        allInstructions(function).stream()
+                                .noneMatch(AssignInsn.class::isInstance),
+                        () -> "const declaration must not create a mutable slot write: "
+                                + allInstructions(function))
+        );
+    }
+
+    /// A block-scoped const used inside its own block materializes at each read; the function
+    /// sees no mutable slot for the constant.
+    @Test
+    void nestedBlockLocalConstMaterializesInsideItsBlock() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_nested_local_const.gd",
+                """
+                        class_name BodyInsnNestedLocalConst
+                        extends RefCounted
+                        
+                        func get(c: bool) -> int:
+                            if c:
+                                const K = 3
+                                return K
+                            return 0
+                        """,
+                Map.of("BodyInsnNestedLocalConst", "RuntimeBodyInsnNestedLocalConst")
+        );
+        var getContext = requireContext(prepared, "RuntimeBodyInsnNestedLocalConst", "get");
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = getContext.targetFunction();
+        var intLiterals = allInstructions(function).stream()
+                .filter(LiteralIntInsn.class::isInstance)
+                .map(LiteralIntInsn.class::cast)
+                .toList();
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(intLiterals.stream().anyMatch(literal -> literal.value() == 3L),
+                        "the block-scoped const must materialize at its read site")
+        );
+    }
+
+    /// A lambda reads an outer local const without capturing it — the frozen literal materializes
+    /// inside the lambda body instead of flowing through the capture table.
+    @Test
+    void lambdaReadsOuterLocalConstWithoutCapture() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_lambda_local_const.gd",
+                """
+                        class_name BodyInsnLambdaLocalConst
+                        extends RefCounted
+                        
+                        func get():
+                            const C = 9
+                            var f = func() -> int:
+                                return C
+                            return f
+                        """,
+                Map.of("BodyInsnLambdaLocalConst", "RuntimeBodyInsnLambdaLocalConst")
+        );
+        var lambdaContext = prepared.context().requireFunctionLoweringContexts().stream()
+                .filter(context -> context.kind() == FunctionLoweringContext.Kind.LAMBDA_BODY)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing lambda lowering context"));
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var literalInsn = requireOnlyInstruction(lambdaContext.targetFunction(), LiteralIntInsn.class);
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(9L, literalInsn.value()),
+                () -> assertTrue(
+                        allInstructions(lambdaContext.targetFunction()).stream()
+                                .noneMatch(instruction -> instruction instanceof LoadStaticInsn),
+                        "outer local const must not become a runtime load inside the lambda")
+        );
+    }
+
+    /// `n` inside the lambda binds the class property because the later `const n` is not yet
+    /// source-visible; the planner must emit the `self` capture or lowering fails with a missing
+    /// receiver slot instead of a diagnostic.
+    @Test
+    void lambdaCapturesSelfWhenLaterLocalConstShadowsProperty() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_lambda_late_const.gd",
+                """
+                        class_name BodyInsnLambdaLateConst
+                        extends RefCounted
+                        
+                        var n: int = 7
+                        
+                        func make():
+                            var cb = func() -> int:
+                                return n
+                            const n = 2
+                            return cb
+                        """,
+                Map.of("BodyInsnLambdaLateConst", "RuntimeBodyInsnLambdaLateConst")
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        assertFalse(prepared.diagnostics().hasErrors());
+    }
+
     // ------------------------------------------------------------------
 
     private static @NotNull PreparedContext prepareContext(

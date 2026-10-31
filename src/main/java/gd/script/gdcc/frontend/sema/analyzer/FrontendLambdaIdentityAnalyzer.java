@@ -7,6 +7,7 @@ import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AwaitExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
+import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
@@ -98,6 +99,13 @@ public final class FrontendLambdaIdentityAnalyzer {
                 // Outside a supported executable body the lambda is never recorded and never
                 // gets a plan: no identity entry, and no descent (nothing inside is recorded
                 // either).
+                return;
+            }
+            // A lambda inside any `const` initializer is rejected before it can be recorded, so
+            // the subtree is skipped to keep ordinals aligned with the recorded surface — the
+            // same boundary `collectLambdaContexts` enforces on the lowering side.
+            if (node instanceof VariableDeclaration variableDeclaration
+                    && variableDeclaration.kind() == DeclarationKind.CONST) {
                 return;
             }
             walkChildren(node);

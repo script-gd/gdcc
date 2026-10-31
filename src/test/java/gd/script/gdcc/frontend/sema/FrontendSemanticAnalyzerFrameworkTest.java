@@ -8,6 +8,8 @@ import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.constant.GdConstantValue;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendCompileCheckAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendAnnotationUsageAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendLoopControlFlowAnalyzer;
@@ -1062,7 +1064,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void defaultInterfaceBodyPipelineSupportsForAndMatchWhileConstStayFailClosed() throws Exception {
+    void defaultInterfaceBodyPipelineSupportsForAndMatchAndConst() throws Exception {
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", "segmented_unsupported_equivalence.gd"), """
                 class_name SegmentedUnsupportedEquivalence
@@ -1094,12 +1096,18 @@ class FrontendSemanticAnalyzerFrameworkTest {
         );
         var hiddenUseSite = assertInstanceOf(IdentifierExpression.class, hiddenLocal.value());
 
+        // The const stays out of the `var` slot-type table — its contract lives in the resolved
+        // fact and the scope binding's exact type.
         assertNull(interfaceBody.slotTypes().get(blockedConst));
+        assertEquals(
+                new Evaluation.Resolved(new GdConstantValue.IntValue(1L)),
+                interfaceBody.constantFacts().get(blockedConst)
+        );
         assertEquals(GdVariantType.VARIANT, interfaceBody.slotTypes().get(hiddenLocal));
         assertEquals(FrontendBindingKind.LOCAL_VAR, interfaceBody.symbolBindings().get(hiddenUseSite).kind());
         var matchStatement = findNode(pingFunction.body(), MatchStatement.class, _ -> true);
         assertNotNull(interfaceBody.matchPlans().get(matchStatement));
-        assertFalse(diagnosticsByCategory(interfaceBody.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
+        assertTrue(diagnosticsByCategory(interfaceBody.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
         assertTrue(interfaceBody.diagnostics().asList().stream().noneMatch(diagnostic ->
                 diagnostic.category().equals("sema.unsupported_variable_inventory_subtree")
                         && diagnostic.range().equals(FrontendRange.fromAstRange(

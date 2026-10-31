@@ -823,9 +823,6 @@ public final class FrontendAnalysisInspectionTool {
                     case dev.superice.gdparser.frontend.ast.ForStatement _ -> {
                         return true;
                     }
-                    case VariableDeclaration variableDeclaration when variableDeclaration.kind() == dev.superice.gdparser.frontend.ast.DeclarationKind.CONST -> {
-                        return true;
-                    }
                     default -> {
                     }
                 }

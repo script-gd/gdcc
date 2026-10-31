@@ -480,8 +480,10 @@ class FrontendVisibleValueResolverTest {
         assertNull(localResult.deferredBoundary());
     }
 
+    /// A name used inside a local const initializer resolves through the ordinary executable-body
+    /// domain — the const subtree is no longer sealed; the evaluator enforces the whitelist later.
     @Test
-    void resolveSealsBlockLocalConstInitializerAsDeferredUnsupported() throws Exception {
+    void resolveFindsParameterInsideBlockLocalConstInitializer() throws Exception {
         var analyzedInput = analyzedInput("block_local_const_deferred.gd", """
                 class_name BlockLocalConstDeferred
                 extends Node
@@ -499,18 +501,17 @@ class FrontendVisibleValueResolverTest {
                 FrontendVisibleValueDomain.EXECUTABLE_BODY
         ));
 
-        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
-        assertNull(result.visibleValue());
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, result.status());
+        assertNotNull(result.visibleValue());
+        assertEquals(ScopeValueKind.PARAMETER, result.visibleValue().kind());
         assertTrue(result.filteredHits().isEmpty());
-        assertEquals(FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE, result.deferredBoundary().domain());
-        assertEquals(
-                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
-                result.deferredBoundary().reason()
-        );
+        assertNull(result.deferredBoundary());
     }
 
+    /// A visible local `const` claims its name over outer bindings: the use site resolves the
+    /// same-block CONSTANT binding — never the class property of the same name.
     @Test
-    void resolveDoesNotFallBackPastVisibleBlockLocalConst() throws Exception {
+    void resolveFindsVisibleBlockLocalConstWithoutFallingBack() throws Exception {
         var analyzedInput = analyzedInput("visible_block_local_const_deferred.gd", """
                 class_name VisibleBlockLocalConstDeferred
                 extends Node
@@ -523,6 +524,11 @@ class FrontendVisibleValueResolverTest {
                 """);
         var pingFunction = findFunction(analyzedInput.unit().ast(), "ping");
         var useSite = findIdentifierExpression(pingFunction.body(), "answer");
+        var answerConst = findNode(
+                pingFunction.body(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("answer")
+        );
         var resolver = new FrontendVisibleValueResolver(analyzedInput.analysisData());
 
         var result = resolver.resolve(new FrontendVisibleValueResolveRequest(
@@ -531,14 +537,12 @@ class FrontendVisibleValueResolverTest {
                 FrontendVisibleValueDomain.EXECUTABLE_BODY
         ));
 
-        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
-        assertNull(result.visibleValue());
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, result.status());
+        assertNotNull(result.visibleValue());
+        assertEquals(ScopeValueKind.CONSTANT, result.visibleValue().kind());
+        assertSame(answerConst, result.visibleValue().declaration());
         assertTrue(result.filteredHits().isEmpty());
-        assertEquals(FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE, result.deferredBoundary().domain());
-        assertEquals(
-                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
-                result.deferredBoundary().reason()
-        );
+        assertNull(result.deferredBoundary());
     }
 
     @Test

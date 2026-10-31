@@ -181,11 +181,13 @@ class FrontendLambdaCapturePlannerTest {
         assertNull(FrontendLambdaCapturePlanner.transferredCapture(
                 graph.midLambdaScope,
                 graph.midLambdaBody,
-                innerPlan.captures().getFirst()
+                innerPlan.captures().getFirst(),
+                emptyLambda()
         ));
         assertTrue(FrontendLambdaCapturePlanner.transferredCapturesAlongParents(
                 List.of(new FrontendLambdaCapturePlanner.ParentLambda(graph.midLambdaScope, graph.midLambdaBody)),
-                innerPlan.captures().getFirst()
+                innerPlan.captures().getFirst(),
+                emptyLambda()
         ).isEmpty());
     }
 
@@ -203,7 +205,8 @@ class FrontendLambdaCapturePlannerTest {
 
         var transferred = FrontendLambdaCapturePlanner.transferredCapturesAlongParents(
                 List.of(new FrontendLambdaCapturePlanner.ParentLambda(graph.midLambdaScope, graph.midLambdaBody)),
-                innerPlan.captures().getFirst()
+                innerPlan.captures().getFirst(),
+                emptyLambda()
         );
         assertEquals(1, transferred.size());
         assertEquals("x", transferred.getFirst().name());
@@ -295,7 +298,9 @@ class FrontendLambdaCapturePlannerTest {
             @NotNull String name,
             @NotNull BlockScope scope
     ) {
-        return new FrontendLambdaCapturePlanner.IdentifierUse(name, scope);
+        // Hand-built graphs carry opaque declaration objects, so the use-site node never engages
+        // the VariableDeclaration order filter; a lambda node only supplies a valid range.
+        return new FrontendLambdaCapturePlanner.IdentifierUse(name, scope, emptyLambda());
     }
 
     private static @NotNull LambdaExpression emptyLambda() {

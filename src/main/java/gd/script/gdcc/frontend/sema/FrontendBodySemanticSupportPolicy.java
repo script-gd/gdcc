@@ -28,7 +28,6 @@ public enum FrontendBodySemanticSupportPolicy {
     EXECUTABLE_BODY(true, true, FrontendVisibleValueDomain.EXECUTABLE_BODY),
     FOR_HEADER(false, false, FrontendVisibleValueDomain.EXECUTABLE_BODY),
     LAMBDA_SUBTREE(false, false, FrontendVisibleValueDomain.LAMBDA_SUBTREE),
-    BLOCK_LOCAL_CONST_SUBTREE(false, false, FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE),
     PARAMETER_DEFAULT(false, false, FrontendVisibleValueDomain.PARAMETER_DEFAULT),
     UNKNOWN_OR_SKIPPED_SUBTREE(false, false, FrontendVisibleValueDomain.UNKNOWN_OR_SKIPPED_SUBTREE);
 

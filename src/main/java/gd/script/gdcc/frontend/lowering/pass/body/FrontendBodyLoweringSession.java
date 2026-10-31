@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.lowering.pass.body;
 
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
+import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.frontend.constant.GdConstantValue;
 import gd.script.gdcc.frontend.lowering.FrontendBodyLoweringSupport;
 import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
@@ -1702,6 +1703,13 @@ public final class FrontendBodyLoweringSession {
     /// both construction results and plain assigns are non-ref contracts. Consumers that need a
     /// Variant or ref boundary use the existing assign / pack / unpack paths afterwards; the
     /// temp slots produced here are materialization scratch, not const declaration storage.
+    /// The frozen constant fact published for `declaration`, or `null` when `CONST_RESOLUTION`
+    /// never produced one. Lowering only consumes `Resolved` facts — the compile gate rejects a
+    /// body whose constants failed evaluation long before lowering runs.
+    public @Nullable Evaluation constantFact(@NotNull VariableDeclaration declaration) {
+        return analysisData.constantFacts().get(declaration);
+    }
+
     void materializeConstantValue(
             @NotNull LirBasicBlock block,
             @NotNull GdConstantValue value,

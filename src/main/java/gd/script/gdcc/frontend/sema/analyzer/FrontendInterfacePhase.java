@@ -35,6 +35,7 @@ import gd.script.gdcc.frontend.sema.FrontendSuiteEntryRoots;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalBaseline;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.Scope;
+import gd.script.gdcc.scope.ScopeValueKind;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -256,6 +257,7 @@ public class FrontendInterfacePhase {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             if (variableDeclaration.kind() == DeclarationKind.CONST) {
+                recordLocalConstDeclaration(variableDeclaration);
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             if (variableDeclaration.kind() == DeclarationKind.VAR) {
@@ -353,6 +355,32 @@ public class FrontendInterfacePhase {
                     variableDeclaration,
                     binding,
                     FrontendBodyLocalDeclaration.Kind.ORDINARY_VAR,
+                    currentBodyDeclarations.size()
+            ));
+            typedBaselineBuilder.put(variableDeclaration, binding.type());
+        }
+
+        /// Indexes a block-local `const` declaration the same way `var` is indexed, except only
+        /// surviving bindings enter the index: a `CONSTANT` binding carrying a different declaration
+        /// identity means this statement lost its name conflict, so no row is published for it. The
+        /// initializer is never walked — const initializer subtrees stay outside declaration
+        /// indexing and nested-lambda recording.
+        private void recordLocalConstDeclaration(@NotNull VariableDeclaration variableDeclaration) {
+            var scope = scopesByAst.get(variableDeclaration);
+            if (!(scope instanceof BlockScope blockScope)
+                    || !FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind())) {
+                return;
+            }
+            var binding = blockScope.resolveValueHere(variableDeclaration.name().trim());
+            if (binding == null
+                    || binding.kind() != ScopeValueKind.CONSTANT
+                    || binding.declaration() != variableDeclaration) {
+                return;
+            }
+            currentBodyDeclarations.add(new FrontendBodyLocalDeclaration(
+                    variableDeclaration,
+                    binding,
+                    FrontendBodyLocalDeclaration.Kind.ORDINARY_CONST,
                     currentBodyDeclarations.size()
             ));
             typedBaselineBuilder.put(variableDeclaration, binding.type());

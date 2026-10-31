@@ -101,11 +101,15 @@ public class FrontendStatementResolver {
         }
     }
 
+    /// `var`/`const` declarations share the owner pipeline; the const owner hook runs inside
+    /// `runSupportedRoot` between expr-type and var-type-post. Every other declaration kind stays
+    /// a sealed unsupported root so later stages cannot re-enter it.
     private void resolveVariableDeclaration(
             @NotNull FrontendSuiteContext context,
             @NotNull VariableDeclaration variableDeclaration
     ) {
-        if (variableDeclaration.kind() == DeclarationKind.VAR) {
+        if (variableDeclaration.kind() == DeclarationKind.VAR
+                || variableDeclaration.kind() == DeclarationKind.CONST) {
             resolveSupportedRoot(context, variableDeclaration);
             return;
         }
@@ -249,6 +253,7 @@ public class FrontendStatementResolver {
         ownerProcedures.runLocalTypeStabilization(context, root);
         ownerProcedures.runChainBinding(context, root);
         ownerProcedures.runExprType(context, root);
+        ownerProcedures.runConstResolution(context, root);
         ownerProcedures.runVarTypePost(context, root);
     }
 
@@ -280,6 +285,12 @@ public class FrontendStatementResolver {
         }
 
         default void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+        }
+
+        /// Compile-time evaluation for block-local `const` declarations, ordered between
+        /// expr-type and var-type-post so the initializer is fully typed before evaluation while
+        /// the constant slot never enters the `var` slot-type path.
+        default void runConstResolution(@NotNull FrontendSuiteContext context, @NotNull Node root) {
         }
 
         default void runForIterationResolution(@NotNull FrontendSuiteContext context, @NotNull ForStatement forStatement) {

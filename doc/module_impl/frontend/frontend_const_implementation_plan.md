@@ -4,7 +4,7 @@
 > 文中除「§2 核实的代码基线」与「§13 执行记录」外均为建议方案，
 > 建议与事实严格分开，不以本文档内容回写任何事实源文档。
 > §12 的 A1 已由用户确认 earlier-only，不再是待确认项。
-> 阶段状态：P0–P4 已实施（见 §10 各阶段条目与 §13 记录）；P5–P7 未实施。
+> 阶段状态：P0–P5 已实施（见 §10 各阶段条目与 §13 记录）；P6–P7 未实施。
 
 - 适用范围（计划触及，均为相对仓库根路径）：
   - `src/main/java/gd/script/gdcc/frontend/constant/**`（新增值族与求值事实模型）
@@ -1077,7 +1077,7 @@
         锚定（父 `var hp` + 子 `const hp = MISSING` → `c.hp` 仍给出
         PROPERTY 候选）。**决策已确认**：mask 域 = 常量可见域（裸/限定），
         不扩至实例成员面——见 §6 mask 边界条目。
-- P5 local 全链路
+- P5 local 全链路（已实施，2026-10-31，四轮 review-expert-c 后 APPROVE）
   - 目标：§7.1–§7.7（inventory、`ORDINARY_CONST`、index/certificate、
     `CONST_RESOLUTION` owner、overlay、invalid masking、lambda const view、CFG、
     赋值身份、island / match / 工具链）；suite const `LookupContext` 接同一
@@ -1102,6 +1102,124 @@
   - 退出门槛：compile gate 要求所有可达 const `Resolved` 且类型一致；const 声明
     无 mutable local 槽；nested suite / lambda 读到正确值且不捕获 self；赋值
     身份经 use-site binding 固定（`n` 验收例通过）。
+  - 实施进度：
+    - §7.1 inventory / index / certificate（已实施）：`FrontendVariableAnalyzer`
+      新增 `bindLocalConst`——与 `var` 相同的 same-block / same-callable
+      冲突规则，`defineConstant` 产出 `CONSTANT`+readonly 绑定；baseline 为
+      `Variant` 或严格校验后的显式标注类型（
+      `FrontendConstDeclaredTypeSupport.checkDeclaredType`：无标注→`Variant`
+      baseline、Resolved→标注类型、Rejected→error 诊断 + `constantFacts`
+      Rejected + `Variant` baseline，不做 warning+fallback）；
+      `FrontendInterfacePhase.recordLocalConstDeclaration` 以
+      `ORDINARY_CONST` 入索引且只收 surviving 绑定（`binding.declaration()
+      == declaration`），不走 initializer 子树；
+      `FrontendBodyLocalDeclaration.Kind` 增 `ORDINARY_CONST`；
+      `FrontendBodyStructuralCompleteness` 的 declaration 校验把
+      ORDINARY_CONST 与 ORDINARY_VAR 同等对待，`requireScopeInventoryPublished`
+      反向检查扩到 `ScopeValueKind.CONSTANT`（decl 必须 VariableDeclaration），
+      match 前缀规则下 ORDINARY_CONST 视同普通 local。
+    - §7.2/§7.4 pipeline 骨架 + patch 基础设施（已实施）：
+      `FrontendSemanticStage.CONST_RESOLUTION`（`EXPR_TYPE` 之后）；
+      `FrontendStatementResolver` 把 `const` 声明送入 supported root 并在
+      expr-type 与 var-type-post 之间调 `runConstResolution` hook（接口带
+      default 空实现）；`FrontendVisibleValueResolver` 删除 block-local const
+      deferred 边界（classifyBoundaryEdge / detect* 三件套）、
+      `isCallableLocalKind`/`checkPublishedLocalInventory` 覆盖 `CONSTANT`；
+      `FrontendConstTypeUpdate` / `FrontendConstResolutionPatch` /
+      `FrontendConstFactView` 新类型；`FrontendOwnerPatch` permits + 两个
+      accessor 默认实现；`FrontendPatchTransaction` 序插入
+      `CONST_RESOLUTION`；`FrontendTypedLexicalEnvironment` 增
+      `constantFact`（pending→committed→stable→parent→constFactView）、
+      `putConstantFact`、`addConstTypeUpdate` + 校验（CONSTANT kind +
+      声明身份 + Variant-baseline/幂等）、`constFactView` 仅 parentless
+      env 生效；`FrontendAnalysisData` `applyPatch` 接入 constFacts 合并
+      （`sameEvaluation` 冲突检测）+ `applyConstTypeUpdate` 唯一导出入口
+      + `refreshPublishedBindingPayloads` 共享载荷刷新；
+      `BlockScope.resetConstantType`；`FrontendPublishedFactTypeGuard`
+      `checkConstantFacts`/`checkConstTypeUpdates` 接入 `checkOwnerPatch`。
+    - §7.3 求值与绑定集成（已实施）：`FrontendLocalConstLookupContext`（suite
+      `LookupContext`：local→block→callable→class 祖先→globals，共享
+      `decodeEngineMemberConstant`）；`FrontendBodyOwnerProcedures.runConstResolution`
+      按声明序求值、`putConstantFact` Resolved/Rejected、`putConstTypeUpdate`
+      写 exact 类型；`isRejectedConstantBinding` 改为 overlay-aware（pending/
+      committed/factView 链）使 FOUND_BLOCKED 与 FOUND_ALLOWED 两侧都能
+      毒化；`FrontendTypedLexicalEnvironment.effectiveScopeValue` 扩展
+      CONSTANT overlay（constSlotType），绑定在后续语句即见 exact 类型而
+      scope 导出时才永久 reset——`var x := C` 推断 int、use-site LIR 槽类型
+      与物化一致；TOP_BINDING/CHAIN 与 identity/capture 收集跳过 const
+      initializer 子树（lambda 在 const 初始化器内报
+      `sema.unsupported_expression_route`）。
+    - §7.5 只读写回覆盖（已实施）：`FrontendAssignmentSemanticSupport`
+      `resolveIdentifierTarget` 改用已发布 use-site binding 为首路径
+      （源码序过滤+mask 已内嵌于 binding——`n = 1`/`n += 1` 在 `const n`
+      之前合法写 property、之后命中 `scopeValue.constant()` 拒绝）；
+      新增 `frozenConstantTargetIssue`/`frozenConstantHeadIssue`——head
+      identifier 常量（`V.x`/`V[0]`/`V.position.x`/`CV.*`）与非终末
+      `CONSTANT` 成员步（`Other.C.x`、`Vector3.ONE.x`）统一拒绝
+      「frozen … cannot be assigned through a member or element write」；
+      enum group（`GdScriptEnumGroup`/`EnumDeclaration`）保持容器语义
+      不受新增保护影响。
+    - §7.6 参数默认 island（已实施）：`parameterDefaultIslandLocalHit`
+      同时识别 `LOCAL`/`CONSTANT` 顶层 body local；resolver 的
+      `isCallableLocalKind` 含 CONSTANT 使 PARAMETER_DEFAULT 域在
+      BlockScope 层即 blocked；class const 经循环外层正常放行——
+      `func f(a = X)` 读外层 class `X = 9` 而不受 body 同名 const 干扰。
+    - §7.7 工具链与 match（已实施）：`FrontendAnalysisInspectionTool`
+      移除 const 祖先 hardcode（initializer 按 published facts 展示）；
+      `FrontendSnapshotQueryService` `isBodyLocalDeclaration`——local
+      `const` 声明符号保持 `DocSymbolKind.CONSTANT` 但 `ownerName = null`
+      （BlockScope 归属不再误报 class 名）；`FrontendMatchSupport.
+      isConstantPatternOperand` 对 local const（`VariableDeclaration`
+      declSite）要求 `constantFacts` `Resolved`，Rejected 退回 runtime
+      比较而非凭 `binding.kind == CONSTANT` 误当常量 key。
+    - §7.2 CFG/lowering（已实施）：`FrontendCfgGraphBuilder` local const
+      声明降级为 `SourceAnchorItem`（只留行号锚点、无 `LocalDeclarationItem`
+      无 mutable 槽）；`collectLambdaContexts` 跳过 const initializer
+      子树；lambda body const 走同一 supported-root 管线；use-site 经
+      `GdScriptEvaluatedConstant` → `materializeConstantValue` 物化
+      （测试验证 LiteralInsn-only、无 AssignInsn/LoadStaticInsn）。
+    - 测试（已实施）：`FrontendLocalConstResolutionTest` 30 用例——
+      scalar/typed/inferred、源码序、if/for/while/match/elif 嵌套、
+      lambda 读 outer const（无 capture、不多捕 self、factView 链）、
+      失败初始化/未知标识符/不支持表达式/lambda 初始化器/依赖失效、
+      只读赋值、`n` 验收例、frozen-root 成员与下标写、参数默认 island、
+      match const key 正反、`sema.compile_check` blocker、名称遮蔽
+      不回落；`FrontendConstLoweringTest` +3 local const 物化用例；
+      既有 resolver/analyzer/compile-check/match/assignment 测试按新
+      契约更新且全量受影响面（~380 用例）零回归。
+    - 评审记录（review-expert-c）：首轮 1 high + 5 medium 全确认修复；
+      第二轮确认前五项并指出抑制过宽（initializer 级会吞独立 expr 失
+      败），改为逐表达式判定；第三轮指出同 pass 诊断污染迭代顺序，改
+      为循环前快照；第四轮 `APPROVE`。修复明细：
+      - 捕获计划的裸 `resolveValue` 越过源码序——lambda 之后的 `const`/
+        `var` 会遮蔽属性命中导致漏捕 `self`、lowering 崩 `requireSelfSlot`。
+        `IdentifierUse` 增加 `useSite`，`FrontendLambdaCapturePlanner.
+        firstVisibleValueHit` 按层应用 `VariableDeclaration` 声明序过滤，
+        `captureFromUse`/`transferredCapture(AlongParents)`/`usesImplicitInstanceMember`
+        统一走该过滤（内层 lambda 节点作转移锚点）；`n`-遮蔽用例 +
+        `var`-遮蔽变体 + lowering 端到端回归。
+      - `FrontendLocalConstLookupContext.resolveMember` 对 `ClassDef` 只探
+        直接层——`Child.C`（`C` 在 `Base`）被误拒。新增
+        `FrontendClassConstantLookup.probeInHierarchy` 共享分层探针
+        （mask → usable → 非常量成员遮蔽终止），与普通链同语义。
+      - `frozenConstantTargetIssue` 误判 `V.normalized().x`——值产出调用
+        切断写回溯源，head/mid 常量检查只作用于最后一个 `suggestedCall`
+        步之后的区段；方法返回值成员写回归。
+      - `upstreamErrorInside` 只比字节范围未比文件——跨文件同段错误会吞掉
+        本文件常量诊断；改为先按 `FrontendDiagnostic.sourcePathText` 归一
+        过滤，双文件模块回归。
+      - `isBodyLocalDeclaration` 经 `nearestScope` 拿到 `ReadOnlyScope`
+        包装使 `instanceof BlockScope` 恒 false——改直查 `scopesByAst`；
+        `documentationAt` 验证 local const `ownerName = null`、class const
+        保留类名归属。
+      - `const BAD = Missing + 1` 报 binding + expression_resolution ×2，
+        超出 §9「Missing 原始 binding error 一条」——`publishExpressionType`
+        增 `suppressUpstreamConsequenceDiagnostics`（仅 const 初始化器）；
+        经两轮复核细化为**逐表达式**抑制——子树内已有上游 error 的 entry
+        不再复述，独立 expr 失败（`(1+1.0)+Missing` 的混合操作数）照常上
+        报——且循环前快照 upstream 诊断集防止同 pass 内已发诊断干扰迭代
+        顺序（`(1+1.0)+1` 嵌套失败确定性双报）；`Missing` 恰一条、`NEXT`
+        依赖恰一条、独立失败各归其主验收用例落地。
 - P6 String 长度感知 + LIR 文本序列化 + consumer 集成（可与 P3 并行，端到端
   门槛依赖 P4/P5）
   - 目标：§8.3 全部（含 simple `StringOperand` / DOM XML-safe 转义与对称解析）；

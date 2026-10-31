@@ -155,7 +155,7 @@ public final class FrontendBodyStructuralCompleteness {
         }
 
         switch (indexedDeclaration.kind()) {
-            case ORDINARY_VAR -> {
+            case ORDINARY_VAR, ORDINARY_CONST -> {
                 if (!(declaration instanceof VariableDeclaration variableDeclaration)
                         || analysisData.scopesByAst().get(variableDeclaration) != expectedScope
                         || expectedScope.resolveValueHere(variableDeclaration.name().trim()) != binding) {
@@ -194,7 +194,7 @@ public final class FrontendBodyStructuralCompleteness {
             @NotNull BlockScope expectedScope
     ) {
         for (var value : expectedScope.localValues()) {
-            if (value.kind() != ScopeValueKind.LOCAL) {
+            if (value.kind() != ScopeValueKind.LOCAL && value.kind() != ScopeValueKind.CONSTANT) {
                 continue;
             }
             if (!(value.declaration() instanceof Node declarationNode)
@@ -255,7 +255,8 @@ public final class FrontendBodyStructuralCompleteness {
                 }
                 continue;
             }
-            if (declaration.kind() == FrontendBodyLocalDeclaration.Kind.ORDINARY_VAR) {
+            if (declaration.kind() == FrontendBodyLocalDeclaration.Kind.ORDINARY_VAR
+                    || declaration.kind() == FrontendBodyLocalDeclaration.Kind.ORDINARY_CONST) {
                 seenOrdinary = true;
                 continue;
             }
