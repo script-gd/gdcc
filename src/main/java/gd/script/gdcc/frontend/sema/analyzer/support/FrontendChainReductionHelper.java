@@ -15,6 +15,9 @@ import gd.script.gdcc.gdextension.ExtensionGlobalEnum;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.FunctionDef;
+import gd.script.gdcc.frontend.constant.GdScriptEvaluatedConstant;
+import gd.script.gdcc.frontend.scope.FrontendClassConstantLookup;
+import gd.script.gdcc.frontend.scope.FrontendRejectedClassConstant;
 import gd.script.gdcc.scope.GdScriptClassConstant;
 import gd.script.gdcc.scope.GdScriptEnumConstant;
 import gd.script.gdcc.scope.GdScriptEnumGroup;
@@ -53,6 +56,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.function.Function;
@@ -974,7 +978,14 @@ public final class FrontendChainReductionHelper {
             case ENGINE_CLASS ->
                     reduceEngineStaticLoad(stepIndex, step, incomingReceiver, request.classRegistry(), receiverTypeMeta);
             case GDCC_CLASS ->
-                    reduceGdccStaticLoad(stepIndex, step, incomingReceiver, request.classRegistry(), receiverTypeMeta);
+                    reduceGdccStaticLoad(
+                            stepIndex,
+                            step,
+                            incomingReceiver,
+                            request.classRegistry(),
+                            receiverTypeMeta,
+                            request.analysisData().rejectedClassConstants()
+                    );
         };
     }
 
@@ -1154,13 +1165,15 @@ public final class FrontendChainReductionHelper {
             @NotNull AttributePropertyStep step,
             @NotNull ReceiverState incomingReceiver,
             @NotNull ClassRegistry classRegistry,
-            @NotNull ScopeTypeMeta receiverTypeMeta
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> rejectedClassConstants
     ) {
         // Nearest-layer-wins walk over the inheritance chain: each layer probes static methods,
-        // then static properties, then script enum constants/groups, and the first hit publishes.
-        // The former whole-hierarchy-per-category order (all methods, then all properties) let a
-        // superclass member of an earlier category shadow a subclass member of a later one; the
-        // layered walk mirrors Godot's member shadowing and lets a subclass enum constant win.
+        // then static properties, then script constants (enum members/groups and evaluated class
+        // `const` alike), and the first hit publishes. The former whole-hierarchy-per-category
+        // order (all methods, then all properties) let a superclass member of an earlier category
+        // shadow a subclass member of a later one; the layered walk mirrors Godot's member
+        // shadowing and lets a subclass constant win.
         var visited = new HashSet<String>();
         for (var current = classRegistry.resolveClassDefFromTypeMeta(receiverTypeMeta);
                 current != null && visited.add(current.getName());
@@ -1181,24 +1194,43 @@ public final class FrontendChainReductionHelper {
                         staticProperty
                 );
             }
-            var enumConstant = findEnumConstantOnLayer(current, step.name());
-            if (enumConstant != null) {
-                // Members carry int and groups carry the generic Dictionary type; the outgoing
-                // receiver is therefore a plain instance value in both cases, so a group at the
-                // chain tail keeps Dictionary semantics for any suffix.
-                return resolvedStaticLoadTrace(
-                        stepIndex,
-                        step,
-                        incomingReceiver,
-                        FrontendBindingKind.CONSTANT,
-                        ScopeOwnerKind.GDCC,
-                        enumConstant.type(),
-                        enumConstant.declaration()
-                );
+            switch (FrontendClassConstantLookup.probe(current, step.name(), rejectedClassConstants)) {
+                case FrontendClassConstantLookup.ProbeResult.Usable usable -> {
+                    var constant = usable.constant();
+                    // Only constant-table declaration shapes the frontend publishes itself are
+                    // consumable here; anything else is ignored defensively instead of being
+                    // published as a constant.
+                    if (constant.declaration() instanceof GdScriptEnumConstant
+                            || constant.declaration() instanceof GdScriptEnumGroup
+                            || constant.declaration() instanceof GdScriptEvaluatedConstant) {
+                        // Members carry int and groups carry the generic Dictionary type; the
+                        // outgoing receiver is therefore a plain instance value in either case,
+                        // so a group at the chain tail keeps Dictionary semantics for any suffix.
+                        return resolvedStaticLoadTrace(
+                                stepIndex,
+                                step,
+                                incomingReceiver,
+                                FrontendBindingKind.CONSTANT,
+                                ScopeOwnerKind.GDCC,
+                                constant.type(),
+                                constant.declaration()
+                        );
+                    }
+                }
+                case FrontendClassConstantLookup.ProbeResult.TerminalBlocked blocked -> {
+                    return rejectedConstantLoadTrace(
+                            stepIndex,
+                            step,
+                            incomingReceiver,
+                            blocked.rejected()
+                    );
+                }
+                case FrontendClassConstantLookup.ProbeResult.Miss _ -> {
+                }
             }
             // A non-static member or signal with the same name on this layer is a terminal
             // shadowing hit: class-qualified access to it is invalid, and the walk must not
-            // leak through to an ancestor enum constant. This mirrors Godot's unified
+            // leak through to an ancestor constant. This mirrors Godot's unified
             // member-namespace shadowing and the value-side `resolveInheritedValueMember`
             // layering, and preserves the pre-existing UNSUPPORTED boundary for
             // class-qualified instance members.
@@ -1207,7 +1239,7 @@ public final class FrontendChainReductionHelper {
             }
         }
         var detailReason = "Static load route on GDCC class '" + receiverTypeMeta.displayName()
-                + "' resolved to neither a static method reference, a static property, nor a script enum constant; "
+                + "' resolved to neither a static method reference, a static property, nor a script constant; "
                 + "it is outside the current support boundary";
         return new StepTrace(
                 stepIndex,
@@ -1302,21 +1334,40 @@ public final class FrontendChainReductionHelper {
         return false;
     }
 
-    /// Single-layer script constant probe for the GDCC static-load walk. The table currently
-    /// carries only enum-shaped declarations (class `const` stays outside it by design), so any
-    /// other declaration shape is ignored defensively instead of being published as a constant.
-    private static @Nullable GdScriptClassConstant findEnumConstantOnLayer(
-            @NotNull ClassDef owner,
-            @NotNull String memberName
+    /// Terminal BLOCKED step for a name masked by a failed class `const`: the reference is
+    /// diagnosed once as "depends on an invalid constant" — the declaration-level root cause
+    /// stays with the skeleton diagnostic and is not restated here.
+    private static @NotNull StepTrace rejectedConstantLoadTrace(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull FrontendRejectedClassConstant rejected
     ) {
-        for (var constant : owner.getScriptConstants()) {
-            if (constant.name().equals(memberName)
-                    && (constant.declaration() instanceof GdScriptEnumConstant
-                            || constant.declaration() instanceof GdScriptEnumGroup)) {
-                return constant;
-            }
-        }
-        return null;
+        var detailReason = "Class constant '" + step.name()
+                + "' failed to evaluate at its declaration; the access depends on an invalid constant";
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.PROPERTY,
+                RouteKind.STATIC_LOAD,
+                incomingReceiver,
+                Status.BLOCKED,
+                ReceiverState.blockedFrom(incomingReceiver, detailReason),
+                null,
+                FrontendResolvedMember.blocked(
+                        step.name(),
+                        FrontendBindingKind.CONSTANT,
+                        FrontendReceiverKind.TYPE_META,
+                        ScopeOwnerKind.GDCC,
+                        incomingReceiver.receiverType(),
+                        GdVariantType.VARIANT,
+                        rejected.declaration(),
+                        detailReason
+                ),
+                null,
+                false,
+                detailReason
+        );
     }
 
     /// Publishes the uniform enum-member fact shared by the value route (`State.IDLE` with the
@@ -1743,6 +1794,103 @@ public final class FrontendChainReductionHelper {
         );
     }
 
+    /// Per-layer const-claim walk for the GDCC static-method route, mirroring the load-side
+    /// layering in [reduceGdccStaticLoad]: the first layer owning the call name decides — a
+    /// method claim defers to the ordinary resolver, a usable const fails the call as
+    /// "not a method", and a failed const blocks it as dependency-invalid. Returns null when no
+    /// nearer layer claims the name through a constant.
+    private static @Nullable StepTrace classConstCallClaimTrace(
+            int stepIndex,
+            @NotNull AttributeCallStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ReductionRequest request,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        var classRegistry = request.classRegistry();
+        var rejectedClassConstants = request.analysisData().rejectedClassConstants();
+        var visited = new HashSet<String>();
+        for (var current = classRegistry.resolveClassDefFromTypeMeta(receiverTypeMeta);
+                current != null && visited.add(current.getName());
+                current = classRegistry.resolveSuperclass(current)) {
+            if (declaresFunctionOnLayer(current, step.name())) {
+                return null;
+            }
+            switch (FrontendClassConstantLookup.probe(current, step.name(), rejectedClassConstants)) {
+                case FrontendClassConstantLookup.ProbeResult.Usable usable -> {
+                    var detailReason = "Class constant '" + step.name() + "' on class '"
+                            + current.getName() + "' is a constant value, not a method; "
+                            + "it cannot be called";
+                    return new StepTrace(
+                            stepIndex,
+                            step,
+                            StepKind.CALL,
+                            RouteKind.STATIC_METHOD,
+                            incomingReceiver,
+                            Status.FAILED,
+                            ReceiverState.failedFrom(incomingReceiver, detailReason),
+                            null,
+                            null,
+                            FrontendResolvedCall.failed(
+                                    step.name(),
+                                    FrontendCallResolutionKind.STATIC_METHOD,
+                                    FrontendReceiverKind.TYPE_META,
+                                    ScopeOwnerKind.GDCC,
+                                    incomingReceiver.receiverType(),
+                                    argumentTypes,
+                                    usable.constant().declaration(),
+                                    detailReason
+                            ),
+                            false,
+                            detailReason
+                    );
+                }
+                case FrontendClassConstantLookup.ProbeResult.TerminalBlocked blocked -> {
+                    var detailReason = "Class constant '" + step.name()
+                            + "' failed to evaluate at its declaration; the call depends on an invalid constant";
+                    return new StepTrace(
+                            stepIndex,
+                            step,
+                            StepKind.CALL,
+                            RouteKind.STATIC_METHOD,
+                            incomingReceiver,
+                            Status.BLOCKED,
+                            ReceiverState.blockedFrom(incomingReceiver, detailReason),
+                            null,
+                            null,
+                            FrontendResolvedCall.blocked(
+                                    step.name(),
+                                    FrontendCallResolutionKind.STATIC_METHOD,
+                                    FrontendReceiverKind.TYPE_META,
+                                    ScopeOwnerKind.GDCC,
+                                    incomingReceiver.receiverType(),
+                                    GdVariantType.VARIANT,
+                                    argumentTypes,
+                                    blocked.rejected().declaration(),
+                                    detailReason
+                            ),
+                            false,
+                            detailReason
+                    );
+                }
+                case FrontendClassConstantLookup.ProbeResult.Miss _ -> {
+                }
+            }
+        }
+        return null;
+    }
+
+    /// True when the layer declares any function named `memberName` — static or instance —
+    /// which owns the name for the call route and defers to the ordinary resolver.
+    private static boolean declaresFunctionOnLayer(@NotNull ClassDef owner, @NotNull String memberName) {
+        for (var function : owner.getFunctions()) {
+            if (function.getName().equals(memberName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static @NotNull StepTrace reduceStaticMethodStep(
             int stepIndex,
             @NotNull AttributeCallStep step,
@@ -1764,6 +1912,15 @@ public final class FrontendChainReductionHelper {
                     argumentTypes,
                     receiverTypeMeta
             );
+        }
+        // Name-claim walk before the whole-hierarchy resolver: at each layer a declared method
+        // claims the name for calls (the resolver then decides overloads natively), while a
+        // class `const` — usable or failed — claims the name and terminates the walk so an
+        // ancestor method can never surface through a constant-owned name.
+        var constClaimTrace = classConstCallClaimTrace(
+                stepIndex, step, incomingReceiver, request, receiverTypeMeta, argumentTypes);
+        if (constClaimTrace != null) {
+            return constClaimTrace;
         }
         var result = ScopeMethodResolver.resolveStaticMethodWithParameterRank(
                 request.classRegistry(),

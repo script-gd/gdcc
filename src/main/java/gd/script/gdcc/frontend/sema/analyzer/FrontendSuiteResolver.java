@@ -206,7 +206,11 @@ public class FrontendSuiteResolver {
                 blockScope,
                 analysisData,
                 null,
-                interfaceSurface.typedLexicalBaseline()
+                interfaceSurface.typedLexicalBaseline(),
+                // Lambdas resolve parentless: the narrow constant-fact view is the only outward
+                // channel, so frozen values stay readable while mutable bindings can only arrive
+                // through the capture boundary. Named callables have no enclosing environment.
+                outerEnvironment != null ? outerEnvironment::constantFact : null
         );
         var exportBatch = new FrontendCallableExportBatch();
         var currentCallableReturnType = FrontendCallableReturnTypeSupport.resolveReturnTypeOrNull(

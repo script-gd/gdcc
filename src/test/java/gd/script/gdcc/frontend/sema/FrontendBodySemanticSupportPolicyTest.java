@@ -43,7 +43,6 @@ class FrontendBodySemanticSupportPolicyTest {
     void unsupportedScopesKeepPreciseStructuralDomains() {
         var deferredPolicies = Set.of(
                 FrontendBodySemanticSupportPolicy.LAMBDA_SUBTREE,
-                FrontendBodySemanticSupportPolicy.BLOCK_LOCAL_CONST_SUBTREE,
                 FrontendBodySemanticSupportPolicy.PARAMETER_DEFAULT,
                 FrontendBodySemanticSupportPolicy.UNKNOWN_OR_SKIPPED_SUBTREE
         );
@@ -112,7 +111,6 @@ class FrontendBodySemanticSupportPolicyTest {
     void deferredPoliciesAreNotSupportedSuiteBodyRoots() {
         var deferredPolicies = Set.of(
                 FrontendBodySemanticSupportPolicy.LAMBDA_SUBTREE,
-                FrontendBodySemanticSupportPolicy.BLOCK_LOCAL_CONST_SUBTREE,
                 FrontendBodySemanticSupportPolicy.PARAMETER_DEFAULT,
                 FrontendBodySemanticSupportPolicy.UNKNOWN_OR_SKIPPED_SUBTREE
         );

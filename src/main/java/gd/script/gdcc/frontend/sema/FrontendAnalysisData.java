@@ -7,6 +7,9 @@ import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
+import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.scope.FrontendRejectedClassConstant;
+import gd.script.gdcc.frontend.sema.patch.FrontendConstTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendPublishedFactTypeGuard;
@@ -25,6 +28,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -106,6 +110,16 @@ public final class FrontendAnalysisData {
     /// same freezable identity map.
     private final @NotNull FreezableIdentityMap<Object, FrontendDeclarationOrigin> declarationOrigins =
             new FreezableIdentityMap<>();
+    /// Compile-time evaluation facts keyed by the `const` declaration AST node. Written by the
+    /// class const/enum joint pre-pass (and later by the local-const owner); carries both
+    /// `Resolved` payloads and `Rejected` records so downstream owners can tell an invalid
+    /// constant from a never-evaluated one without re-running the evaluator.
+    private final @NotNull FrontendAstSideTable<Evaluation> constantFacts;
+    /// Failed class-`const` recovery mask keyed by owner canonical class name, then by member
+    /// name. Produced once by the class skeleton before scope analysis starts and consumed
+    /// read-only afterwards (`ClassScope` value lookups and qualified chain reduction), so the
+    /// map is replaced as a whole instead of being incrementally mutable.
+    private @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> rejectedClassConstants = Map.of();
     /// Set once the owning analysis generation is published inside a snapshot. Volatile because snapshots
     /// are read concurrently off-latch.
     private volatile boolean frozen;
@@ -127,7 +141,8 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<FrontendLambdaIdentity> lambdaIdentities,
             @NotNull Set<LirFunctionDef> coroutineFunctions,
             @NotNull Set<LambdaExpression> coroutineLambdaOwners,
-            @NotNull List<FrontendAwaitCallPending> awaitCallPendings
+            @NotNull List<FrontendAwaitCallPending> awaitCallPendings,
+            @NotNull FrontendAstSideTable<Evaluation> constantFacts
     ) {
         this.annotationsByAst = Objects.requireNonNull(annotationsByAst, "annotationsByAst must not be null");
         this.skippedSubtreeRoots = Objects.requireNonNull(
@@ -161,6 +176,7 @@ public final class FrontendAnalysisData {
                 "coroutineLambdaOwners must not be null"
         );
         this.awaitCallPendings = Objects.requireNonNull(awaitCallPendings, "awaitCallPendings must not be null");
+        this.constantFacts = Objects.requireNonNull(constantFacts, "constantFacts must not be null");
     }
 
     /// Creates an empty analysis data carrier with the full side-table topology already present.
@@ -182,7 +198,8 @@ public final class FrontendAnalysisData {
                 new FrontendAstSideTable<>(),
                 Collections.newSetFromMap(new IdentityHashMap<>()),
                 Collections.newSetFromMap(new IdentityHashMap<>()),
-                new ArrayList<>()
+                new ArrayList<>(),
+                new FrontendAstSideTable<>()
         );
     }
 
@@ -218,6 +235,7 @@ public final class FrontendAnalysisData {
         lambdaPlans.freeze();
         lambdaIdentities.freeze();
         declarationOrigins.freeze();
+        constantFacts.freeze();
     }
 
     public boolean isFrozen() {
@@ -337,7 +355,9 @@ public final class FrontendAnalysisData {
                 checkedPatch.typeTestTargets(),
                 checkedPatch.containerLiteralPlans(),
                 checkedPatch.lambdaPlans(),
-                checkedPatch.localSlotTypeUpdates()
+                checkedPatch.localSlotTypeUpdates(),
+                checkedPatch.constantFacts(),
+                checkedPatch.constantTypeUpdates()
         );
     }
 
@@ -353,9 +373,12 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<FrontendTypeTestTarget> patchTypeTestTargets,
             @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> patchContainerLiteralPlans,
             @NotNull FrontendAstSideTable<FrontendLambdaPlan> patchLambdaPlans,
-            @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates
+            @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates,
+            @NotNull FrontendAstSideTable<Evaluation> patchConstantFacts,
+            @NotNull List<FrontendConstTypeUpdate> constantTypeUpdates
     ) {
         var validatedLocalSlotUpdates = validateLocalSlotTypeUpdates(stage, localSlotTypeUpdates);
+        var validatedConstUpdates = validateConstTypeUpdates(stage, constantTypeUpdates);
         checkPatchConflicts(symbolBindings, patchSymbolBindings, "symbolBindings", FrontendAnalysisData::sameBinding);
         checkPatchConflicts(
                 resolvedMembers,
@@ -406,6 +429,12 @@ public final class FrontendAnalysisData {
                 "lambdaPlans",
                 FrontendLambdaPlan::samePlan
         );
+        checkPatchConflicts(
+                constantFacts,
+                patchConstantFacts,
+                "constantFacts",
+                FrontendAnalysisData::sameEvaluation
+        );
 
         mergeSideTable(symbolBindings, patchSymbolBindings);
         mergeSideTable(resolvedMembers, patchResolvedMembers);
@@ -417,8 +446,12 @@ public final class FrontendAnalysisData {
         mergeSideTable(typeTestTargets, patchTypeTestTargets);
         mergeSideTable(containerLiteralPlans, patchContainerLiteralPlans);
         mergeSideTable(lambdaPlans, patchLambdaPlans);
+        mergeSideTable(constantFacts, patchConstantFacts);
         for (var validatedUpdate : validatedLocalSlotUpdates) {
             applyLocalSlotTypeUpdate(validatedUpdate);
+        }
+        for (var validatedUpdate : validatedConstUpdates) {
+            applyConstTypeUpdate(validatedUpdate);
         }
     }
 
@@ -494,6 +527,34 @@ public final class FrontendAnalysisData {
     /// together with the owning generation — every mutation channel closes on `freeze()`.
     public @NotNull Map<Object, FrontendDeclarationOrigin> declarationOrigins() {
         return declarationOrigins;
+    }
+
+    /// Compile-time evaluation facts keyed by `const` declaration AST identity.
+    public @NotNull FrontendAstSideTable<Evaluation> constantFacts() {
+        return constantFacts;
+    }
+
+    /// Read-only view of the failed class-`const` mask (owner canonical name → member name →
+    /// rejection record). Empty before the skeleton publishes it.
+    public @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> rejectedClassConstants() {
+        return rejectedClassConstants;
+    }
+
+    /// Replaces the whole failed class-`const` mask with the skeleton's collected generation
+    /// data. Called exactly once per analysis generation, right after member filling ends and
+    /// before scope analysis starts; the deep unmodifiable copy keeps later readers independent
+    /// of the builder's working collections.
+    public void publishRejectedClassConstants(
+            @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> collected
+    ) {
+        requireWritable();
+        Objects.requireNonNull(collected, "collected must not be null");
+        var snapshot = new LinkedHashMap<String, Map<String, FrontendRejectedClassConstant>>(collected.size());
+        collected.forEach((ownerName, byName) -> snapshot.put(
+                ownerName,
+                Collections.unmodifiableMap(new LinkedHashMap<>(byName))
+        ));
+        rejectedClassConstants = Collections.unmodifiableMap(snapshot);
     }
 
     /// Read-only view of the coroutine callable set; mutation goes through `markCoroutineFunction`.
@@ -595,32 +656,49 @@ public final class FrontendAnalysisData {
     ) {
         requireWritable();
         var checkedUpdate = Objects.requireNonNull(slotTypeUpdate, "slotTypeUpdate must not be null");
+        refreshPublishedBindingPayloads(
+                checkedUpdate.name(),
+                checkedUpdate.declaration(),
+                checkedUpdate.type(),
+                updatedValue
+        );
+    }
+
+    /// Shared binding-payload refresh behind the local-slot and constant export paths: every
+    /// already-published binding whose `resolvedValue` still points at `declaration` is swapped to
+    /// `updatedValue` in place, so use sites never see a type that disagrees with the rewritten
+    /// scope slot.
+    private void refreshPublishedBindingPayloads(
+            @NotNull String name,
+            @NotNull Object declaration,
+            @NotNull GdType expectedType,
+            @NotNull ScopeValue updatedValue
+    ) {
+        requireWritable();
         var checkedUpdatedValue = Objects.requireNonNull(updatedValue, "updatedValue must not be null");
-        if (checkedUpdatedValue.declaration() != checkedUpdate.declaration()) {
+        if (checkedUpdatedValue.declaration() != declaration) {
             throw patchFailure(
-                    "local slot refresh resolved a different declaration for '"
-                            + checkedUpdate.name()
-                            + "'"
+                    "slot refresh resolved a different declaration for '" + name + "'"
             );
         }
-        if (!sameType(checkedUpdatedValue.type(), checkedUpdate.type())) {
+        if (!sameType(checkedUpdatedValue.type(), expectedType)) {
             throw patchFailure(
-                    "local slot refresh resolved an unexpected type for '"
-                            + checkedUpdate.name()
+                    "slot refresh resolved an unexpected type for '"
+                            + name
                             + "': expected "
-                            + checkedUpdate.type().getTypeName()
+                            + expectedType.getTypeName()
                             + ", got "
                             + checkedUpdatedValue.type().getTypeName()
             );
         }
         checkNoCompilerOnlyLeak(
                 checkedUpdatedValue.type(),
-                "symbolBindings local payload refresh for '" + checkedUpdate.name() + "'"
+                "symbolBindings slot payload refresh for '" + name + "'"
         );
         for (var entry : symbolBindings.entrySet()) {
             var binding = entry.getValue();
             var resolvedValue = binding.resolvedValue();
-            if (resolvedValue == null || resolvedValue.declaration() != checkedUpdate.declaration()) {
+            if (resolvedValue == null || resolvedValue.declaration() != declaration) {
                 continue;
             }
             entry.setValue(binding.withResolvedValue(checkedUpdatedValue));
@@ -775,6 +853,123 @@ public final class FrontendAnalysisData {
         refreshPublishedLocalBindingPayloads(update, refreshedValue);
     }
 
+    private @NotNull List<ValidatedConstTypeUpdate> validateConstTypeUpdates(
+            @NotNull FrontendSemanticStage stage,
+            @NotNull List<FrontendConstTypeUpdate> constantTypeUpdates
+    ) {
+        if (constantTypeUpdates.isEmpty()) {
+            return List.of();
+        }
+        // Constant slot rewrites are owned exclusively by CONST_RESOLUTION and may only target a
+        // `VariableDeclaration` identity — the same declaration domain the inventory indexes.
+        if (stage != FrontendSemanticStage.CONST_RESOLUTION) {
+            throw patchFailure(
+                    "Only CONST_RESOLUTION patches may publish constant type updates, but got " + stage
+            );
+        }
+        var validatedUpdates = new ArrayList<ValidatedConstTypeUpdate>(constantTypeUpdates.size());
+        for (var update : constantTypeUpdates) {
+            if (!(update.declaration() instanceof VariableDeclaration)) {
+                throw patchFailure(
+                        "CONST_RESOLUTION type update must target a VariableDeclaration, but got "
+                                + update.declaration().getClass().getSimpleName()
+                );
+            }
+            validatedUpdates.add(validateConstTypeUpdate(update, validatedUpdates));
+        }
+        return List.copyOf(validatedUpdates);
+    }
+
+    private @NotNull ValidatedConstTypeUpdate validateConstTypeUpdate(
+            @NotNull FrontendConstTypeUpdate update,
+            @NotNull List<ValidatedConstTypeUpdate> validatedUpdates
+    ) {
+        checkNoVoidLocalSlotType(update.type(), update.name());
+        checkNoCompilerOnlyLeak(update.type(), "constant type update for '" + update.name() + "'");
+        var existingValue = lookupPendingConstValue(update, validatedUpdates);
+        if (existingValue == null) {
+            existingValue = requireCurrentConstValue(update);
+        }
+        if (existingValue.declaration() != update.declaration()) {
+            throw patchFailure(
+                    "constant type update targeted a different declaration for '" + update.name() + "'"
+            );
+        }
+        if (sameType(existingValue.type(), update.type())) {
+            return new ValidatedConstTypeUpdate(update, null);
+        }
+        if (!(existingValue.type() instanceof GdVariantType)) {
+            throw patchFailure(
+                    "constant type update changed exact type for '"
+                            + update.name()
+                            + "' from "
+                            + existingValue.type().getTypeName()
+                            + " to "
+                            + update.type().getTypeName()
+            );
+        }
+        return new ValidatedConstTypeUpdate(
+                update,
+                new ScopeValue(
+                        existingValue.name(),
+                        update.type(),
+                        existingValue.kind(),
+                        existingValue.declaration(),
+                        existingValue.constant(),
+                        existingValue.writable(),
+                        existingValue.staticMember()
+                )
+        );
+    }
+
+    private @Nullable ScopeValue lookupPendingConstValue(
+            @NotNull FrontendConstTypeUpdate target,
+            @NotNull List<ValidatedConstTypeUpdate> validatedUpdates
+    ) {
+        for (var i = validatedUpdates.size() - 1; i >= 0; i--) {
+            var validatedUpdate = validatedUpdates.get(i);
+            var update = validatedUpdate.update();
+            if (update.scope() != target.scope()
+                    || !update.name().equals(target.name())
+                    || update.declaration() != target.declaration()) {
+                continue;
+            }
+            return validatedUpdate.refreshedValue() != null
+                    ? validatedUpdate.refreshedValue()
+                    : requireCurrentConstValue(update);
+        }
+        return null;
+    }
+
+    private @NotNull ScopeValue requireCurrentConstValue(@NotNull FrontendConstTypeUpdate update) {
+        var currentValue = update.scope().resolveValueHere(update.name());
+        if (currentValue == null) {
+            throw patchFailure("constant type update targeted a missing binding for '" + update.name() + "'");
+        }
+        if (currentValue.kind() != ScopeValueKind.CONSTANT) {
+            throw patchFailure("constant type update targeted a non-constant binding for '" + update.name() + "'");
+        }
+        return currentValue;
+    }
+
+    /// The single export-time entry that mutates a constant slot: scope rewrite first, then the
+    /// same binding-payload refresh local slots use, so already-published use-site bindings keep
+    /// observing one consistent resolved value.
+    private void applyConstTypeUpdate(@NotNull ValidatedConstTypeUpdate validatedUpdate) {
+        var refreshedValue = validatedUpdate.refreshedValue();
+        if (refreshedValue == null) {
+            return;
+        }
+        var update = validatedUpdate.update();
+        update.scope().resetConstantType(update.name(), update.declaration(), update.type());
+        refreshPublishedBindingPayloads(
+                update.name(),
+                update.declaration(),
+                update.type(),
+                refreshedValue
+        );
+    }
+
     private <V> void checkPatchConflicts(
             @NotNull FrontendAstSideTable<V> stableTable,
             @NotNull FrontendAstSideTable<V> patchTable,
@@ -872,6 +1067,14 @@ public final class FrontendAnalysisData {
                 && Objects.equals(first.detailReason(), second.detailReason());
     }
 
+    /// Two constant facts are "the same" only when the whole outcome is equal — `Resolved` values
+    /// compare by record equality (frozen payload + type), `Rejected` rows by reason and offending
+    /// node identity. A re-published identical fact merges quietly; any divergence is a patch
+    /// conflict because two owners must never disagree about one declaration's frozen value.
+    static boolean sameEvaluation(@NotNull Evaluation first, @NotNull Evaluation second) {
+        return first.equals(second);
+    }
+
     static boolean sameScopeValue(@Nullable ScopeValue first, @Nullable ScopeValue second) {
         if (first == null || second == null) {
             return first == second;
@@ -937,6 +1140,15 @@ public final class FrontendAnalysisData {
             @Nullable ScopeValue refreshedValue
     ) {
         private ValidatedLocalSlotTypeUpdate {
+            Objects.requireNonNull(update, "update must not be null");
+        }
+    }
+
+    private record ValidatedConstTypeUpdate(
+            @NotNull FrontendConstTypeUpdate update,
+            @Nullable ScopeValue refreshedValue
+    ) {
+        private ValidatedConstTypeUpdate {
             Objects.requireNonNull(update, "update must not be null");
         }
     }

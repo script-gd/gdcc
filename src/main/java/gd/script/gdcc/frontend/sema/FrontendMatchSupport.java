@@ -9,6 +9,8 @@ import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.type.GdExtensionTypeEnum;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdStringNameType;
@@ -125,8 +127,17 @@ public final class FrontendMatchSupport {
             return true;
         }
         var binding = analysisData.symbolBindings().get(expression);
-        if (binding != null && (binding.kind() == FrontendBindingKind.CONSTANT
-                || binding.kind() == FrontendBindingKind.LITERAL)) {
+        if (binding != null && binding.kind() == FrontendBindingKind.CONSTANT) {
+            // A local `const` may legitimately carry a `Rejected` fact — its binding still
+            // claims the CONSTANT kind, but a failed frozen value can never become a constant
+            // match key and must fall back to runtime comparison.
+            if (binding.declarationSite() instanceof VariableDeclaration variableDeclaration) {
+                return analysisData.constantFacts().get(variableDeclaration)
+                        instanceof Evaluation.Resolved;
+            }
+            return true;
+        }
+        if (binding != null && binding.kind() == FrontendBindingKind.LITERAL) {
             return true;
         }
         if (!(expression instanceof AttributeExpression attributeExpression)

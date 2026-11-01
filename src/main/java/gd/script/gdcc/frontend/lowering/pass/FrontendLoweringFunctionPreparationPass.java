@@ -390,6 +390,14 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
             @NotNull List<FunctionLoweringContext> contexts
     ) {
         for (var child : root.getChildren()) {
+            // A local const initializer is never part of the callable surface: a lambda nested
+            // in one is rejected by const resolution and carries no `FrontendLambdaPlan`, so
+            // descending would trip the fail-fast missing-plan check on a subtree that can
+            // never become a context.
+            if (child instanceof VariableDeclaration variableDeclaration
+                    && variableDeclaration.kind() == DeclarationKind.CONST) {
+                continue;
+            }
             if (child instanceof LambdaExpression lambdaExpression) {
                 contexts.add(buildLambdaContext(
                         sourceClassRelation,

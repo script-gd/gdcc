@@ -779,7 +779,8 @@ public final class FrontendExpressionSemanticSupport {
             return rootOutcome(FrontendExpressionType.failed(ex.getMessage()));
         }
 
-        var returnType = resolveUnaryExactReturnType(classRegistry, operator, publishedOperandType);
+        var returnType = FrontendBuiltinOperatorSupport.resolveUnaryExactReturnType(
+                classRegistry, operator, publishedOperandType);
         if (returnType != null) {
             return rootOutcome(FrontendExpressionType.resolved(returnType));
         }
@@ -848,7 +849,8 @@ public final class FrontendExpressionSemanticSupport {
             return FrontendExpressionType.failed(ex.getMessage());
         }
 
-        var specialReturnType = resolveBinarySpecialReturnType(operator, publishedLeftType, publishedRightType);
+        var specialReturnType = FrontendBuiltinOperatorSupport.resolveBinarySpecialReturnType(
+                operator, publishedLeftType, publishedRightType);
         if (specialReturnType != null) {
             return FrontendExpressionType.resolved(specialReturnType);
         }
@@ -874,7 +876,7 @@ public final class FrontendExpressionSemanticSupport {
 
         // Godot metadata exposes mixed int/float operator entries, but this frontend boundary
         // intentionally does not turn ordinary typed-boundary widening into operator promotion.
-        if (isMixedIntFloatScalarPair(publishedLeftType, publishedRightType)) {
+        if (FrontendBuiltinOperatorSupport.isMixedIntFloatScalarPair(publishedLeftType, publishedRightType)) {
             return FrontendExpressionType.failed(
                     "Binary operator '" + actualOperatorText
                             + "' is not defined for operand types '" + publishedLeftType.getTypeName()
@@ -882,7 +884,7 @@ public final class FrontendExpressionSemanticSupport {
             );
         }
 
-        var exactReturnType = resolveBinaryExactReturnType(
+        var exactReturnType = FrontendBuiltinOperatorSupport.resolveBinaryExactReturnType(
                 classRegistry,
                 operator,
                 publishedLeftType,
@@ -921,7 +923,8 @@ public final class FrontendExpressionSemanticSupport {
         }
         // Defensive metadata probe: the unary `NOT + bool` entry always exists in extension
         // metadata, so the published type is `bool` in practice; only a broken registry misses.
-        var notReturnType = resolveUnaryExactReturnType(classRegistry, GodotOperator.NOT, GdBoolType.BOOL);
+        var notReturnType = FrontendBuiltinOperatorSupport.resolveUnaryExactReturnType(
+                classRegistry, GodotOperator.NOT, GdBoolType.BOOL);
         if (notReturnType == null) {
             return FrontendExpressionType.failed(
                     "Unary operator 'not' is not defined for operand type 'bool'"
@@ -2203,32 +2206,6 @@ public final class FrontendExpressionSemanticSupport {
         return bindingLookup.apply(Objects.requireNonNull(identifierExpression, "identifierExpression must not be null"));
     }
 
-    /// Typed containers keep richer source-level names such as `Array[int]`, but operator metadata
-    /// is still owned by the raw builtin classes and uses raw operand names for matching.
-    private static @Nullable GdType resolveUnaryExactReturnType(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull GodotOperator operator,
-            @NotNull GdType operandType
-    ) {
-        var builtinClass = findOperatorOwnerClass(classRegistry, operandType);
-        if (builtinClass == null) {
-            return null;
-        }
-        for (var classOperator : builtinClass.operators()) {
-            if (classOperator == null || classOperator.operator() != operator) {
-                continue;
-            }
-            if (!StringUtil.trimToEmpty(classOperator.rightType()).isEmpty()) {
-                continue;
-            }
-            var returnType = parseOperatorReturnType(classRegistry, classOperator);
-            if (returnType != null) {
-                return returnType;
-            }
-        }
-        return null;
-    }
-
     private static @NotNull GdType requireStableOperatorOperandType(
             @NotNull String operandName,
             @NotNull FrontendExpressionType operandType
@@ -2247,114 +2224,12 @@ public final class FrontendExpressionSemanticSupport {
         );
     }
 
-    private static @Nullable GdType resolveBinarySpecialReturnType(
-            @NotNull GodotOperator operator,
-            @NotNull GdType publishedLeftType,
-            @NotNull GdType publishedRightType
-    ) {
-        if (operator == GodotOperator.AND || operator == GodotOperator.OR) {
-            return GdBoolType.BOOL;
-        }
-        if ((operator == GodotOperator.EQUAL || operator == GodotOperator.NOT_EQUAL)
-                && isObjectNilEqualityPair(publishedLeftType, publishedRightType)) {
-            return GdBoolType.BOOL;
-        }
-        if ((operator == GodotOperator.EQUAL || operator == GodotOperator.NOT_EQUAL)
-                && isObjectObjectEqualityPair(publishedLeftType, publishedRightType)) {
-            return GdBoolType.BOOL;
-        }
-        if (operator == GodotOperator.ADD
-                && publishedLeftType instanceof GdArrayType leftArrayType
-                && publishedRightType instanceof GdArrayType rightArrayType
-                && !(leftArrayType.getValueType() instanceof GdVariantType)
-                && leftArrayType.getValueType().equals(rightArrayType.getValueType())) {
-            return leftArrayType;
-        }
-        return null;
-    }
-
-    private static boolean isObjectNilEqualityPair(@NotNull GdType leftType, @NotNull GdType rightType) {
-        return leftType instanceof GdNilType && rightType instanceof GdNilType
-                || leftType instanceof GdObjectType && rightType instanceof GdNilType
-                || leftType instanceof GdNilType && rightType instanceof GdObjectType;
-    }
-
-    /// Identity equality gate for two static object types.
-    ///
-    /// Godot Variant `OBJECT/OBJECT` `==` / `!=` compares identity, not assignability.
-    /// Any `GdObjectType` pair is accepted; `GdVariantType` is excluded by `instanceof`.
-    private static boolean isObjectObjectEqualityPair(@NotNull GdType leftType, @NotNull GdType rightType) {
-        return leftType instanceof GdObjectType && rightType instanceof GdObjectType;
-    }
-
     private static boolean isRuntimeOpenOperatorOperand(
             @NotNull FrontendExpressionType operandType,
             @NotNull GdType publishedOperandType
     ) {
         return operandType.status() == FrontendExpressionTypeStatus.DYNAMIC
                 || publishedOperandType instanceof GdVariantType;
-    }
-
-    private static boolean isMixedIntFloatScalarPair(@NotNull GdType leftType, @NotNull GdType rightType) {
-        return leftType instanceof GdIntType && rightType instanceof GdFloatType
-                || leftType instanceof GdFloatType && rightType instanceof GdIntType;
-    }
-
-    private static @Nullable GdType resolveBinaryExactReturnType(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull GodotOperator operator,
-            @NotNull GdType leftType,
-            @NotNull GdType rightType
-    ) {
-        var builtinClass = findOperatorOwnerClass(classRegistry, leftType);
-        if (builtinClass == null) {
-            return null;
-        }
-        var normalizedRightType = StringUtil.trimToEmpty(operatorOperandTypeName(rightType));
-        for (var classOperator : builtinClass.operators()) {
-            if (classOperator == null || classOperator.operator() != operator) {
-                continue;
-            }
-            var metadataRightType = StringUtil.trimToEmpty(classOperator.rightType());
-            if (metadataRightType.isEmpty() || !metadataRightType.equals(normalizedRightType)) {
-                continue;
-            }
-            var returnType = parseOperatorReturnType(classRegistry, classOperator);
-            if (returnType != null) {
-                return returnType;
-            }
-        }
-        return null;
-    }
-
-    private static @Nullable ExtensionBuiltinClass findOperatorOwnerClass(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull GdType operandType
-    ) {
-        return Objects.requireNonNull(classRegistry, "classRegistry must not be null")
-                .findBuiltinClass(operatorOperandTypeName(operandType));
-    }
-
-    private static @NotNull String operatorOperandTypeName(@NotNull GdType operandType) {
-        if (operandType instanceof GdArrayType) {
-            return "Array";
-        }
-        if (operandType instanceof GdDictionaryType) {
-            return "Dictionary";
-        }
-        return operandType.getTypeName();
-    }
-
-    private static @Nullable GdType parseOperatorReturnType(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull ExtensionBuiltinClass.ClassOperator classOperator
-    ) {
-        var returnTypeName = StringUtil.trimToEmpty(classOperator.returnType());
-        if (returnTypeName.isEmpty()) {
-            return null;
-        }
-        return Objects.requireNonNull(classRegistry, "classRegistry must not be null")
-                .tryResolveDeclaredType(returnTypeName);
     }
 
     private boolean canOmitTrailingParameters(

@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
@@ -968,7 +969,7 @@ class FrontendClassSkeletonTest {
         invokeBuilderMethod(
                 builder,
                 "fillSourceClassRelationMembers",
-                new Class<?>[]{FrontendSourceClassRelation.class, shellContext.getClass(), List.class, Map.class},
+                new Class<?>[]{FrontendSourceClassRelation.class, shellContext.getClass(), List.class, Map.class, Map.class},
                 shellRelation,
                 shellContext,
                 new ArrayList<>(),
@@ -976,7 +977,8 @@ class FrontendClassSkeletonTest {
                         shellRelation.canonicalName(), shellRelation,
                         shellRelation.innerClassRelations().getFirst().canonicalName(),
                         shellRelation.innerClassRelations().getFirst()
-                )
+                ),
+                new LinkedHashMap<>()
         );
         assertEquals("changed", shellRelation.topLevelClassDef().getSignals().getFirst().getName());
         assertEquals("_init", shellRelation.topLevelClassDef().getFunctions().getFirst().getName());

@@ -106,7 +106,7 @@ class TinyCcCliGateTest {
         describeFunc.addParameter(new LirParameterDef("self", new GdObjectType("GDTccGateProbe"), null, describeFunc));
         describeFunc.createAndAddVariable("0", GdStringType.STRING);
         var entry = new LirBasicBlock("entry");
-        // A non-ASCII literal forces the u8"..." + UCN escape path into the generated TU.
+        // A non-ASCII literal forces the u8"..." + byte-level octal escape path into the TU.
         entry.appendInstruction(new LiteralStringInsn("0", "café 中文"));
         entry.appendInstruction(new ReturnInsn("0"));
         describeFunc.addBasicBlock(entry);

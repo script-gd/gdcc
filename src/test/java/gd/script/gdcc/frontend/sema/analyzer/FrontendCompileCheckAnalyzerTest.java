@@ -963,14 +963,21 @@ class FrontendCompileCheckAnalyzerTest {
         assertNotNull(getNodeType);
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, getNodeType.status());
         assertEquals(new GdObjectType("Node"), getNodeType.publishedType());
-        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
-        var unsupportedBindingDiagnostics = diagnosticsByCategory(
-                compiled.diagnostics(),
-                "sema.unsupported_binding_subtree"
+        // The const's array initializer is rejected upstream and its const-resolution fact is a
+        // rejection, so the compile gate reports exactly one blocker anchored at the declaration.
+        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
+        assertTrue(
+                compileDiagnostics.getFirst().message().contains("'answer'"),
+                compileDiagnostics.getFirst().message()
         );
-        // Block-local const stays fail-closed; the parameter default is now analyzed and accepted
-        // by the parameter-default island, and the ready match route contributes nothing.
-        assertEquals(1, unsupportedBindingDiagnostics.size(), unsupportedBindingDiagnostics::toString);
+        // The const owner's own rejection is the upstream diagnostic for the failed initializer —
+        // array payloads stay outside the const whitelist, and the parameter default is analyzed
+        // and accepted by the parameter-default island.
+        var constResolutionDiagnostics = diagnosticsByCategory(
+                compiled.diagnostics(),
+                "sema.constant_resolution"
+        );
+        assertEquals(1, constResolutionDiagnostics.size(), constResolutionDiagnostics::toString);
     }
 
     @Test

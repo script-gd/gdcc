@@ -110,14 +110,38 @@ public class CNewDataInsnGenTest {
     @DisplayName("literal_string should call non-ref constructor for non-ref variable")
     void literalStringShouldCallAssignForNonRef() {
         var body = generateBody("s", GdStringType.STRING, false, new LiteralStringInsn("s", "hello"));
-        assertTrue(body.contains("godot_new_String_with_utf8_chars(u8\"hello\")"));
+        assertTrue(body.contains("godot_new_String_with_utf8_chars_and_len(u8\"hello\", 5)"));
     }
 
     @Test
     @DisplayName("literal_string should preserve payload that intentionally contains quotes")
     void literalStringShouldPreserveQuotedPayload() {
         var body = generateBody("s", GdStringType.STRING, false, new LiteralStringInsn("s", "\"hero\""));
-        assertTrue(body.contains("godot_new_String_with_utf8_chars(u8\"\\\"hero\\\"\")"));
+        assertTrue(body.contains("godot_new_String_with_utf8_chars_and_len(u8\"\\\"hero\\\"\", 6)"));
+    }
+
+    @Test
+    @DisplayName("literal_string should pass UTF-8 byte length and octal-escape embedded NUL")
+    void literalStringShouldPassUtf8ByteLengthAndOctalEscapes() {
+        // Embedded NUL must reach Godot explicitly: the byte count makes the NUL-terminated
+        // `utf8_chars` route's silent truncation impossible, and fixed-width octal keeps the
+        // literal free of the `\u0000` UCN spelling C forbids.
+        var nulBody = generateBody("s", GdStringType.STRING, false, new LiteralStringInsn("s", "a\0b"));
+        assertTrue(nulBody.contains("godot_new_String_with_utf8_chars_and_len(u8\"a\\000b\", 3)"), nulBody);
+
+        var nulDigitBody = generateBody("s", GdStringType.STRING, false, new LiteralStringInsn("s", "a\0" + "1"));
+        assertTrue(nulDigitBody.contains("godot_new_String_with_utf8_chars_and_len(u8\"a\\0001\", 3)"), nulDigitBody);
+
+        // Multi-byte payloads count UTF-8 bytes, not Java char length (2 chars -> 6 bytes).
+        var utf8Body = generateBody("s", GdStringType.STRING, false, new LiteralStringInsn("s", "中文"));
+        assertTrue(utf8Body.contains("godot_new_String_with_utf8_chars_and_len(u8\"\\344\\270\\255\\346\\226\\207\", 6)"), utf8Body);
+    }
+
+    @Test
+    @DisplayName("literal_string should init ref target through the length-aware wrapper")
+    void literalStringShouldInitRefWithLength() {
+        var body = generateBody("s", GdStringType.STRING, true, new LiteralStringInsn("s", "héllo"));
+        assertTrue(body.contains("godot_string_new_with_utf8_chars_and_len($s, u8\"h\\303\\251llo\", 6);"), body);
     }
 
     @Test
@@ -138,7 +162,7 @@ public class CNewDataInsnGenTest {
     @DisplayName("literal_string should call init function for ref variable")
     void literalStringShouldCallInitForRef() {
         var body = generateBody("s", GdStringType.STRING, true, new LiteralStringInsn("s", "hello"));
-        assertTrue(body.contains("godot_string_new_with_utf8_chars($s, u8\"hello\");"));
+        assertTrue(body.contains("godot_string_new_with_utf8_chars_and_len($s, u8\"hello\", 5);"));
     }
 
     @Test

@@ -17,6 +17,7 @@ import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
 import gd.script.gdcc.frontend.sema.patch.FrontendChainBindingPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendConstResolutionPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendExprTypePatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendForIterationResolutionPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendLambdaResolutionPatch;
@@ -1454,6 +1455,10 @@ class FrontendAnalysisDataTest {
             case LOCAL_TYPE_STABILIZATION -> new FrontendLocalTypeStabilizationPatch(localSlotTypeUpdates);
             case CHAIN_BINDING -> new FrontendChainBindingPatch(resolvedMembers, resolvedCalls);
             case EXPR_TYPE -> new FrontendExprTypePatch(expressionTypes, resolvedCalls);
+            case CONST_RESOLUTION -> new FrontendConstResolutionPatch(
+                    new FrontendAstSideTable<>(),
+                    List.of()
+            );
             case FOR_ITERATION_RESOLUTION -> new FrontendForIterationResolutionPatch(
                     new FrontendAstSideTable<>(),
                     localSlotTypeUpdates

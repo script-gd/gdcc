@@ -8,6 +8,7 @@ import gd.script.gdcc.scope.ScopeValue;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 
@@ -44,14 +45,19 @@ public final class FrontendVisibleValueEnumerator {
     public static @NotNull List<ScopeValue> enumerateVisibleValues(@NotNull Scope scope, int useSiteByteOffset) {
         Objects.requireNonNull(scope, "scope must not be null");
         var visibleByName = new LinkedHashMap<String, ScopeValue>();
+        var blockedNames = new LinkedHashSet<String>();
         Scope current = scope;
         while (current != null) {
             for (var value : current.valuesHere()) {
-                if (isNotYetDeclared(value, useSiteByteOffset)) {
+                if (isNotYetDeclared(value, useSiteByteOffset)
+                        || blockedNames.contains(value.name())) {
                     continue;
                 }
                 visibleByName.putIfAbsent(value.name(), value);
             }
+            // Terminal name claims (e.g. a failed class `const`) suppress same-named values from
+            // every outer layer, mirroring the terminal-blocked path of single-name lookup.
+            blockedNames.addAll(current.blockedValueNamesHere());
             current = current.enumerationParentScope();
         }
         return List.copyOf(visibleByName.values());

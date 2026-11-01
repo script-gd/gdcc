@@ -372,22 +372,29 @@ class FrontendEnumSkeletonTest {
         var classDef = findClass(fixture, "EnumBadValues");
         var skeletonDiagnostics = skeletonDiagnostics(fixture);
         assertAll(
-                () -> assertEquals(8, skeletonDiagnostics.size()),
+                () -> assertEquals(7, skeletonDiagnostics.size()),
                 () -> assertTrue(skeletonDiagnostics.stream().allMatch(diagnostic ->
                         diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)),
-                // The good enum, the named group, and the property all survive.
+                // The good enum, the named group, the class const, its enum consumer, and the
+                // property all survive.
                 () -> assertConstantValues(classDef, "GOOD", 9),
+                () -> assertConstantValues(classDef, "C_CLASS_CONST", 5),
+                () -> assertNotNull(findConstant(classDef, "FOO")),
                 () -> assertNotNull(findConstant(classDef, "State")),
                 () -> assertNotNull(findProperty(classDef, "hp")),
-                () -> assertEquals(2, classDef.getScriptConstants().size())
+                () -> assertEquals(4, classDef.getScriptConstants().size())
         );
-        // Every rejected enum subtree is skipped individually (enum indexes 1..8; index 0 is the
-        // healthy named group and index 9 is the surviving sibling).
+        // Every rejected enum subtree is skipped individually (enum indexes 1..6 and 8; index 0
+        // is the healthy named group, index 7 resolves through `FOO`, and index 9 survives).
         for (var index = 1; index <= 8; index++) {
+            if (index == 7) {
+                continue;
+            }
             var enumNode = enumStatement(fixture, index);
             assertTrue(fixture.analysisData().skippedSubtreeRoots().containsKey(enumNode),
                     "Expected skipped subtree root for enum index " + index);
         }
+        assertFalse(fixture.analysisData().skippedSubtreeRoots().containsKey(enumStatement(fixture, 7)));
     }
 
     @Test
@@ -501,7 +508,13 @@ class FrontendEnumSkeletonTest {
                 enum { A = B, B = 1 }
                 """);
 
-        assertEnumRejected(fixture, firstEnumStatement(fixture, 0), "unknown identifier 'B'");
+        // Anonymous member names are class-level names: `B` is recognized as declared, but it is
+        // not usable until its own enum member evaluates — a forward reference, not an unknown.
+        assertEnumRejected(
+                fixture,
+                firstEnumStatement(fixture, 0),
+                "'B' is an enum member name declared in this class that is not usable here"
+        );
         assertTrue(findClass(fixture, "EnumForwardRef").getScriptConstants().isEmpty());
     }
 

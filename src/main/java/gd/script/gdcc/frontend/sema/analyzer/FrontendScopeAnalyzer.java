@@ -11,6 +11,7 @@ import gd.script.gdcc.frontend.scope.BlockScopeKind;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.scope.CallableScopeKind;
 import gd.script.gdcc.frontend.scope.ClassScope;
+import gd.script.gdcc.frontend.scope.FrontendRejectedClassConstant;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.GdScriptEnumGroup;
@@ -25,6 +26,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /// Scope analysis worker that sits between skeleton publication and future binder/body passes.
@@ -76,7 +78,8 @@ public class FrontendScopeAnalyzer {
                 classRegistry,
                 moduleSkeleton,
                 analysisData.skippedSubtreeRoots(),
-                scopesByAst
+                scopesByAst,
+                analysisData.rejectedClassConstants()
         ).walk();
         analysisData.updateScopesByAst(scopesByAst);
     }
@@ -100,6 +103,7 @@ public class FrontendScopeAnalyzer {
         private final @NotNull ClassRegistry classRegistry;
         private final @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
+        private final @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> rejectedClassConstants;
         private final @NotNull List<SourceFile> sourceFilesInOrder;
         private final @NotNull IdentityHashMap<Node, ClassDef> classByAstOwner = new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Node, FrontendSourceClassRelation> sourceRelationByAstOwner =
@@ -111,7 +115,8 @@ public class FrontendScopeAnalyzer {
                 @NotNull ClassRegistry classRegistry,
                 @NotNull FrontendModuleSkeleton moduleSkeleton,
                 @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots,
-                @NotNull FrontendAstSideTable<Scope> scopesByAst
+                @NotNull FrontendAstSideTable<Scope> scopesByAst,
+                @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> rejectedClassConstants
         ) {
             this.classRegistry = Objects.requireNonNull(classRegistry, "classRegistry");
             this.skippedSubtreeRoots = Objects.requireNonNull(
@@ -119,6 +124,10 @@ public class FrontendScopeAnalyzer {
                     "skippedSubtreeRoots"
             );
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst");
+            this.rejectedClassConstants = Objects.requireNonNull(
+                    rejectedClassConstants,
+                    "rejectedClassConstants"
+            );
             sourceFilesInOrder = indexClassDefsByAstOwner(
                     Objects.requireNonNull(moduleSkeleton, "moduleSkeleton")
             );
@@ -157,7 +166,8 @@ public class FrontendScopeAnalyzer {
             var sourceFileScope = new ClassScope(
                     classRegistry,
                     classRegistry,
-                    requireClassDef(sourceFile)
+                    requireClassDef(sourceFile),
+                    rejectedClassConstants
             );
             recordScope(sourceFile, sourceFileScope);
             for (var innerRelation : requireSourceClassRelation(sourceFile).findImmediateInnerRelations(sourceFile)) {
@@ -309,7 +319,7 @@ public class FrontendScopeAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
 
-            var classScope = new ClassScope(currentScope(), classRegistry, classDef);
+            var classScope = new ClassScope(currentScope(), classRegistry, classDef, rejectedClassConstants);
             recordScope(node, classScope);
             for (var innerRelation : requireSourceClassRelation(node).findImmediateInnerRelations(node)) {
                 classScope.defineTypeMeta(innerRelation.toTypeMeta());

@@ -251,7 +251,16 @@ class FrontendInterfacePhaseTest {
                 assertInstanceOf(VariableDeclaration.class, lambdaDeclarations.getFirst().declaration()).name()
         );
         assertEquals(FrontendBodyLocalDeclaration.Kind.ORDINARY_VAR, lambdaDeclarations.getFirst().kind());
-        assertFalse(surface.typedLexicalBaseline().containsDeclaration(answer));
+        // The const joins the structural inventory with its own kind: baseline carries its
+        // declaration + Variant slot, while the exact type lands through CONST_RESOLUTION.
+        var pingDeclarations = surface.bodyDeclarationIndex().declarationsFor(pingFunction.body());
+        var answerRow = pingDeclarations.stream()
+                .filter(declaration -> declaration.declaration() == answer)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("const declaration missing from body inventory"));
+        assertEquals(FrontendBodyLocalDeclaration.Kind.ORDINARY_CONST, answerRow.kind());
+        assertTrue(surface.typedLexicalBaseline().containsDeclaration(answer));
+        assertEquals(GdVariantType.VARIANT, surface.typedLexicalBaseline().typeFor(answer));
         assertTrue(surface.typedLexicalBaseline().containsDeclaration(callback));
     }
 
@@ -349,7 +358,8 @@ class FrontendInterfacePhaseTest {
         assertTrue(surface.suiteEntryRoots().containsSupportedBlock(matchStatement.sections().getFirst().body()));
         assertTrue(surface.bodyDeclarationIndex().containsBodyRoot(lambda.body()));
         assertTrue(surface.bodyDeclarationIndex().containsBodyRoot(matchStatement.sections().getFirst().body()));
-        assertFalse(surface.typedLexicalBaseline().containsDeclaration(blocked));
+        // `const` declarations are part of the same structural surface as `var` now.
+        assertTrue(surface.typedLexicalBaseline().containsDeclaration(blocked));
     }
 
     @Test

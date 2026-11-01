@@ -15,16 +15,19 @@ import gd.script.gdcc.scope.SignalDef;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /// Frontend lexical scope for a class body and the unqualified member view seen from inside that class.
 ///
@@ -85,14 +88,34 @@ public final class ClassScope extends AbstractFrontendScope {
     /// value-adjacent member table and do not get conflated with type declarations.
     private final Map<String, List<FunctionDef>> directFunctionsByName = new LinkedHashMap<>();
 
+    /// Failed class-`const` records keyed by owner canonical name (`Map.of()` when absent).
+    ///
+    /// The mask keeps a rejected constant's name terminally blocked inside value resolution:
+    /// references still hit a `CONSTANT` binding instead of silently falling through to
+    /// ancestor members, globals, or an "unknown identifier" report — while a same-name
+    /// legitimate member on the same layer still resolves normally (members are checked first).
+    private final Map<String, Map<String, FrontendRejectedClassConstant>> rejectedClassConstants;
+
     public ClassScope(
             @NotNull Scope parentScope,
             @NotNull ClassRegistry classRegistry,
             @NotNull ClassDef currentClass
     ) {
+        this(parentScope, classRegistry, currentClass, Map.of());
+    }
+
+    /// @param rejectedClassConstants failed class-`const` records keyed by owner canonical name;
+    ///        masked names resolve as blocked constants instead of falling through to outer names
+    public ClassScope(
+            @NotNull Scope parentScope,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ClassDef currentClass,
+            @NotNull Map<String, Map<String, FrontendRejectedClassConstant>> rejectedClassConstants
+    ) {
         super(Objects.requireNonNull(parentScope, "parentScope"));
         this.classRegistry = Objects.requireNonNull(classRegistry, "classRegistry");
         this.currentClass = Objects.requireNonNull(currentClass, "currentClass");
+        this.rejectedClassConstants = Map.copyOf(rejectedClassConstants);
         indexDirectMembers(currentClass);
     }
 
@@ -168,6 +191,16 @@ public final class ClassScope extends AbstractFrontendScope {
             return toClassValueResult(directValue, restriction);
         }
 
+        // A rejected class `const` masks its name on the direct layer: the blocked constant
+        // binding keeps references from falling through to ancestor members or globals, while a
+        // same-name legitimate direct member (handled above) still wins over the mask.
+        if (FrontendClassConstantLookup.probe(currentClass, name, rejectedClassConstants)
+                instanceof FrontendClassConstantLookup.ProbeResult.TerminalBlocked blocked) {
+            // Terminal block, not a restriction decision: the failed const poisons the name for
+            // every consumer of this layer, so `FOUND_BLOCKED` is unconditional.
+            return ScopeLookupResult.foundBlocked(toRejectedConstantScopeValue(blocked.rejected()));
+        }
+
         // Inherited members are part of the class scope layer, not separate lexical parents.
         //
         // This mirrors Godot's identifier reduction order: locals first, then current/inherited
@@ -208,30 +241,62 @@ public final class ClassScope extends AbstractFrontendScope {
     /// Visible-name enumeration view of this class layer: direct members first, then inherited
     /// members in inheritance-walk order (nearest class layer wins by name), mirroring the member
     /// set that `resolveValueHere(...)` can resolve. Functions stay in their own namespace and are
-    /// not part of value enumeration.
+    /// not part of value enumeration. Failed-`const` masks terminate enumeration exactly like
+    /// single-name lookup: the entry class's mask suppresses every inherited contribution of the
+    /// name, and each ancestor layer's mask suppresses contributions from deeper layers.
     @Override
     public @NotNull Collection<ScopeValue> valuesHere() {
         var valuesByName = new LinkedHashMap<String, ScopeValue>();
         for (var directValue : directValuesByName.values()) {
             valuesByName.put(directValue.name(), directValue);
         }
+        var maskedNames = new HashSet<>(rejectedNamesHere());
         for (var inheritedClass : walkInheritedClasses("*", "value enumeration")) {
             for (var property : inheritedClass.getProperties()) {
-                valuesByName.putIfAbsent(property.getName(), toPropertyScopeValue(property));
+                if (!maskedNames.contains(property.getName())) {
+                    valuesByName.putIfAbsent(property.getName(), toPropertyScopeValue(property));
+                }
             }
             for (var signal : inheritedClass.getSignals()) {
-                valuesByName.putIfAbsent(signal.getName(), toSignalScopeValue(signal));
+                if (!maskedNames.contains(signal.getName())) {
+                    valuesByName.putIfAbsent(signal.getName(), toSignalScopeValue(signal));
+                }
             }
             // Script constants inherit as plain value bindings, mirroring resolveInheritedValueMember.
             for (var constant : inheritedClass.getScriptConstants()) {
-                valuesByName.putIfAbsent(
-                        constant.name(),
-                        new ScopeValue(constant.name(), constant.type(), ScopeValueKind.CONSTANT,
-                                constant.declaration(), true, false, true)
-                );
+                if (!maskedNames.contains(constant.name())) {
+                    valuesByName.putIfAbsent(
+                            constant.name(),
+                            new ScopeValue(constant.name(), constant.type(), ScopeValueKind.CONSTANT,
+                                    constant.declaration(), true, false, true)
+                    );
+                }
             }
+            maskedNames.addAll(
+                    rejectedClassConstants.getOrDefault(inheritedClass.getName(), Map.of()).keySet()
+            );
         }
         return List.copyOf(valuesByName.values());
+    }
+
+    /// Failed-`const` names terminally claimed at this class layer — the enumeration-time
+    /// counterpart of the `FOUND_BLOCKED` mask probe. Inherited layers' masks are effective at
+    /// this layer too (`resolveInheritedValueMember` blocks them per layer), so the returned
+    /// set unions the whole class hierarchy instead of only the entry class.
+    @Override
+    public @NotNull Set<String> blockedValueNamesHere() {
+        var names = new LinkedHashSet<>(rejectedNamesHere());
+        for (var inheritedClass : walkInheritedClasses("*", "blocked-name enumeration")) {
+            names.addAll(
+                    rejectedClassConstants.getOrDefault(inheritedClass.getName(), Map.of()).keySet()
+            );
+        }
+        return names;
+    }
+
+    /// Names this class's failed `const` declarations mask from inherited/outer lookup.
+    private @NotNull Set<String> rejectedNamesHere() {
+        return rejectedClassConstants.getOrDefault(currentClass.getName(), Map.of()).keySet();
     }
 
     /// Enumeration walks the same chain shape as `resolveValue(...)`: class layers skip continuous
@@ -308,12 +373,14 @@ public final class ClassScope extends AbstractFrontendScope {
                     return toClassValueResult(toSignalScopeValue(signal), restriction);
                 }
             }
-            // Script constants (enum members/groups) are inherited as plain value bindings:
-            // subclasses may reference parent enum constants unqualified, nearest class layer wins.
-            // Engine/builtin constants stay on the extension metadata channel and never enter
-            // `getScriptConstants()`, so this loop cannot leak engine enum bare names.
-            for (var constant : inheritedClass.getScriptConstants()) {
-                if (constant.name().equals(name)) {
+            // Script constants are inherited as plain value bindings — enum members/groups and
+            // evaluated class `const` values alike. The shared probe also surfaces a failed
+            // `const` on this layer as a terminal blocker, so the name cannot shadow-fall to a
+            // further ancestor or a global name. Engine/builtin constants stay on the extension
+            // metadata channel and never enter `getScriptConstants()`.
+            switch (FrontendClassConstantLookup.probe(inheritedClass, name, rejectedClassConstants)) {
+                case FrontendClassConstantLookup.ProbeResult.Usable usable -> {
+                    var constant = usable.constant();
                     return toClassValueResult(
                             new ScopeValue(
                                     constant.name(),
@@ -326,6 +393,11 @@ public final class ClassScope extends AbstractFrontendScope {
                             ),
                             restriction
                     );
+                }
+                case FrontendClassConstantLookup.ProbeResult.TerminalBlocked blocked -> {
+                    return ScopeLookupResult.foundBlocked(toRejectedConstantScopeValue(blocked.rejected()));
+                }
+                case FrontendClassConstantLookup.ProbeResult.Miss _ -> {
                 }
             }
         }
@@ -413,6 +485,24 @@ public final class ClassScope extends AbstractFrontendScope {
                 true,
                 false,
                 false
+        );
+    }
+
+    /// Converts a failed class `const` record into the blocked `CONSTANT` binding it masks as.
+    ///
+    /// `GdVariantType.VARIANT` is only a recovery placeholder: the declaration failed evaluation,
+    /// so it never carries a usable type. `isConstantBound` marks it as const-claimed so the
+    /// binding owner can distinguish "depends on an invalid constant" (poison) from ordinary
+    /// access restriction (permission) by `declaration()` identity.
+    private @NotNull ScopeValue toRejectedConstantScopeValue(@NotNull FrontendRejectedClassConstant rejected) {
+        return new ScopeValue(
+                rejected.declaration().name().trim(),
+                GdVariantType.VARIANT,
+                ScopeValueKind.CONSTANT,
+                rejected.declaration(),
+                true,
+                false,
+                true
         );
     }
 

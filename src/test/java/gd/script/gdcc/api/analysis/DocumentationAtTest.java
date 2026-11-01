@@ -29,6 +29,8 @@ class DocumentationAtTest {
             
             var count: int = 1
             
+            const CLASS_K = 7
+            
             func greet() -> String:
                 return "derived"
             
@@ -51,6 +53,11 @@ class DocumentationAtTest {
                 var bad = vu.x
                 var bad2 = self.no_such_member
                 var bad3 = missing_name
+            
+            func consts() -> void:
+                const LOCAL_K = 3
+                var lk = LOCAL_K
+                var ck = CLASS_K
             """;
     private static final String BASE_PATH = "/src/doc_base.gd";
     private static final String BASE_SOURCE = """
@@ -220,6 +227,19 @@ class DocumentationAtTest {
                 snapshot, DERIVED_PATH, offsetInside(DERIVED_SOURCE, "IDLE", 1)).orElseThrow();
         assertDescriptor(DocSymbolKind.ENUM_VALUE, DocNamespace.GDCC, "DocDerived", "IDLE", enumValue);
         assertEquals(1, enumValue.sourceLocations().size());
+    }
+
+    @Test
+    void bodyLocalConstReportsNoClassOwner() {
+        // A function-local `const` has no declaring class: its owner must be null, while the
+        // class-level `const` in the same file keeps the class owner.
+        var localConst = FrontendSnapshotQueryService.documentationAt(
+                snapshot, DERIVED_PATH, offsetInside(DERIVED_SOURCE, "LOCAL_K", 1)).orElseThrow();
+        assertDescriptor(DocSymbolKind.CONSTANT, DocNamespace.GDCC, null, "LOCAL_K", localConst);
+
+        var classConst = FrontendSnapshotQueryService.documentationAt(
+                snapshot, DERIVED_PATH, offsetInside(DERIVED_SOURCE, "CLASS_K", 1)).orElseThrow();
+        assertDescriptor(DocSymbolKind.CONSTANT, DocNamespace.GDCC, "DocDerived", "CLASS_K", classConst);
     }
 
     @Test

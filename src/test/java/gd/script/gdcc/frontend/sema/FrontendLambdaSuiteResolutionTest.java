@@ -514,7 +514,7 @@ class FrontendLambdaSuiteResolutionTest {
     }
 
     @Test
-    void captureDeclaredAfterLambdaStatementIsRegisteredButUseSiteStaysFiltered() throws Exception {
+    void captureDeclaredAfterLambdaStatementIsNotRegisteredAndUseSiteStaysFiltered() throws Exception {
         var analysisData = analyze("lambda_capture_after_use.gd", """
                 class_name LambdaCaptureAfterUse
                 extends Node
@@ -530,11 +530,10 @@ class FrontendLambdaSuiteResolutionTest {
 
         var plan = analysisData.analysisData().lambdaPlans().get(lambda);
 
-        // The planner may register the name, but the declaration is not visible at the lambda
-        // statement: no stabilization update exists yet, so the inventory baseline is frozen.
+        // The planner sees the same declaration-order rule as body binding: `late` is not
+        // visible inside the lambda, so no capture is registered for it at all.
         assertNotNull(plan);
-        assertEquals(1, plan.captures().size());
-        assertEquals(GdVariantType.VARIANT, plan.captures().getFirst().type());
+        assertTrue(plan.captures().stream().noneMatch(capture -> capture.name().equals("late")));
         // The use site itself stays fail-closed through the ordinary declaration-after-use route:
         // it binds UNKNOWN (never CAPTURE) and keeps the source-level binding diagnostic.
         var lateBinding = analysisData.analysisData().symbolBindings().get(lateUseSite);

@@ -189,6 +189,81 @@ public class StringUtilTest {
     }
 
     @Test
+    public void escapeCUtf8BytesLiteralEmitsByteLevelOctal() {
+        assertEquals("abc", StringUtil.escapeCUtf8BytesLiteral("abc"));
+        assertEquals("a\\\"b\\\\c", StringUtil.escapeCUtf8BytesLiteral("a\"b\\c"));
+        // Embedded NUL and control bytes become fixed three-digit octal — no `\u0000` UCN.
+        assertEquals("a\\000b", StringUtil.escapeCUtf8BytesLiteral("a\0b"));
+        assertEquals("\\001\\011\\012\\015\\177", StringUtil.escapeCUtf8BytesLiteral("\u0001\t\n\r\u007F"));
+        // Fixed width means a trailing digit can never extend the escape (`\000` + `1`).
+        assertEquals("a\\0001", StringUtil.escapeCUtf8BytesLiteral("a\0" + "1"));
+        // Multi-byte UTF-8 escapes byte-by-byte; C1/C2 lead bytes included.
+        assertEquals("\\303\\251", StringUtil.escapeCUtf8BytesLiteral("é"));
+        assertEquals("\\344\\270\\255\\346\\226\\207", StringUtil.escapeCUtf8BytesLiteral("中文"));
+        assertEquals("\\360\\237\\230\\200", StringUtil.escapeCUtf8BytesLiteral("\uD83D\uDE00"));
+    }
+
+    @Test
+    public void escapeCUtf8BytesEncodesTheSameArray() {
+        var utf8 = "é".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals("\\303\\251", StringUtil.escapeCUtf8Bytes(utf8));
+        assertEquals(2, utf8.length);
+    }
+
+    @Test
+    public void escapeLirStringLiteralKeepsNamedEscapesAndEscapesXmlUnsafeChars() {
+        assertEquals("a\\nb\\rc\\td\\\"e\\\\f", StringUtil.escapeLirStringLiteral("a\nb\rc\td\"e\\f"));
+        // XML-1.0-forbidden controls and unpaired surrogates become fixed-width \\uXXXX.
+        assertEquals("a\\u0000b", StringUtil.escapeLirStringLiteral("a\0b"));
+        assertEquals("\\u0001\\u001F\\u007F\\u0085", StringUtil.escapeLirStringLiteral("\u0001\u001F\u007F\u0085"));
+        assertEquals("\\uFFFE\\uFFFF", StringUtil.escapeLirStringLiteral("\uFFFE\uFFFF"));
+        assertEquals("\\uD800", StringUtil.escapeLirStringLiteral("\uD800"));
+        assertEquals("\\uDC00", StringUtil.escapeLirStringLiteral("\uDC00"));
+        // Valid surrogate pairs and ordinary non-ASCII text stay raw.
+        assertEquals("\uD83D\uDE00", StringUtil.escapeLirStringLiteral("\uD83D\uDE00"));
+        assertEquals("中文", StringUtil.escapeLirStringLiteral("中文"));
+        // A real backslash escapes first: literal `\u0000` text stays distinct from a real NUL.
+        assertEquals("a\\\\u0000b", StringUtil.escapeLirStringLiteral("a\\u0000b"));
+    }
+
+    @Test
+    public void unescapeLirStringLiteralDecodesStrictly() {
+        assertEquals("a\nb\rc\td\"e\\f", StringUtil.unescapeLirStringLiteral("a\\nb\\rc\\td\\\"e\\\\f"));
+        assertEquals("a\0b", StringUtil.unescapeLirStringLiteral("a\\u0000b"));
+        // Exactly four hex digits: `\u0000` then literal `1`, and hex case is free.
+        assertEquals("\0" + "1", StringUtil.unescapeLirStringLiteral("\\u00001"));
+        assertEquals("éÉ", StringUtil.unescapeLirStringLiteral("\\u00e9\\u00C9"));
+        // Raw non-escape content, including non-ASCII, passes through.
+        assertEquals("中文a", StringUtil.unescapeLirStringLiteral("中文a"));
+    }
+
+    @Test
+    public void unescapeLirStringLiteralRejectsMalformedEscapes() {
+        assertAll(
+                () -> assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeLirStringLiteral("\\u")),
+                () -> assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeLirStringLiteral("\\u000")),
+                () -> assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeLirStringLiteral("\\u000G")),
+                // `Integer.parseInt` accepts a leading sign and non-ASCII digits — all of them
+                // must be rejected before parsing, not decoded into wrong characters.
+                () -> assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeLirStringLiteral("\\u+041")),
+                () -> assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeLirStringLiteral("\\u-001")),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> StringUtil.unescapeLirStringLiteral("\\u００４１")),
+                () -> assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeLirStringLiteral("\\q")),
+                () -> assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeLirStringLiteral("\\U0001F600")),
+                () -> assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeLirStringLiteral("a\\"))
+        );
+    }
+
+    @Test
+    public void lirStringLiteralRoundTripsThroughEscapePair() {
+        for (var payload : List.of("plain", "a\0b", "quote\"and\\backslash", "\n\r\t",
+                "中文é", "\uD83D\uDE00", "\u0001\u001F", "\uFFFE", "a\\u0000b", "\0next1")) {
+            assertEquals(payload, StringUtil.unescapeLirStringLiteral(StringUtil.escapeLirStringLiteral(payload)));
+        }
+    }
+
+    @Test
     public void decodeGdStringLexemeNormalizesStringAndStringNamePayloads() {
         assertAll(
                 () -> assertEquals("hello", StringUtil.decodeGdStringLexeme("\"hello\"")),

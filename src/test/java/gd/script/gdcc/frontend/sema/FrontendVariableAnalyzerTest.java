@@ -392,7 +392,7 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
-    void analyzeBindsForAndMatchInventoryWhileBlockLocalConstRemainUnsupported() throws Exception {
+    void analyzeBindsForAndMatchInventoryAlongsideBlockLocalConst() throws Exception {
         var phaseInput = publishedPhaseInput("phase4_deferred_boundaries.gd", """
                 class_name DeferredBoundaries
                 extends Node
@@ -445,14 +445,10 @@ class FrontendVariableAnalyzerTest {
 
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
         var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
-        var constWarning = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(answerConst.range()));
 
-        assertEquals(1, newDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.ERROR, constWarning.severity());
-        assertEquals("sema.unsupported_variable_inventory_subtree", constWarning.category());
-        assertTrue(constWarning.message().contains("does not support block-local `const` declarations"));
-        assertTrue(constWarning.message().contains("constant 'answer'"));
-        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), constWarning.sourcePath());
+        // The const binds silently as a read-only CONSTANT slot; evaluation stays with the
+        // CONST_RESOLUTION owner, not the inventory pass.
+        assertEquals(0, newDiagnostics.size(), () -> "Unexpected diagnostics: " + newDiagnostics);
         var plainLocalBinding = pingBodyScope.resolveValueHere("plain_local");
         assertNotNull(plainLocalBinding);
         assertEquals(GdVariantType.VARIANT, plainLocalBinding.type());
@@ -479,7 +475,13 @@ class FrontendVariableAnalyzerTest {
         assertNotNull(fromMatchBinding);
         assertEquals(GdVariantType.VARIANT, fromMatchBinding.type());
         assertSame(fromMatch, fromMatchBinding.declaration());
-        assertNull(pingBodyScope.resolveValueHere("answer"));
+        var answerBinding = pingBodyScope.resolveValueHere("answer");
+        assertNotNull(answerBinding);
+        assertEquals(ScopeValueKind.CONSTANT, answerBinding.kind());
+        assertEquals(GdVariantType.VARIANT, answerBinding.type());
+        assertSame(answerConst, answerBinding.declaration());
+        assertTrue(answerBinding.constant());
+        assertFalse(answerBinding.writable());
     }
 
     @Test
@@ -681,7 +683,7 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
-    void analyzeBindsMatchInsideLambdaBodyWhileBlockLocalConstStayUnsupported() throws Exception {
+    void analyzeBindsMatchInsideLambdaBodyWhileBlockLocalConstBinds() throws Exception {
         var phaseInput = publishedPhaseInput("phase4_lambda_deferred_boundaries.gd", """
                 class_name LambdaDeferredBoundaries
                 extends Node
@@ -717,13 +719,11 @@ class FrontendVariableAnalyzerTest {
 
         new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
 
-        // Match inventory is published inside lambda bodies; block-local `const` stays deferred.
+        // Match inventory is published inside lambda bodies; the block-local `const` binds as a
+        // read-only CONSTANT slot without an inventory diagnostic.
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
         var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
-        var constError = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(constDeclaration.range()));
-        assertEquals(1, newDiagnostics.size());
-        assertEquals("sema.unsupported_variable_inventory_subtree", constError.category());
-        assertTrue(constError.message().contains("does not support block-local `const` declarations"));
+        assertEquals(0, newDiagnostics.size(), () -> "Unexpected diagnostics: " + newDiagnostics);
         var matchSectionScope = assertInstanceOf(
                 BlockScope.class,
                 phaseInput.analysisData().scopesByAst().get(matchStatement.sections().getFirst())
@@ -735,10 +735,17 @@ class FrontendVariableAnalyzerTest {
         assertNotNull(itemBinding);
         assertEquals(ScopeValueKind.PARAMETER, itemBinding.kind());
 
-        // Names inside the deferred `const` subtree must not leak into captures or locals.
+        // A const initializer may only name frozen constants, never captures — `seed` inside the
+        // initializer must not leak into the capture surface, while `k` binds as the lambda
+        // body's own CONSTANT slot.
         assertNull(lambdaScope.resolveValueHere("seed"));
         assertNull(lambdaScope.resolveValueHere("k"));
-        assertNull(lambdaBodyScope.resolveValueHere("k"));
+        var constBinding = lambdaBodyScope.resolveValueHere("k");
+        assertNotNull(constBinding);
+        assertEquals(ScopeValueKind.CONSTANT, constBinding.kind());
+        assertSame(constDeclaration, constBinding.declaration());
+        assertTrue(constBinding.constant());
+        assertFalse(constBinding.writable());
     }
 
     @Test

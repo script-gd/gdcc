@@ -142,6 +142,41 @@ public final class BlockScope extends AbstractFrontendScope {
         );
     }
 
+    /// Rewrites the type of an already-published block-local constant binding.
+    ///
+    /// Mirrors `resetLocalType` under the constant contract: only an existing `CONSTANT` binding
+    /// with the same declaration identity can be rewritten, and the caller is expected to have
+    /// already enforced the Variant-baseline/idempotent rule. All other attributes of the slot —
+    /// `constant`, `writable`, `staticMember`, and the declaration object — are preserved so use
+    /// sites keep pointing at the same `VariableDeclaration` after the exact frozen type lands.
+    public void resetConstantType(
+            @NotNull String name,
+            @NotNull Object declaration,
+            @NotNull GdType type
+    ) {
+        Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(declaration, "declaration");
+        Objects.requireNonNull(type, "type");
+        var existing = valuesByName.get(name);
+        if (existing == null
+                || existing.kind() != ScopeValueKind.CONSTANT
+                || existing.declaration() != declaration) {
+            return;
+        }
+        valuesByName.put(
+                name,
+                new ScopeValue(
+                        existing.name(),
+                        type,
+                        existing.kind(),
+                        existing.declaration(),
+                        existing.constant(),
+                        existing.writable(),
+                        existing.staticMember()
+                )
+        );
+    }
+
     private void defineValue(
             @NotNull String name,
             @NotNull GdType type,

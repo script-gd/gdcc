@@ -84,20 +84,25 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
         // Ordinary String payloads may legitimately contain leading/trailing quotes, so backend keeps
         // this path payload-only instead of guessing whether the producer accidentally passed a raw
         // source lexeme.
-        // UTF-8 C string literals are direct `const char*`, not object values.
-        var utf8Literal = bodyBuilder.valueOfCStringLiteral(value);
+        // The decoded payload is consumed as explicit UTF-8 bytes: the literal renders each
+        // non-safe byte as fixed-width octal, and `p_size` carries the byte count of the same
+        // array. The NUL-terminated `utf8_chars` wrappers cannot be used here — they would
+        // truncate at an embedded NUL and lose the tail of the string.
+        var utf8Literal = bodyBuilder.valueOfCUtf8BytesLiteral(value);
+        var utf8ByteLength = bodyBuilder.valueOfExpr(
+                Integer.toString(utf8Literal.utf8Bytes().length), GdIntType.INT);
         if (resultVar.ref()) {
             bodyBuilder.callVoid(
-                    "godot_string_new_with_utf8_chars",
-                    List.of(bodyBuilder.valueOfVar(resultVar), utf8Literal)
+                    "godot_string_new_with_utf8_chars_and_len",
+                    List.of(bodyBuilder.valueOfVar(resultVar), utf8Literal, utf8ByteLength)
             );
             return;
         }
         bodyBuilder.callAssign(
                 bodyBuilder.targetOfVar(resultVar),
-                "godot_new_String_with_utf8_chars",
+                "godot_new_String_with_utf8_chars_and_len",
                 resultVar.type(),
-                List.of(utf8Literal)
+                List.of(utf8Literal, utf8ByteLength)
         );
     }
 

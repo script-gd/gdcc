@@ -2,7 +2,10 @@ package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.frontend.scope.BlockScope;
+import gd.script.gdcc.frontend.sema.patch.FrontendConstResolutionPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendConstTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendChainBindingPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendExprTypePatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendForIterationResolutionPatch;
@@ -42,6 +45,10 @@ public final class FrontendTypedLexicalEnvironment {
     private final @NotNull FrontendAnalysisData stableData;
     private final @Nullable FrontendTypedLexicalEnvironment parent;
     private final @Nullable FrontendTypedLexicalBaseline typedBaseline;
+    /// Constant-fact fallback consulted only when `parent` is null — the lambda case, where the
+    /// environment deliberately has no parent so mutable outer bindings cannot leak past the
+    /// capture boundary, while frozen constant facts stay readable through this narrow view.
+    private final @Nullable FrontendConstFactView constFactView;
     private final @NotNull OverlayFacts pendingFacts = new OverlayFacts();
     private final @NotNull OverlayFacts committedFacts = new OverlayFacts();
 
@@ -66,10 +73,21 @@ public final class FrontendTypedLexicalEnvironment {
             @Nullable FrontendTypedLexicalEnvironment parent,
             @Nullable FrontendTypedLexicalBaseline typedBaseline
     ) {
+        this(scope, stableData, parent, typedBaseline, null);
+    }
+
+    public FrontendTypedLexicalEnvironment(
+            @NotNull Scope scope,
+            @NotNull FrontendAnalysisData stableData,
+            @Nullable FrontendTypedLexicalEnvironment parent,
+            @Nullable FrontendTypedLexicalBaseline typedBaseline,
+            @Nullable FrontendConstFactView constFactView
+    ) {
         this.scope = Objects.requireNonNull(scope, "scope must not be null");
         this.stableData = Objects.requireNonNull(stableData, "stableData must not be null");
         this.parent = parent;
         this.typedBaseline = typedBaseline;
+        this.constFactView = constFactView;
     }
 
     public @NotNull Scope scope() {
@@ -160,19 +178,77 @@ public final class FrontendTypedLexicalEnvironment {
         return typedBaseline != null ? typedBaseline.typeFor(astNode) : null;
     }
 
-    /// Returns the effective local value without mutating the owning `BlockScope` slot.
+    /// Overlay-aware read of a constant evaluation fact keyed by its declaration node.
+    ///
+    /// Lookup order mirrors every other overlay fact: this suite's pending write wins, then
+    /// committed facts, then the stable table, then the parent chain — or the constant fact view
+    /// when this environment is a parentless (lambda) root. A fact never published anywhere
+    /// returns `null`; callers treat that as "not evaluated yet", never as success.
+    public @Nullable Evaluation constantFact(@NotNull Node declaration) {
+        var fact = firstNonNull(
+                pendingFacts.constantFacts.get(declaration),
+                committedFacts.constantFacts.get(declaration),
+                stableData.constantFacts().get(declaration)
+        );
+        if (fact != null) {
+            return fact;
+        }
+        if (parent != null) {
+            return parent.constantFact(declaration);
+        }
+        return constFactView != null ? constFactView.constantFact(declaration) : null;
+    }
+
+    /// Returns the effective local or constant value without mutating the owning `BlockScope`
+    /// slot. A `const` joins the same overlay contract as a `var`: its exact value type lands in
+    /// `CONST_RESOLUTION` after the scope binding was already published with the baseline type, so
+    /// callers observe the overlay-updated type here while `applyConstTypeUpdate` makes the same
+    /// type permanent at export.
     public @NotNull ScopeValue effectiveScopeValue(@NotNull ScopeValue value, @NotNull Scope owningScope) {
         var checkedValue = Objects.requireNonNull(value, "value must not be null");
-        if (!(owningScope instanceof BlockScope blockScope)
-                || checkedValue.kind() != ScopeValueKind.LOCAL
-                || checkedValue.declaration() == null) {
+        if (!(owningScope instanceof BlockScope blockScope) || checkedValue.declaration() == null) {
             return checkedValue;
         }
-        var effectiveType = localSlotType(blockScope, checkedValue.name(), checkedValue.declaration());
+        var effectiveType = switch (checkedValue.kind()) {
+            case LOCAL -> localSlotType(blockScope, checkedValue.name(), checkedValue.declaration());
+            case CONSTANT -> constSlotType(blockScope, checkedValue.name(), checkedValue.declaration());
+            default -> null;
+        };
         if (effectiveType == null || FrontendAnalysisData.sameType(checkedValue.type(), effectiveType)) {
             return checkedValue;
         }
         return withType(checkedValue, effectiveType);
+    }
+
+    /// Returns the committed overlay type a `const` slot carries at this lookup point, or `null`
+    /// when the constant has no exact-type update yet. Parentless lambda environments fall back to
+    /// the fact view itself: a `Resolved` fact fixes the same type the update would publish.
+    public @Nullable GdType constSlotType(
+            @NotNull BlockScope blockScope,
+            @NotNull String name,
+            @NotNull Object declaration
+    ) {
+        var pendingType = pendingFacts.constSlotType(blockScope, name, declaration);
+        if (pendingType != null) {
+            return pendingType;
+        }
+        var committedType = committedFacts.constSlotType(blockScope, name, declaration);
+        if (committedType != null) {
+            return committedType;
+        }
+        if (parent != null) {
+            var parentType = parent.constSlotType(blockScope, name, declaration);
+            if (parentType != null) {
+                return parentType;
+            }
+        }
+        if (constFactView != null && declaration instanceof Node node) {
+            var fact = constFactView.constantFact(node);
+            if (fact instanceof Evaluation.Resolved resolved) {
+                return resolved.value().type();
+            }
+        }
+        return null;
     }
 
     public @Nullable GdType localSlotType(
@@ -268,6 +344,74 @@ public final class FrontendTypedLexicalEnvironment {
             }
             default -> throw FrontendAnalysisData.patchFailure(
                     owner + " cannot publish local slot type updates");
+        }
+    }
+
+    /// Publishes one local constant evaluation fact keyed by its `VariableDeclaration`. The fact
+    /// stays pending until the statement boundary flushes it committed; the const-resolution
+    /// owner is the only stage allowed to write here.
+    public void putConstantFact(
+            @NotNull FrontendSemanticStage owner,
+            @NotNull Node declaration,
+            @NotNull Evaluation evaluation
+    ) {
+        requireOwner(owner, FrontendSemanticStage.CONST_RESOLUTION);
+        putSideTable(
+                stableData.constantFacts(),
+                committedFacts.constantFacts,
+                pendingFacts.constantFacts,
+                declaration,
+                evaluation,
+                "constantFacts",
+                FrontendAnalysisData::sameEvaluation
+        );
+    }
+
+    /// Records one constant slot type rewrite (Variant baseline -> exact frozen type). The update
+    /// is validated against the surviving `CONSTANT` binding immediately, but the `BlockScope`
+    /// mutation itself is deferred to suite export like every other overlay fact.
+    public void addConstTypeUpdate(
+            @NotNull FrontendSemanticStage owner,
+            @NotNull FrontendConstTypeUpdate update
+    ) {
+        requireOwner(owner, FrontendSemanticStage.CONST_RESOLUTION);
+        validateConstTypeUpdate(update);
+        pendingFacts.constTypeUpdates.add(update);
+    }
+
+    private void validateConstTypeUpdate(@NotNull FrontendConstTypeUpdate update) {
+        FrontendAnalysisData.checkNoVoidLocalSlotType(update.type(), update.name());
+        FrontendAnalysisData.checkNoCompilerOnlyLeak(
+                update.type(),
+                "constant type update for '" + update.name() + "'"
+        );
+        var currentValue = update.scope().resolveValueHere(update.name());
+        if (currentValue == null) {
+            throw FrontendAnalysisData.patchFailure(
+                    "constant type update targeted a missing binding for '" + update.name() + "'");
+        }
+        if (currentValue.kind() != ScopeValueKind.CONSTANT) {
+            throw FrontendAnalysisData.patchFailure(
+                    "constant type update targeted a non-constant binding for '" + update.name() + "'");
+        }
+        if (currentValue.declaration() != update.declaration()) {
+            throw FrontendAnalysisData.patchFailure(
+                    "constant type update targeted a different declaration for '" + update.name() + "'");
+        }
+        if (FrontendAnalysisData.sameType(currentValue.type(), update.type())) {
+            return;
+        }
+        // The only legal refinement is baseline Variant -> exact frozen type: a constant slot
+        // that already carries an exact type must never be rewritten by a second owner.
+        if (!(currentValue.type() instanceof GdVariantType)) {
+            throw FrontendAnalysisData.patchFailure(
+                    "constant type update changed exact type for '"
+                            + update.name()
+                            + "' from "
+                            + currentValue.type().getTypeName()
+                            + " to "
+                            + update.type().getTypeName()
+            );
         }
     }
 
@@ -650,6 +794,8 @@ public final class FrontendTypedLexicalEnvironment {
         private final @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans =
                 new FrontendAstSideTable<>();
         private final @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans = new FrontendAstSideTable<>();
+        private final @NotNull FrontendAstSideTable<Evaluation> constantFacts = new FrontendAstSideTable<>();
+        private final @NotNull List<FrontendConstTypeUpdate> constTypeUpdates = new ArrayList<>();
 
         private @Nullable FrontendResolvedCall resolvedCall(@NotNull Node astNode) {
             var chainCall = chainResolvedCalls.get(astNode);
@@ -700,6 +846,22 @@ public final class FrontendTypedLexicalEnvironment {
                     : findLocalSlotTypeUpdate(localSlotTypeUpdates, scope, name, declaration);
         }
 
+        private @Nullable GdType constSlotType(
+                @NotNull BlockScope scope,
+                @NotNull String name,
+                @NotNull Object declaration
+        ) {
+            for (var i = constTypeUpdates.size() - 1; i >= 0; i--) {
+                var update = constTypeUpdates.get(i);
+                if (update.scope() == scope
+                        && update.declaration() == declaration
+                        && update.name().equals(name)) {
+                    return update.type();
+                }
+            }
+            return null;
+        }
+
         private void mergeFrom(@NotNull OverlayFacts incoming) {
             mergeSideTable(symbolBindings, incoming.symbolBindings, "symbolBindings", FrontendAnalysisData::sameBinding);
             mergeSideTable(resolvedMembers, incoming.resolvedMembers, "resolvedMembers", FrontendAnalysisData::sameResolvedMember);
@@ -742,7 +904,14 @@ public final class FrontendTypedLexicalEnvironment {
                     FrontendContainerLiteralPlan::samePlan
             );
             mergeSideTable(lambdaPlans, incoming.lambdaPlans, "lambdaPlans", FrontendLambdaPlan::samePlan);
+            mergeSideTable(
+                    constantFacts,
+                    incoming.constantFacts,
+                    "constantFacts",
+                    FrontendAnalysisData::sameEvaluation
+            );
             localSlotTypeUpdates.addAll(incoming.localSlotTypeUpdates);
+            constTypeUpdates.addAll(incoming.constTypeUpdates);
             forIterationSlotTypeUpdates.addAll(incoming.forIterationSlotTypeUpdates);
             matchPatternSlotTypeUpdates.addAll(incoming.matchPatternSlotTypeUpdates);
         }
@@ -762,6 +931,8 @@ public final class FrontendTypedLexicalEnvironment {
             FrontendPublishedFactTypeGuard.checkTypeTestTargets(typeTestTargets);
             FrontendPublishedFactTypeGuard.checkContainerLiteralPlans(containerLiteralPlans);
             FrontendPublishedFactTypeGuard.checkLambdaPlans(lambdaPlans);
+            FrontendPublishedFactTypeGuard.checkConstantFacts(constantFacts);
+            FrontendPublishedFactTypeGuard.checkConstTypeUpdates(constTypeUpdates);
         }
 
         private @NotNull List<FrontendOwnerPatch> toOwnerPatches() {
@@ -785,6 +956,9 @@ public final class FrontendTypedLexicalEnvironment {
                         typeTestTargets,
                         containerLiteralPlans
                 ));
+            }
+            if (!constantFacts.isEmpty() || !constTypeUpdates.isEmpty()) {
+                patches.add(new FrontendConstResolutionPatch(constantFacts, constTypeUpdates));
             }
             if (!forIterationPlans.isEmpty() || !forIterationSlotTypeUpdates.isEmpty()) {
                 patches.add(new FrontendForIterationResolutionPatch(forIterationPlans, forIterationSlotTypeUpdates));
@@ -815,7 +989,9 @@ public final class FrontendTypedLexicalEnvironment {
                     || !matchPatternSlotTypeUpdates.isEmpty()
                     || !typeTestTargets.isEmpty()
                     || !containerLiteralPlans.isEmpty()
-                    || !lambdaPlans.isEmpty();
+                    || !lambdaPlans.isEmpty()
+                    || !constantFacts.isEmpty()
+                    || !constTypeUpdates.isEmpty();
         }
 
         private void clear() {
@@ -833,6 +1009,8 @@ public final class FrontendTypedLexicalEnvironment {
             typeTestTargets.clear();
             containerLiteralPlans.clear();
             lambdaPlans.clear();
+            constantFacts.clear();
+            constTypeUpdates.clear();
         }
 
         private static <V> void mergeSideTable(

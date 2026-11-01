@@ -99,9 +99,9 @@ class FrontendSuiteResolverTest {
         resolveWith(phaseInput, ownerProcedures);
 
         assertOwnerSequence(ownerProcedures.events(), 0, first);
-        assertOwnerSequence(ownerProcedures.events(), 5, second);
-        assertOwnerSequence(ownerProcedures.events(), 10, returnStatement);
-        assertEquals(15, ownerProcedures.events().size());
+        assertOwnerSequence(ownerProcedures.events(), 6, second);
+        assertOwnerSequence(ownerProcedures.events(), 12, returnStatement);
+        assertEquals(18, ownerProcedures.events().size());
     }
 
     @Test
@@ -211,7 +211,7 @@ class FrontendSuiteResolverTest {
     }
 
     @Test
-    void forBodyLambdaAndMatchResolveWhileConstBodiesRemainFailClosed() throws Exception {
+    void forBodyLambdaAndMatchResolveAlongsideConstDeclarations() throws Exception {
         var phaseInput = phaseInput("suite_fail_closed.gd", """
                 class_name SuiteFailClosed
                 extends Node
@@ -282,14 +282,18 @@ class FrontendSuiteResolverTest {
         assertTrue(surface.suiteEntryRoots().containsCallableOwner(lambdaExpression));
         assertFalse(ownerProcedures.unsupportedRoots().contains(forStatement));
         assertFalse(ownerProcedures.unsupportedRoots().contains(matchStatement));
-        assertTrue(ownerProcedures.unsupportedRoots().contains(answer));
+        assertFalse(ownerProcedures.unsupportedRoots().contains(answer));
         assertTrue(hasOwnerEvent(ownerProcedures.events(), fromFor));
         assertTrue(hasOwnerEvent(ownerProcedures.events(), fromMatch));
         assertTrue(firstStageIndex(ownerProcedures.events(), matchStatement.value())
                 < firstStageIndex(ownerProcedures.events(), fromMatch));
         // The recorded lambda body resolves as its own suite and produces owner events.
         assertTrue(hasOwnerEvent(ownerProcedures.events(), fromLambda));
-        assertFalse(hasOwnerEvent(ownerProcedures.events(), answer));
+        // `const` declarations run the same owner pipeline — the CONST_RESOLUTION hook records
+        // its own event between expr-type and var-type-post.
+        assertTrue(hasOwnerEvent(ownerProcedures.events(), answer));
+        assertTrue(ownerProcedures.events().stream().anyMatch(event ->
+                event.root() == answer && event.stage().equals("const")));
         assertTrue(hasOwnerEvent(ownerProcedures.events(), callback));
         assertTrue(hasOwnerEvent(ownerProcedures.events(), after));
     }
@@ -1898,7 +1902,9 @@ class FrontendSuiteResolverTest {
         assertSame(root, events.get(offset + 3).root());
         assertEquals("expr", events.get(offset + 3).stage());
         assertSame(root, events.get(offset + 4).root());
-        assertEquals("var_post", events.get(offset + 4).stage());
+        assertEquals("const", events.get(offset + 4).stage());
+        assertSame(root, events.get(offset + 5).root());
+        assertEquals("var_post", events.get(offset + 5).stage());
     }
 
     private static int firstStageIndex(@NotNull List<OwnerEvent> events, @NotNull Node root) {
@@ -2159,6 +2165,12 @@ class FrontendSuiteResolverTest {
         @Override
         public void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {
             events.add(new OwnerEvent("var_post", root));
+            stableWasEmptyDuringOwnerProcedure &= context.analysisData().symbolBindings().get(root) == null;
+        }
+
+        @Override
+        public void runConstResolution(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            events.add(new OwnerEvent("const", root));
             stableWasEmptyDuringOwnerProcedure &= context.analysisData().symbolBindings().get(root) == null;
         }
 

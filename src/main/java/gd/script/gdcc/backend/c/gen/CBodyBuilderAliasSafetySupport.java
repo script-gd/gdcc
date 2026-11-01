@@ -108,7 +108,8 @@ final class CBodyBuilderAliasSafetySupport {
             case CBodyBuilder.ExprValue _ -> NonObjectSlotWriteAliasSafety.PROVEN_NO_ALIAS;
             case CBodyBuilder.StringNamePtrLiteralValue _,
                  CBodyBuilder.StringPtrLiteralValue _,
-                 CBodyBuilder.CStringLiteralValue _ -> NonObjectSlotWriteAliasSafety.PROVEN_NO_ALIAS;
+                 CBodyBuilder.CStringLiteralValue _,
+                 CBodyBuilder.CUtf8BytesLiteralValue _ -> NonObjectSlotWriteAliasSafety.PROVEN_NO_ALIAS;
             case CBodyBuilder.TempVar _ -> NonObjectSlotWriteAliasSafety.PROVEN_NO_ALIAS;
         };
     }
@@ -128,7 +129,8 @@ final class CBodyBuilderAliasSafetySupport {
             case CBodyBuilder.ExprValue _ -> NonObjectSlotWriteAliasSafety.PROVEN_NO_ALIAS;
             case CBodyBuilder.StringNamePtrLiteralValue _,
                  CBodyBuilder.StringPtrLiteralValue _,
-                 CBodyBuilder.CStringLiteralValue _ -> NonObjectSlotWriteAliasSafety.PROVEN_NO_ALIAS;
+                 CBodyBuilder.CStringLiteralValue _,
+                 CBodyBuilder.CUtf8BytesLiteralValue _ -> NonObjectSlotWriteAliasSafety.PROVEN_NO_ALIAS;
         };
     }
 
@@ -139,7 +141,8 @@ final class CBodyBuilderAliasSafetySupport {
             case CBodyBuilder.ExprValue _,
                  CBodyBuilder.StringNamePtrLiteralValue _,
                  CBodyBuilder.StringPtrLiteralValue _,
-                 CBodyBuilder.CStringLiteralValue _ -> NonObjectSlotWriteAliasSafety.PROVEN_NO_ALIAS;
+                 CBodyBuilder.CStringLiteralValue _,
+                 CBodyBuilder.CUtf8BytesLiteralValue _ -> NonObjectSlotWriteAliasSafety.PROVEN_NO_ALIAS;
             case CBodyBuilder.VarValue _,
                  CBodyBuilder.AddressableExprValue _,
                  CBodyBuilder.TempVar _ -> NonObjectSlotWriteAliasSafety.MAY_ALIAS;

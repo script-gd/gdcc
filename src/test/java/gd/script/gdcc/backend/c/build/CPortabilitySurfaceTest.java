@@ -189,7 +189,7 @@ class CPortabilitySurfaceTest {
     }
 
     /// A module exercising the entry.c literal surface: class/property registration names plus a
-    /// non-ASCII string literal (materialized as `u8"..."` with UCN escapes by escapeStringLiteral).
+    /// non-ASCII string literal (materialized as `u8"..."` with byte-level octal escapes).
     private static List<GeneratedFile> generateFixtureModuleFiles() throws IOException {
         var projectInfo = new CProjectInfo("surfaceprobe", GodotVersion.V451,
                 Path.of("unused"), COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());

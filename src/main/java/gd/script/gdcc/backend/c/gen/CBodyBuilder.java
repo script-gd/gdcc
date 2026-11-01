@@ -11,6 +11,7 @@ import gd.script.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -18,6 +19,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import static gd.script.gdcc.util.StringUtil.escapeCUtf8Bytes;
 import static gd.script.gdcc.util.StringUtil.escapeStringLiteral;
 
 /// Builder for generating C function body code.
@@ -392,6 +394,15 @@ public final class CBodyBuilder {
     /// Creates a value reference for a C `const char*` string literal.
     public @NotNull ValueRef valueOfCStringLiteral(@NotNull String value) {
         return new CStringLiteralValue(value);
+    }
+
+    /// Creates a value reference for a C `const char*` UTF-8 string literal whose bytes are
+    /// pre-encoded once, so callers pairing it with an explicit `*_and_len` byte count derive
+    /// both operands from the same array. Rendering uses byte-level octal escapes
+    /// ([StringUtil#escapeCUtf8BytesLiteral]), which carry embedded NUL safely — unlike
+    /// [valueOfCStringLiteral], whose `\\uXXXX` spellings are not valid low-code-point C.
+    public @NotNull CUtf8BytesLiteralValue valueOfCUtf8BytesLiteral(@NotNull String value) {
+        return new CUtf8BytesLiteralValue(value.getBytes(StandardCharsets.UTF_8));
     }
 
     /// Creates a target reference from a variable.
@@ -1409,7 +1420,8 @@ public final class CBodyBuilder {
     /// - expressions are materialized to a temp, then &temp
     /// - string literals use GD_STATIC_S or GD_STATIC_SN macros, which are already pointers
     private @NotNull RenderResult renderValueAddress(@NotNull ValueRef value) {
-        if (value instanceof StringNamePtrLiteralValue || value instanceof StringPtrLiteralValue || value instanceof CStringLiteralValue) {
+        if (value instanceof StringNamePtrLiteralValue || value instanceof StringPtrLiteralValue
+                || value instanceof CStringLiteralValue || value instanceof CUtf8BytesLiteralValue) {
             return new RenderResult(value.generateCode(), List.of());
         }
         switch (value) {
@@ -1708,7 +1720,7 @@ public final class CBodyBuilder {
         OWNED
     }
 
-    public sealed interface ValueRef permits VarValue, ExprValue, AddressableExprValue, StringNamePtrLiteralValue, StringPtrLiteralValue, CStringLiteralValue, TempVar {
+    public sealed interface ValueRef permits VarValue, ExprValue, AddressableExprValue, StringNamePtrLiteralValue, StringPtrLiteralValue, CStringLiteralValue, CUtf8BytesLiteralValue, TempVar {
         @NotNull GdType type();
 
         @NotNull String generateCode();
@@ -1846,6 +1858,29 @@ public final class CBodyBuilder {
         @Override
         public @NotNull String generateCode() {
             return "u8\"" + escapeStringLiteral(value) + "\"";
+        }
+
+        @Override
+        public @NotNull PtrKind ptrKind() {
+            return PtrKind.NON_OBJECT;
+        }
+    }
+
+    /// Direct C UTF-8 string literal carrying pre-encoded bytes so `p_size`-style byte counts
+    /// and the rendered literal always describe the same array (`const char*`).
+    public record CUtf8BytesLiteralValue(byte @NotNull [] utf8Bytes) implements ValueRef {
+        public CUtf8BytesLiteralValue {
+            Objects.requireNonNull(utf8Bytes);
+        }
+
+        @Override
+        public @NotNull GdType type() {
+            return GdStringType.STRING;
+        }
+
+        @Override
+        public @NotNull String generateCode() {
+            return "u8\"" + escapeCUtf8Bytes(utf8Bytes) + "\"";
         }
 
         @Override

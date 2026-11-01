@@ -5,6 +5,7 @@ import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.exception.LirInsnParsingException;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirInstruction.*;
+import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.BufferedReader;
@@ -53,7 +54,7 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
 
     @NotNull
     private static LirInstruction parseLine(@NotNull String line, int lineNo) {
-        var tr = new Tokenizer(line);
+        var tr = new Tokenizer(line, lineNo);
         tr.skipWhitespace();
 
         String resultId = null;
@@ -175,7 +176,14 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
                     throw new LirInsnParsingException(lineNo, token.column, line, "Expected integer operand");
                 }
                 case FLOAT -> {
-                    if (token.kind == TokenKind.FLOAT || token.kind == TokenKind.INT) {
+                    if (token.kind == TokenKind.FLOAT) {
+                        // Keep full double precision: float payloads (including constant
+                        // component literals) round-trip through Java `double` semantics.
+                        return new FloatOperand(Double.parseDouble(token.text));
+                    }
+                    if (token.kind == TokenKind.INT) {
+                        // Integer text feeding a float operand stays on the historical path;
+                        // the double-precision widening only covers FLOAT tokens.
                         return new FloatOperand(Float.parseFloat(token.text));
                     }
                     throw new LirInsnParsingException(lineNo, token.column, line, "Expected float operand");
@@ -210,7 +218,7 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
                         case VARIABLE -> new VariableOperand(token.text);
                         case STRING -> new StringOperand(token.text);
                         case INT -> new IntOperand(Long.parseLong(token.text));
-                        case FLOAT -> new FloatOperand(Float.parseFloat(token.text));
+                        case FLOAT -> new FloatOperand(Double.parseDouble(token.text));
                         case BOOL -> new BooleanOperand(Boolean.parseBoolean(token.text));
                         case IDENT -> new BasicBlockOperand(token.text);
                     };
@@ -227,11 +235,13 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
     // Simple tokenizer
     private static final class Tokenizer {
         private final String s;
+        private final int lineNo;
         private int pos = 0;
         private int col = 1;
 
-        Tokenizer(String s) {
+        Tokenizer(String s, int lineNo) {
             this.s = s;
+            this.lineNo = lineNo;
         }
 
         char peek() {
@@ -280,32 +290,38 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
                 return new Token(TokenKind.VARIABLE, id, tokenCol);
             } else if (c == '"') {
                 consume();
-                var sb = new StringBuilder();
-                boolean escaped = false;
+                // Collect the raw escaped content first so the closing quote is found with
+                // correct `\\` pairing (`"a\\"` ends the token, `"a\"` does not). The strict
+                // [StringUtil#unescapeLirStringLiteral] decode then rejects unknown/truncated
+                // escapes instead of silently dropping their backslashes.
+                var raw = new StringBuilder();
+                var escaped = false;
+                var closed = false;
                 while (!eof()) {
                     var ch = peek();
                     consume();
                     if (escaped) {
-                        switch (ch) {
-                            case 'n' -> sb.append('\n');
-                            case 'r' -> sb.append('\r');
-                            case 't' -> sb.append('\t');
-                            case '\\' -> sb.append('\\');
-                            case '"' -> sb.append('"');
-                            default -> sb.append(ch);
-                        }
+                        raw.append('\\').append(ch);
                         escaped = false;
+                    } else if (ch == '\\') {
+                        escaped = true;
+                    } else if (ch == '"') {
+                        closed = true;
+                        break;
                     } else {
-                        if (ch == '\\') {
-                            escaped = true;
-                        } else if (ch == '"') {
-                            break;
-                        } else {
-                            sb.append(ch);
-                        }
+                        raw.append(ch);
                     }
                 }
-                return new Token(TokenKind.STRING, sb.toString(), tokenCol);
+                if (!closed) {
+                    throw new LirInsnParsingException(lineNo, tokenCol, s, "Unterminated string literal");
+                }
+                final String decoded;
+                try {
+                    decoded = StringUtil.unescapeLirStringLiteral(raw.toString());
+                } catch (IllegalArgumentException e) {
+                    throw new LirInsnParsingException(lineNo, tokenCol, s, e.getMessage());
+                }
+                return new Token(TokenKind.STRING, decoded, tokenCol);
             } else {
                 // unquoted token
                 var txt = consumeWhile(c2 -> !Character.isWhitespace(c2) && c2 != ';');
@@ -319,6 +335,19 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
                 }
                 if (txt.matches("[+-]?\\d*\\.\\d+([eE][+-]?\\d+)?") || txt.matches("[+-]?\\d+[eE][+-]?\\d+")) {
                     return new Token(TokenKind.FLOAT, txt, tokenCol);
+                }
+                // Non-finite canonical spellings (`NaN`, `Infinity`, `-Infinity` — the only
+                // forms the serializer emits) plus the accepted `INF` / `NAN` input aliases.
+                // Alias tokens carry the canonical parseable spelling so downstream operand
+                // mapping sees exactly one form, and these words can never be labels/idents.
+                var nonFinite = switch (txt) {
+                    case "NaN", "NAN" -> "NaN";
+                    case "Infinity", "INF" -> "Infinity";
+                    case "-Infinity", "-INF" -> "-Infinity";
+                    default -> null;
+                };
+                if (nonFinite != null) {
+                    return new Token(TokenKind.FLOAT, nonFinite, tokenCol);
                 }
                 // identifier/label
                 return new Token(TokenKind.IDENT, txt, tokenCol);
