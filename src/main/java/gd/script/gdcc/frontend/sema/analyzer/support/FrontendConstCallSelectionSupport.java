@@ -12,7 +12,7 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 import java.util.Objects;
 
-/// Shared pure signature selection for constant member calls (const plan §5.5).
+/// Shared pure signature selection for constant member calls.
 ///
 /// Selection runs the same `ScopeMethodResolver` overload machinery a regular builtin
 /// instance-method call would use, with the ordinary frontend boundary ranks as the

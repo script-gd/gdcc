@@ -37,7 +37,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.StringJoiner;
 
-/// The §5.3 constant-constructor whitelist (const plan §5.3).
+/// The constant-constructor whitelist admitted for compile-time evaluation.
 ///
 /// Selection reuses the ordinary `FrontendConstructorResolutionSupport` overload machinery —
 /// the same metadata-driven applicability and ranking a regular `Vector2(...)` call would get —

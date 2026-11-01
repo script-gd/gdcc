@@ -85,7 +85,7 @@
 - static setter / getter（setget）
 - `_static_init()` 用户函数的自动调用
 - `@static_unload`
-- class-level `const`
+- class-level `const`（独立特性，合同见 `frontend_const_implementation.md`）
 - static var 的 GDExtension ClassDB property 注册
 - `@export` / `@onready` 用于 static var
 - 值语义 / `Variant` 载体上 mutating 调用的 write-back 完整路径（当前 fail-fast）
@@ -280,7 +280,7 @@ static property 必须整体跳过：
 - `_static_init()` 用户函数的自动调用（Godot 会在 initializer 之后调用；MVP 中它仍是普通 static func）
 - static var setter / getter（setget）
 - `@static_unload`
-- class-level `const`
+- class-level `const`（独立特性，合同见 `frontend_const_implementation.md`）
 - static var 的 ClassDB property 注册
 - 继承链上 static var 与 function / signal 的跨 kind 冲突检查
 - 全模块 C 符号单射命名加固（含 caller helper 命名碰撞）

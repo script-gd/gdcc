@@ -19,8 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Locks the parser-expressible `const` shapes the const pipeline depends on (const plan P0
-/// fixtures). These probes anchor what gdparser 0.6.0 can express so later stages diagnose on
+/// Locks the parser-expressible `const` shapes the const pipeline depends on. These probes
+/// anchor what gdparser 0.6.0 can express so later stages diagnose on
 /// real AST shapes instead of assumptions:
 ///
 /// - plain / typed / inferred (`:=`) const at class and local level all produce

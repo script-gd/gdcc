@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Objects;
 
 /// Frozen compile-time `const` payload — the single source of truth for evaluated constants
-/// across frontend evaluation and use-site materialization (const plan §4.1).
+/// across frontend evaluation and use-site materialization.
 ///
 /// Payloads are pure immutable Java data: never AST nodes, Scope objects, C strings, engine
 /// Objects, or any mutable structure, so one frozen value may be materialized repeatedly without
@@ -75,9 +75,9 @@ public sealed interface GdConstantValue {
         }
     }
 
-    /// Frozen controlled-builtin payload stored as flattened scalar leaves (const plan §4.1).
+    /// Frozen controlled-builtin payload stored as flattened scalar leaves.
     ///
-    /// The canonical flat component layout (order and count) is fixed by plan §5.3: `Rect2` keeps
+    /// The canonical flat component layout (order and count) is fixed: `Rect2` keeps
     /// position then size, `Basis` keeps its three logical column vectors, `Transform3D` keeps the
     /// nine basis leaves then the three origin leaves, and so on. Float leaves are normalized
     /// through a `(float)` narrowing round-trip so the stored double already matches the float32
@@ -124,7 +124,7 @@ public sealed interface GdConstantValue {
                             );
                         }
                         // Geometry float leaves store the value already narrowed to float32 and
-                        // widened back to double — the canonical form required by §4.1.
+                        // widened back to double — the canonical normalized leaf form.
                         yield new FloatValue((double) (float) floatLeaf.value());
                     }
                     case INT -> {
@@ -173,7 +173,8 @@ public sealed interface GdConstantValue {
         }
 
         /// Canonical flat-leaf count of a controlled builtin type, or `-1` when `type` is not
-        /// controlled — the §5.3 layout arity shared by decoders, projections, and materializers.
+        /// controlled — the canonical layout arity shared by decoders, projections, and
+        /// materializers.
         public static int leafCountOf(@NotNull GdType type) {
             var spec = ComponentSpec.of(type);
             return spec == null ? -1 : spec.leafCount();
@@ -198,7 +199,7 @@ public sealed interface GdConstantValue {
         }
 
         /// Canonical flat-leaf contract of one controlled builtin type: exact scalar-leaf count
-        /// and which scalar family the leaves belong to (plan §5.3 layout table).
+        /// and which scalar family the leaves belong to.
         private record ComponentSpec(int leafCount, @NotNull LeafKind leafKind) {
 
             private static @Nullable ComponentSpec of(@NotNull GdType type) {

@@ -41,8 +41,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Behavior contracts for `FrontendConstantEvaluator`: every accepted shape reduces to a frozen
-/// `GdConstantValue` and every rejected shape carries a human-readable reason — anchored to the
-/// documented §5.1/§5.2/§5.5 semantic rules on both the positive and the negative side.
+/// `GdConstantValue` and every rejected shape carries a human-readable reason — covering the
+/// documented semantic rules on both the positive and the negative side.
 class FrontendConstantEvaluatorTest {
     private static final @NotNull Range TINY = new Range(0, 1, new Point(0, 0), new Point(0, 1));
     private static final @NotNull ClassRegistry REGISTRY = loadRegistry();
@@ -566,8 +566,8 @@ class FrontendConstantEvaluatorTest {
                         ),
                         "not supported"
                 ),
-                // Member projections resolve through the §5.4 whitelist — they are not
-                // registry calls and never consult `callableRegistry()`.
+                // Member projections resolve through the read-only projection whitelist —
+                // they are not registry calls and never consult `callableRegistry()`.
                 () -> assertResolvedFloat(
                         1,
                         evaluate(attrProperty(identifier("V"), "x"), context)
@@ -789,7 +789,7 @@ class FrontendConstantEvaluatorTest {
     }
 
     // ------------------------------------------------------------------
-    // §5.3 scalar constructor whitelist
+    // Scalar constructor whitelist
     // ------------------------------------------------------------------
 
     @Test
@@ -822,7 +822,8 @@ class FrontendConstantEvaluatorTest {
     void excludedScalarConstructorFormsReject() {
         var context = typeContext(GdIntType.INT, GdFloatType.FLOAT, GdStringType.STRING);
         assertAll(
-                // int(String) / float(String) exist in metadata but are outside the §5.3 whitelist.
+                // int(String) / float(String) exist in metadata but are outside the
+                // constructor whitelist.
                 () -> assertRejected(
                         evaluate(call(identifier("int"), strLit("5")), context), "whitelist"),
                 () -> assertRejected(
@@ -844,7 +845,7 @@ class FrontendConstantEvaluatorTest {
     }
 
     // ------------------------------------------------------------------
-    // §5.3 geometry constructor whitelist
+    // Geometry constructor whitelist
     // ------------------------------------------------------------------
 
     @Test
@@ -1120,7 +1121,7 @@ class FrontendConstantEvaluatorTest {
     }
 
     // ------------------------------------------------------------------
-    // §5.1 geometry operators
+    // Geometry operators
     // ------------------------------------------------------------------
 
     @Test
@@ -1248,7 +1249,7 @@ class FrontendConstantEvaluatorTest {
                 Map.of(),
                 FrontendConstCallableRegistry.empty(), null);
         assertAll(
-                // Relational geometry comparisons are not in the §5.1 surface.
+                // Relational geometry comparisons are not in the builtin operator surface.
                 () -> assertRejected(evaluate(binary("<", identifier("V"), identifier("V")), context), "not supported"),
                 // Different builtin types never pair — Vector2 vs Vector2i stays rejected.
                 () -> assertRejected(evaluate(binary("+", identifier("V"), identifier("VI")), context), "not supported"),
@@ -1371,7 +1372,7 @@ class FrontendConstantEvaluatorTest {
     }
 
     // ------------------------------------------------------------------
-    // §5.4 member projections and builtin metadata constants
+    // Member projections and builtin metadata constants
     // ------------------------------------------------------------------
 
     @Test

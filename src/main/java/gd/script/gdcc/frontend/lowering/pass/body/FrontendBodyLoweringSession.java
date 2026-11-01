@@ -1688,7 +1688,7 @@ public final class FrontendBodyLoweringSession {
         }
     }
 
-    /// Materializes one frozen compile-time constant into `resultSlotId` (const plan §8.1).
+    /// Materializes one frozen compile-time constant into `resultSlotId`.
     ///
     /// Scalars become the matching `literal_*` instruction. A `BuiltinValue` first materializes
     /// each normalized leaf into an exact-typed scalar temp (`literal_int` for int32 leaves —
@@ -1790,7 +1790,7 @@ public final class FrontendBodyLoweringSession {
         };
     }
 
-    /// The fixed canonical construction recipe (const plan §8.1): how each controlled builtin
+    /// The fixed canonical construction recipe: how each controlled builtin
     /// type decomposes its flat leaves into scalar temps and nested sub-constructions before
     /// the parent construct. Every recipe maps to an exact API constructor signature — no
     /// flat-float shim and no source-syntax form is involved.

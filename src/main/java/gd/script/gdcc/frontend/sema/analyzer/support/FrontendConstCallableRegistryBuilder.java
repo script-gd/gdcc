@@ -9,7 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 
-/// Metadata-validating `FrontendConstCallableRegistry.Builder` (const plan §5.5).
+/// Metadata-validating `FrontendConstCallableRegistry.Builder`.
 ///
 /// Registration is a trusted built-in operation guarded against mispatching rather than a
 /// source-facing feature: a key only lands when ordinary signature selection reproduces it

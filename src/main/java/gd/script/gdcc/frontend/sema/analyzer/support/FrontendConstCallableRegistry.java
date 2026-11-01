@@ -7,7 +7,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.Objects;
 
-/// Compiler-internal registry of whitelisted pure const member calls (const plan §5.5).
+/// Compiler-internal registry of whitelisted pure const member calls.
 ///
 /// This is neither `ClassRegistry` nor the runtime ClassDB: entries are admitted explicitly per
 /// analysis generation, frozen before use, and dispatched only by exact `ConstCallableKey`
@@ -15,12 +15,12 @@ import java.util.Objects;
 /// unregistered calls reject instead of falling back to a runtime call.
 public interface FrontendConstCallableRegistry {
 
-    /// The shared immutable registry with zero entries — the production default (§5.5).
+    /// The shared immutable registry with zero entries — the production default.
     static @NotNull FrontendConstCallableRegistry empty() {
         return key -> null;
     }
 
-    /// Starts a metadata-validating builder bound to the generation's extension registry (§5.5).
+    /// Starts a metadata-validating builder bound to the generation's extension registry.
     static @NotNull Builder builder(@NotNull ClassRegistry classRegistry) {
         return new FrontendConstCallableRegistryBuilder(classRegistry);
     }
@@ -33,8 +33,8 @@ public interface FrontendConstCallableRegistry {
     /// Every `register` call validates the claimed signature against the bound `ClassRegistry`:
     /// the key must resolve to a real builtin instance method, its parameter types must be the
     /// selected declared types, the declared return type must match, and the metadata method must
-    /// carry `is_const` (§5.5 treats that flag as registration-time mismatch evidence, not as an
-    /// automatic purity proof). Duplicate keys, signatures outside the admitted surface, and
+    /// carry `is_const` (that flag is registration-time mismatch evidence, not an automatic
+    /// purity proof). Duplicate keys, signatures outside the admitted surface, and
     /// registrations after `build()` are programmer errors, not source diagnostics.
     interface Builder {
 

@@ -45,7 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Anchors the frozen value-model contract of `GdConstantValue` (const plan §4.1/§5.3):
+/// Anchors the frozen value-model contract of `GdConstantValue`:
 /// exact scalar types, the controlled-builtin leaf whitelist, canonical leaf counts, float32
 /// narrowing normalization, int32 component bounds, and immutability — in both directions.
 class GdConstantValueTest {
@@ -129,7 +129,7 @@ class GdConstantValueTest {
                 GdIntType.INT,                       // scalars are not builtin aggregates
                 GdFloatType.FLOAT,
                 GdStringType.STRING,
-                GdStringNameType.STRING_NAME,        // not the planned StringValue family
+                GdStringNameType.STRING_NAME,        // not part of the constant value family
                 GdVariantType.VARIANT,
                 GdNilType.NIL,
                 GdVoidType.VOID,                     // null extension-type path
@@ -235,7 +235,7 @@ class GdConstantValueTest {
         );
     }
 
-    // --- float narrowing normalization (§4.1) ---
+    // --- float narrowing normalization ---
 
     @Test
     void builtinValueNormalizesFloatLeavesThroughFloat32Narrowing() {

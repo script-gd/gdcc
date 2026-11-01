@@ -35,7 +35,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-/// Pure compile-time constant evaluator (const plan §5.1–§5.5).
+/// Pure compile-time constant evaluator.
 ///
 /// Evaluation runs in two passes that share one whitelist:
 /// - the validation pass walks the whole tree exactly once and answers only types — whitelist
@@ -431,7 +431,7 @@ public final class FrontendConstantEvaluator {
                                 ));
                     };
                 }
-                // A property step on a value is a §5.4 member projection: the read-only
+                // A property step on a value is a member projection: the read-only
                 // whitelist decodes stored leaves and the calculated `end` member.
                 var denied = requireCapability(
                         env,
@@ -520,7 +520,7 @@ public final class FrontendConstantEvaluator {
                     new Checked.Failed<GdConstantValue>(
                             new Evaluation.Rejected(rejected.reason(), call));
             case ConstCallResult.Resolved resolved -> {
-                // A wrong-typed handler result is a programmer invariant violation (§5.5), not
+                // A wrong-typed handler result is a programmer invariant violation, not
                 // a source error — it surfaces as a guard, never disguised as `Rejected`.
                 if (!FrontendConstCallSelectionSupport.sameExactType(
                         resolved.value().type(), registered.entry().returnType())) {
@@ -536,7 +536,7 @@ public final class FrontendConstantEvaluator {
 
     /// Constant constructor calls (`Vector2(1, 2)`, `int(2.5)`, ...): the callee must resolve
     /// to a builtin-type namespace token, arguments evaluate like ordinary operands, and the
-    /// selected signature goes through the §5.3 whitelist — never a runtime constructor.
+    /// selected signature goes through the constructor whitelist — never a runtime constructor.
     private static @NotNull Evaluation evaluateCall(
             @NotNull CallExpression call,
             @NotNull EvaluationEnvironment env
@@ -946,7 +946,7 @@ public final class FrontendConstantEvaluator {
     }
 
     /// The check-pass twin of `evaluateCall`: verifies the constructor gate, callee namespace,
-    /// argument legality, and the §5.3 whitelist — returning only the target type.
+    /// argument legality, and the constructor whitelist — returning only the target type.
     private static @NotNull Checked<GdType> checkCall(
             @NotNull CallExpression call,
             @NotNull EvaluationEnvironment env
@@ -1107,7 +1107,7 @@ public final class FrontendConstantEvaluator {
                         return new Checked.Failed<>(denied);
                     }
                     // Unary `+`/`-` open exactly where builtin metadata admits them —
-                    // vectors, `*i` vectors, Color, Plane, and Quaternion (§5.1).
+                    // vectors, `*i` vectors, Color, Plane, and Quaternion.
                     var returnType = FrontendBuiltinOperatorSupport.resolveUnaryExactReturnType(
                             env.lookup().classRegistry(), operator, operandType);
                     return returnType != null
@@ -1206,7 +1206,7 @@ public final class FrontendConstantEvaluator {
                 default -> new Checked.Failed<>(unsupportedPair(description, leftType, rightType, binary, env));
             };
         }
-        // Controlled-builtin pairs belong to the §5.1 geometry surface: same-type component
+        // Controlled-builtin pairs belong to the geometry operator surface: same-type component
         // arithmetic (`%` for `*i`), component IEEE `==`/`!=`, and the directional scalar
         // pairs — deliberately narrower than the full metadata operator tables.
         if (isBuiltinConstantType(leftType) || isBuiltinConstantType(rightType)) {
@@ -1233,7 +1233,7 @@ public final class FrontendConstantEvaluator {
                 : new Checked.Payload<>(resultType);
     }
 
-    /// The §5.1 builtin-operand admission table: same-type component arithmetic (`%` on `*i`
+    /// The builtin-operand admission table: same-type component arithmetic (`%` on `*i`
     /// vectors only), component IEEE `==`/`!=`, right-scalar `*`/`/`, and left-scalar `*`.
     /// Whitelist gates come first; metadata then supplies the declared result type — a pair
     /// the metadata admits but the whitelist does not (matrix multiplication, transforms,
@@ -1302,7 +1302,7 @@ public final class FrontendConstantEvaluator {
         return new Checked.Failed<>(unsupportedPair(description, leftType, rightType, binary, env));
     }
 
-    /// The §5.1 component-arithmetic family: float vectors, `*i` vectors, and `Color`.
+    /// The component-arithmetic family: float vectors, `*i` vectors, and `Color`.
     private static boolean hasComponentArithmetic(@NotNull GdType type) {
         return type instanceof GdFloatVectorType
                 || type instanceof GdIntVectorType

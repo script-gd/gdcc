@@ -1995,7 +1995,7 @@ class CConstructInsnGenTest {
         );
     }
 
-    /// The §8.1 canonical const materialization recipes — every controlled builtin type lowers
+    /// The canonical const materialization recipes — every controlled builtin type lowers
     /// to an exact metadata constructor signature with variable-only operands, validated here
     /// against the real `extension_api` table so recipe/metadata drift fails fast.
     @Test

@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/// Read-only member projections for frozen builtin constant values (const plan §5.4).
+/// Read-only member projections for frozen builtin constant values.
 ///
 /// The whitelist names real builtin members by their exact metadata names — coordinate leaves
 /// (`x`/`y`/`z`/`w`, `r`/`g`/`b`/`a`, `d`), stored member slices (`position`/`size`, `normal`,

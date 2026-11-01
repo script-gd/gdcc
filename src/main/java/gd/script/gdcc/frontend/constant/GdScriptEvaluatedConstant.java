@@ -4,8 +4,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;
 
-/// One successfully frozen script `const` declaration published on the class constant table
-/// (const plan §4.2).
+/// One successfully frozen script `const` declaration published on the class constant table.
 ///
 /// The declaration's AST source association is maintained separately through
 /// `declarationOrigins` — it is deliberately not embedded in this record.

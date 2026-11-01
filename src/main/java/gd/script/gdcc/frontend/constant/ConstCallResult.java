@@ -4,7 +4,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;
 
-/// Source-free result of one registered const member call handler (const plan §5.5).
+/// Source-free result of one registered const member call handler.
 ///
 /// Handlers receive no AST and no Scope; the AST-facing evaluator wraps this outcome into an
 /// `Evaluation` by attaching the offending node, and the owning phase maps it to diagnostics.

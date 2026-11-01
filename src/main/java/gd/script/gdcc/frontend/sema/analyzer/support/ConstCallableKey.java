@@ -7,7 +7,7 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 import java.util.Objects;
 
-/// Exact signature key of one registered const member call (const plan §5.5).
+/// Exact signature key of one registered const member call.
 ///
 /// The owner is the *selected* builtin method's owner type and the parameter types are the
 /// selected declared fixed parameter types — matching is by the frozen selection result, never

@@ -14,7 +14,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
-/// Decodes builtin metadata constant text into canonical `GdConstantValue`s (const plan §5.4).
+/// Decodes builtin metadata constant text into canonical `GdConstantValue`s.
 ///
 /// The grammar is deliberately a small restricted constructor form — `TypeName(arg, ...)` with
 /// flat scalar arguments — matching exactly what `VariantWriter` emits for builtin class

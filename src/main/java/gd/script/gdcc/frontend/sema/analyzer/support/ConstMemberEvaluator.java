@@ -6,7 +6,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
 
-/// Pure deterministic handler of one registered const member call (const plan §5.5).
+/// Pure deterministic handler of one registered const member call.
 ///
 /// Implementations are trusted built-ins performing explicit pure Java computation only: no
 /// AST, Scope, or Godot runtime access; no scene/resource/clock/random/external state; no

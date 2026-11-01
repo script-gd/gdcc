@@ -6,11 +6,11 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.Objects;
 
-/// Outcome of one compile-time constant evaluation (const plan §4.2/§4.3).
+/// Outcome of one compile-time constant evaluation.
 ///
 /// Stored per declaration-AST identity in `FrontendAnalysisData.constantFacts` as a pure fact:
 /// the evaluator never re-runs a recorded evaluation and never emits diagnostics — the owning
-/// phase decides whether and how to surface a `Rejected` reason anchored on `offendingNode` (§9).
+/// phase decides whether and how to surface a `Rejected` reason anchored on `offendingNode`.
 public sealed interface Evaluation {
 
     /// The expression reduced to a frozen constant value.
@@ -23,7 +23,7 @@ public sealed interface Evaluation {
     /// The expression failed evaluation or falls outside the admitted constant subset.
     ///
     /// @param reason        human-readable failure reason; the diagnostic owner classifies it as
-    ///                      an unsupported shape, an evaluation failure, or a name rule per §9
+    ///                      an unsupported shape, an evaluation failure, or a name rule
     /// @param offendingNode smallest AST anchor for the failure, when one exists
     record Rejected(@NotNull String reason, @Nullable Node offendingNode) implements Evaluation {
         public Rejected {

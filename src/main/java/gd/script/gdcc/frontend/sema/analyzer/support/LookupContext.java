@@ -8,7 +8,7 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 import java.util.Objects;
 
-/// Scope-facing name-resolution view handed to `FrontendConstantEvaluator` (const plan §4.3).
+/// Scope-facing name-resolution view handed to `FrontendConstantEvaluator`.
 ///
 /// One instance describes exactly one evaluation context — a class-skeleton const pre-pass item,
 /// a suite-local const initializer, and so on. Resolution must answer by real scope identity
@@ -17,7 +17,7 @@ import java.util.Objects;
 /// terminal.
 public interface LookupContext {
 
-    /// Resolves one bare source name into the four-state result.
+    /// Resolves one bare source name into a `LookupResult`.
     @NotNull LookupResult resolve(@NotNull String name);
 
     /// Resolves `memberName` inside a namespace token previously produced by this context.
@@ -38,7 +38,7 @@ public interface LookupContext {
         return new LookupResult.Unknown();
     }
 
-    /// The immutable const-callable registry shared for the whole analysis generation (§5.5).
+    /// The immutable const-callable registry shared for the whole analysis generation.
     /// The production default is the empty registry; a policy that denies
     /// `EvaluationPolicy.Capability.REGISTERED_MEMBER_CALL` never consults it.
     @NotNull FrontendConstCallableRegistry callableRegistry();
@@ -47,13 +47,13 @@ public interface LookupContext {
     /// the evaluator can consult builtin metadata without reaching into analysis side tables.
     @NotNull ClassRegistry classRegistry();
 
-    /// Selects the exact builtin method signature a frozen member call would bind to (§5.5).
+    /// Selects the exact builtin method signature a frozen member call would bind to.
     ///
     /// Selection is ordinary overload resolution by argument types against the generation's
     /// metadata — the same semantics as a regular builtin instance-method call, never a
     /// name-only guess. The evaluator feeds the returned `ConstCallableKey` into
     /// `callableRegistry()`; a `Rejected` selection is terminal for the call. Constructor
-    /// calls are not routed here: the §5.3 constructor whitelist is a fixed recipe table the
+    /// calls are not routed here: the constructor whitelist is a fixed recipe table the
     /// evaluator matches directly.
     ///
     /// The default implementation delegates to `FrontendConstCallSelectionSupport`, which covers
@@ -69,7 +69,8 @@ public interface LookupContext {
                 classRegistry(), receiverType, methodName, argumentTypes);
     }
 
-    /// Name-resolution result (§4.3: resolved constant / nonconstant / blocked / unknown).
+    /// Name-resolution result: resolved constant / resolved namespace / nonconstant / blocked /
+    /// unknown.
     /// `ResolvedNamespace` splits qualified namespaces out of "resolved" so chains such as
     /// `Other.Inner.CONST` and `State.IDLE` can keep descending through `resolveMember`.
     sealed interface LookupResult {
@@ -110,7 +111,7 @@ public interface LookupContext {
         }
     }
 
-    /// Exact-signature selection result for a frozen member call (§5.5).
+    /// Exact-signature selection result for a frozen member call.
     sealed interface SelectionResult {
 
         /// The call binds to one exact signature: `key` is the registry identity (selected

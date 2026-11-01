@@ -63,7 +63,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Anchors the §8.1 canonical materialization contract of
+/// Anchors the canonical materialization contract of
 /// `FrontendBodyLoweringSession.materializeConstantValue`: scalar literals, the fixed
 /// literal+construct recipe chain per controlled builtin type, variable-only construct
 /// operands, non-ref exact-typed scratch slots, and simple/DOM serializer roundtrips — in both

@@ -40,7 +40,7 @@ import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/// Sema-level contract tests for block-local `const` (§7).
+/// Sema-level contract tests for block-local `const`.
 ///
 /// Each case runs the real `FrontendSemanticAnalyzer` pipeline — binding, suite resolution with
 /// the `CONST_RESOLUTION` owner, and export — then asserts the frozen `Evaluation` fact, the
