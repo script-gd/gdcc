@@ -4,7 +4,7 @@
 > 文中除「§2 核实的代码基线」与「§13 执行记录」外均为建议方案，
 > 建议与事实严格分开，不以本文档内容回写任何事实源文档。
 > §12 的 A1 已由用户确认 earlier-only，不再是待确认项。
-> 阶段状态：P0–P6 已实施（见 §10 各阶段条目与 §13 记录）；P7 未实施。
+> 阶段状态：P0–P7 已实施（P7 事实源转正按用户要求留待另案；见 §10 各阶段条目与 §13 记录）。
 
 - 适用范围（计划触及，均为相对仓库根路径）：
   - `src/main/java/gd/script/gdcc/frontend/constant/**`（新增值族与求值事实模型）
@@ -772,8 +772,8 @@
 
 - 通用约束：每次 patch 不超过 5 个文件；Java 25 / JUnit 5；不改 build 配置、不跑 clean；
   每阶段完成后才能进入依赖它的后续阶段；完成证据须为真实命令输出，不虚报。
-- A1 已由用户确认 earlier-only（§12），原 P4 / P7 待确认依赖解除；各阶段仍
-  全部未实施。
+- A1 已由用户确认 earlier-only（§12），原 P4 / P7 待确认依赖解除；P0–P7
+  已全部实施（P7 事实源转正留待另案）。
 - 下述「文件定位」列的是类名，默认在包前缀 `src/main/java/gd/script/gdcc/`
   下；不是可点击的完整文件路径，定位以类名检索为准。
 - P0 契约与 parse fixtures / 基线冻结 —— **已实施（2026-10-29）**
@@ -1278,7 +1278,8 @@
       与 binding 状态断言，`FrontendConstLoweringTest` 新增 String class const
       参数默认值物化用例锚定 `_default_` island 的 `literal_string` 产出。
       复审确认全部关闭、无新增问题：**APPROVE**。
-- P7 targeted AOT smoke + 负例/回归 + 文档转正
+- P7 targeted AOT smoke + 负例/回归 + 文档转正 —— **测试已实施（2026-11-01）；
+  事实源转正按用户要求留待另案**
   - 目标：planned `GdccConstRuntimeSmokeTest` 端到端；负例回归；实现完成后才把
     相关事实写入事实源文档（届时另案，不改本计划为事实源）。
   - 文件定位：`src/test/test_suite/unit_test/script/const/` 与配对
@@ -1298,6 +1299,72 @@
     initializer、不建 mutable 槽；class 无 `LIRProperty` / static init /
     hotreload storage / ClassDB registration；class 相关用例按 §12 冻结
     拒绝矩阵断言拒绝。
+  - 实施结果：
+    - 新增 `src/test/test_suite/unit_test/{script,validation}/const/` 6 对
+      正向 e2e 配对：`scalar_constants`（类级标量 const——推断精确类型 /
+      标注转换 / 前序引用 / 白名单运算 / `PI`·`OK`·`Control.PRESET_CENTER`
+      全局与 engine 常量输入，validation 兼以 `get_property_list` +
+      `class_get_integer_constant_list` 断言 const 不进 ClassDB）、
+      `local_constants`（local const 链、嵌套块作用域、`const X = X + 1`
+      外层回退与声明后遮蔽）、`builtin_constants`（非对称 `Basis`/
+      `Transform3D`/`Transform2D`/`Projection` 列布局、`Vector4i` 独立物化、
+      `Vector3.UP` metadata 常量投影、float 分量算术）、`usage_contexts`
+      （named-enum 成员初始化、inner-class 限定读兼 local const 限定折叠、
+      `match` const key、参数默认 island、lambda 读外层 const 不捕获、
+      static 方法读——后者经 `ClassDB.class_call_static` 验证）、
+      `control_flow_consts`（if/elif/else 分支各自 const、for-header
+      `range(const)` 边界 + 循环体/嵌套 if const + `continue`/`break`、
+      while 体 const、外层 const 作 match key 兼分支 const 喂嵌套 match、
+      两级嵌套块遮蔽 class const——同 callable 局部遮蔽属
+      `sema.variable_binding` 错误、early-return 路径 const、运行时
+      ternary 读 const）、`nested_class_consts`（inner class 自身
+      前序链 + 全局 `PI`、限定读、local const 限定折叠、qualified
+      match key、qualified 默认 island、兄弟 inner class 方法互读
+      `Reader.new().sibling()`、两级嵌套经 `Deep.read_deep()` 静态
+      访问器读 `Deeper.N`——`Outer.Inner.N` 直接多级限定链不支持）。
+      `GdScriptUnitTestCompileRunnerTest` 增 `CONST_SCRIPT_PATHS` +
+      `compilesAndValidatesConstScripts` factory 与 6 条 EXPECTED 路径。
+    - 新增 `GdccConstRuntimeSmokeTest`（`backend/c/build`，5 用例）：
+      `constsMaterializeAndRunInIsolatedGodotProject` 在 `tmp/test` 临时
+      Godot 工程跑 4 类多源模块约 20 项运行时检查（非对称 Transform3D
+      逻辑列、`ConstChild.BC` 继承限定读、`ConstSmokeHelper.HC` 跨类读、
+      local const 限定折叠、match/default/lambda/static、双节点
+      property-leak 检查），方法内显式 gate Zig/Godot；
+      `constReadsLowerToPayloadMaterializationOnly` 以禁止集断言纯物化区
+      无 unary/binary/call/static/property/variant-get/set/对象与 lambda
+      构造回放、`construct_builtin` 全 `VariableOperand`、local const 无
+      具名槽——purity fixtures 初始化器刻意取算子/拼接/条件形状（`6*7`、
+      `"pu"+"re"`、`true if true else false`、`V*2.0`），回放即暴露
+      `BinaryOpInsn`/`GoIfInsn`；`constDeclarationsLeaveNoRuntimeState` 断言无
+      `LIRProperty`/`_field_init_*`/常量名合成函数且 scriptConstants 全为
+      `GdScriptEvaluatedConstant`；
+      `classConstInitializerRejectsFrozenDependencyMatrix` 按 §12 锚定
+      forward / self / dependent-poison / ancestor / inner-class /
+      top-level cross-class 六向 `sema.class_skeleton` 拒绝（inner 与
+      顶层跨类措辞分别锚定）；
+      `failedConstNameMaskBlocksAncestorAndGlobalFallback` 断言失败名
+      mask 在 scope 层阻断祖先与全局（`PI`）回退。
+    - 测试运行（2026-11-01，本机 zig + `GODOT_BIN` 4.5.2 可用）：
+      `GdccConstRuntimeSmokeTest` 5/5 通过——runtime 用例真实完成
+      zig build + Godot 运行并输出 `GDCC_CONST_SMOKE_PASS`；
+      `GdScriptUnitTestCompileRunnerTest` 的 `listsExpectedBundledUnitScripts`
+      与 `compilesAndValidatesConstScripts` 6/6 动态用例通过；
+      `FrontendConstSkeletonTest` / `FrontendConstLoweringTest` /
+      `FrontendLocalConstResolutionTest` / `FrontendConstantEvaluatorTest` /
+      `FrontendConstCallableRegistryTest` / `GdConstantValueTest` /
+      `FrontendConstantMaterializationTest` / `FrontendEnumSkeletonTest`
+      回归全绿。
+    - 评审修复（review-expert-c 首轮 4 条 medium 全确认修复，复审 APPROVE）：
+      浮点断言改 `is_finite` + `is_equal_approx` 防 NaN 静默通过；
+      purity fixtures 换回放可辨形状并把 `GoIfInsn` 入禁止集（`GotoInsn`
+      为合法 CFG 终结符不入）；validation 补
+      `class_get_integer_constant_list` 锚定「无 ClassDB 常量注册」
+      （property list 只覆盖 property）；`builtin_constants` 补非对称
+      `Transform2D`/`Projection` 运行时列布局锚。
+      增补 `control_flow_consts`/`nested_class_consts` 二对后第二轮
+      review-expert-c 再确认修复：循环 break 断言改 `range(LIMIT + 2)`
+      使其可观测（无 break 得 176），整数断言改 `typeof(...) == TYPE_INT`
+      防强转掩盖错误类型，复审 APPROVE。
 
 ## 11. 测试矩阵与命令
 
@@ -1508,3 +1575,12 @@
   中高风险 / 实施阻塞问题；已核实既有构造路径、registry 阶段边界、dead
   branch 及 P0–P7 / §11 一致性。此结论只覆盖计划；实现、planned tests
   均未完成，旧 baseline 不代表新能力已验证。
+- 2026-11-01 P7 测试实施：新增 4 对 `const/` e2e 资源配对（经
+  `compilesAndValidatesConstScripts` factory 运行）与
+  `GdccConstRuntimeSmokeTest`（5 用例：1 个 zig+Godot 临时工程运行时
+  smoke、2 个 LIR 纯净性 / 无运行时状态断言、2 个编译级负例回归）；
+  全部通过，const 相关既有测试类回归全绿。review-expert-c 首轮
+  REQUEST_CHANGES（4 条 medium——NaN 浮点断言、回放不可辨 fixtures、
+  ClassDB 常量注册漏检、Transform2D/Projection 运行时锚缺失）全部
+  修复并经复审 APPROVE。事实源文档转正按用户指示留待另案，见
+  §10 P7 条目。

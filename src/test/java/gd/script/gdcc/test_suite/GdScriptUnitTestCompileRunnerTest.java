@@ -63,6 +63,12 @@ public class GdScriptUnitTestCompileRunnerTest {
             "collection/dictionary_mutation_and_lookup.gd",
             "collection/for_in_container_literal.gd",
             "collection/typed_container_literal_boundaries.gd",
+            "const/builtin_constants.gd",
+            "const/control_flow_consts.gd",
+            "const/local_constants.gd",
+            "const/nested_class_consts.gd",
+            "const/scalar_constants.gd",
+            "const/usage_contexts.gd",
             "constructor/atomic_builtin_constructor_roundtrip.gd",
             "constructor/builtin_variant_container_roundtrip.gd",
             "constructor/builtin_variant_scalar_roundtrip.gd",
@@ -272,6 +278,7 @@ public class GdScriptUnitTestCompileRunnerTest {
     private static final List<String> ANNOTATION_SCRIPT_PATHS = scriptPathsWithPrefix("annotation/");
     private static final List<String> CAST_SCRIPT_PATHS = scriptPathsWithPrefix("cast/");
     private static final List<String> COLLECTION_SCRIPT_PATHS = scriptPathsWithPrefix("collection/");
+    private static final List<String> CONST_SCRIPT_PATHS = scriptPathsWithPrefix("const/");
     private static final List<String> CONSTRUCTOR_SCRIPT_PATHS = scriptPathsWithPrefix("constructor/");
     private static final List<String> CONTROL_FLOW_SCRIPT_PATHS = scriptPathsWithPrefix("control_flow/");
     private static final List<String> COROUTINE_SCRIPT_PATHS = scriptPathsWithPrefix("coroutine/");
@@ -341,6 +348,14 @@ public class GdScriptUnitTestCompileRunnerTest {
         return compileAndValidateBundledUnitScripts(
                 COLLECTION_SCRIPT_PATHS,
                 "Zig not found; skipping collection GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesConstScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                CONST_SCRIPT_PATHS,
+                "Zig not found; skipping const GDScript compile-run tests"
         );
     }
 
