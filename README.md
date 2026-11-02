@@ -44,16 +44,16 @@ GDCC is currently in beta stage. Please evaluate it against your project before 
   - Attaching GDCC scripts to nodes; you need to change the node type to attach GDCC code to a node
 - Lambdas in property initializers.
 - Built-in keyed access such as `vector["x"]`; use property-style access such as `vector.x` where supported.
-- Broad Godot runtime casting compatibility is incomplete; in some cases you may need an explicit `as` cast.
-- Arbitrary compile-time constant evaluation.
+- Broad Godot runtime implicit conversions are restricted; in some cases you may need an explicit `as` cast.
 
 # Download & Installation
 
 Download GDCC from the [GitHub Releases](https://github.com/script-gd/gdcc/releases) page.
 
 The most convenient way to use GDCC is through the GDCC editor plugin:
-1. Download the GDCC editor plugin archive `gdcc_editor_addon.zip` from the [GitHub Releases](https://github.com/script-gd/gdcc/releases) page
-2. Open the "Asset Library" page, click the "Import" button in the top-right corner, select the downloaded `zip` file, and confirm the import
+1. Open the "Asset Library" page, search for "GDCC", and click Install
+![asset_store_ui](./asset/asset_store_ui.png)
+2. (Optional) If you cannot connect to the network, you can manually download the plugin package from the [GitHub Releases](https://github.com/script-gd/gdcc/releases) page, then open the "Asset Library" page, click the "Import" button in the top-right corner, select the downloaded `zip` file, and confirm the import
 3. Click the "Project" tab in the top toolbar, open the "Project Settings" page, go to the "Plugins" tab, and enable the GDCC editor plugin
 4. A "GDCC" tab will appear in the bottom dock; open it and follow the configuration wizard to install (the initial setup requires about 60MB of disk space)
 5. Once installed, you can create a new `.gd3` script, write code, and click the "Build" button in the top-right corner to compile GDScript into a GDExtension module and hot-reload it into the Godot engine

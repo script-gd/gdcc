@@ -10,7 +10,7 @@ apply(from = "gradle/tinycc-bundle.gradle.kts")
 apply(from = "gradle/tinycc.gradle.kts")
 
 group = "gd.script"
-version = "0.0.3"
+version = "0.0.4"
 
 val generatedVersionResources = layout.buildDirectory.dir("generated/resources/gdccVersion")
 val runtimeLibDir = layout.buildDirectory.dir("libs/lib")

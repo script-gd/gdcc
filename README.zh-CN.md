@@ -44,16 +44,16 @@ GDCC 目前仍处于 beta 阶段，在使用前请先针对您的项目进行评
   - 附加 GDCC 脚本到节点，您需要通过修改节点类型来将 GDCC 代码附加到节点上
 - 初始化表达式中的Lambda函数
 - 类似 `vector["x"]` 的内置类型 keyed 访问；已支持场景下请使用 `vector.x` 这类属性访问
-- 更宽松的 Godot 运行时转换兼容性仍不完整，一些情况下需要手动 `as`
-- 任意的编译期常量求值
+- 更宽松的 Godot 运行时隐式转换被限制，一些情况下需要手动 `as`
 
 # 下载与安装
 
 从 [GitHub Releases](https://github.com/script-gd/gdcc/releases) 页面下载 GDCC。
 
 使用 GDCC 最方便的方式就是使用 GDCC 编辑器插件：
-1. 从 [GitHub Releases](https://github.com/script-gd/gdcc/releases) 页面下载 GDCC 编辑器插件压缩包 `gdcc_editor_addon.zip`
-2. 打开“资源商店”页面，点击右上角的“导入”按钮，选择刚刚下载的`zip`文件，然后确认导入
+1. 打开“资源商店”页面，搜索“GDCC”，点击安装
+![asset_store_ui](./asset/asset_store_ui.png)
+2. （可选）如果您无法连接网络，可以从 [GitHub Releases](https://github.com/script-gd/gdcc/releases) 页面手动下载插件包，打开“资源商店”页面，点击右上角的“导入”按钮，选择刚刚下载的`zip`文件，然后确认导入
 3. 点击上方工具栏的“项目”选项卡，打开“项目设置”页面，进入“插件”标签页，启用 GDCC 编辑器插件
 4. 最下方的 dock 栏会出现一个“GDCC”标签页，打开后可以跟随配置向导进行安装，初次配置需要约 60MB 硬盘空间
 5. 安装完毕后可以新建`.gd3`脚本，输入代码，点击右上角的“构建”按钮，即可将 GDScript 编译为 GDExtension 模块并热重载到 Godot 引擎中
