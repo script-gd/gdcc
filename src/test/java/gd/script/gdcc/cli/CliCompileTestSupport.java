@@ -14,6 +14,8 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -24,6 +26,8 @@ import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 final class CliCompileTestSupport {
     private static final @NotNull Duration COMPLETED_TASK_TTL = Duration.ofSeconds(5);
@@ -98,6 +102,44 @@ final class CliCompileTestSupport {
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new AssertionError("Interrupted while waiting for test state", exception);
+        }
+    }
+
+    /// A `GdccCommand` wired to an isolated test API plus captured stdout/stderr, so tests can
+    /// assert exit codes and rendered output without touching the real console.
+    static final class Terminal {
+        final @NotNull TestCompiler compiler;
+        final @NotNull API api;
+        private final @NotNull StringWriter out = new StringWriter();
+        private final @NotNull StringWriter err = new StringWriter();
+
+        Terminal() {
+            this(TestCompiler.succeeding());
+        }
+
+        Terminal(@NotNull TestCompiler compiler) {
+            this(compiler, CliCompileTestSupport.newApi(compiler));
+        }
+
+        Terminal(@NotNull TestCompiler compiler, @NotNull API api) {
+            this.compiler = compiler;
+            this.api = api;
+        }
+
+        @NotNull GdccCommand command() {
+            return new GdccCommand(api, new PrintWriter(out, true), new PrintWriter(err, true));
+        }
+
+        @NotNull String errText() {
+            return err.toString();
+        }
+
+        @NotNull String outText() {
+            return out.toString();
+        }
+
+        void assertCompilerNotInvoked() {
+            assertEquals(0, compiler.invocationCount());
         }
     }
 

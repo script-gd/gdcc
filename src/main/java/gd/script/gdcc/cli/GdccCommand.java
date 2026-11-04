@@ -26,8 +26,10 @@ import org.jetbrains.annotations.Nullable;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.IVersionProvider;
+import picocli.CommandLine.Model.CommandSpec;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
+import picocli.CommandLine.Spec;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -132,6 +134,11 @@ public final class GdccCommand implements Callable<Integer> {
     )
     boolean[] verbosity = new boolean[0];
 
+    /// Injected so project mode can tell explicitly-passed options (`--opt`, `--backend`) from
+    /// their declared defaults — project settings only fill in what the user did not pass.
+    @Spec
+    CommandSpec commandSpec;
+
     public GdccCommand() {
         this(new API(), ConsoleOutputUtil.stdoutWriter(), ConsoleOutputUtil.stderrWriter());
     }
@@ -167,30 +174,19 @@ public final class GdccCommand implements Callable<Integer> {
     @Override
     public @NotNull Integer call() {
         try {
+            var projectPositionals = projectPositionalFiles();
+            if (projectPositionals.size() > 1) {
+                return failUsage("Only one project.godot may be given per invocation: " + projectPositionals);
+            }
+            if (projectPositionals.size() == 1) {
+                return callProjectMode(projectPositionals.getFirst());
+            }
+
             var sourceInputs = sourceInputs();
             var outputTarget = outputTarget(sourceInputs);
             var gdextensionMetadataTarget = gdextensionMetadataTarget(sourceInputs, outputTarget);
             var compileOptions = compileOptions(outputTarget);
-            var topLevelCanonicalNameMap = topLevelCanonicalNameMap(sourceInputs);
-
-            api.createModule(outputTarget.moduleId(), outputTarget.moduleName());
-            api.setCompileOptions(outputTarget.moduleId(), compileOptions);
-            api.setTopLevelCanonicalNameMap(outputTarget.moduleId(), topLevelCanonicalNameMap);
-            for (var sourceInput : sourceInputs) {
-                // hostPath is the normalized absolute input path (sourceInput() computes it before
-                // reading); it lands in the compile-time class metadata as `source_path`.
-                api.putFile(
-                        outputTarget.moduleId(),
-                        sourceInput.virtualPath(),
-                        sourceInput.source(),
-                        sourceInput.displayPath(),
-                        sourceInput.hostPath().toString()
-                );
-            }
-
-            var taskId = api.compile(outputTarget.moduleId());
-            var completedSnapshot = waitForTask(taskId);
-            return renderCompletedTask(completedSnapshot, gdextensionMetadataTarget);
+            return runCompilation(sourceInputs, outputTarget, gdextensionMetadataTarget, compileOptions);
         } catch (CliInterruptedException exception) {
             return EXIT_INTERRUPTED;
         } catch (IOException exception) {
@@ -200,12 +196,181 @@ public final class GdccCommand implements Callable<Integer> {
         }
     }
 
+    /// Project mode: exactly one `project.godot` positional triggers whole-project compilation —
+    /// auto-discovered `.gd3` plus explicitly passed `.gd` sources compile in one module, with
+    /// project settings supplying defaults that explicit CLI options still override.
+    private int callProjectMode(@NotNull Path projectArgument) throws IOException {
+        var projectInput = GodotProjectInput.load(projectArgument);
+        var outputTarget = projectOutputTarget(projectInput);
+        validateProjectOptionForProjectMode(projectInput);
+
+        var collector = new GodotProjectSourceCollector();
+        var prepared = collector.readSources(collector.collect(projectInput, nonProjectArguments()));
+        var sourceInputs = projectSourceInputs(prepared);
+        var compileOptions = projectCompileOptions(projectInput, outputTarget);
+        // Publishing lands in bin/gdcc.gdextension, so the file-mode sidecar metadata is not
+        // generated for project mode even when --project is also given.
+        return runCompilation(sourceInputs, outputTarget, null, compileOptions);
+    }
+
+    /// The shared compile tail for both modes: the class map is resolved before the module is
+    /// created so mapping errors stay pre-module usage failures, then one module takes all
+    /// sources through a single compile task.
+    private int runCompilation(
+            @NotNull List<SourceInput> sourceInputs,
+            @NotNull OutputTarget outputTarget,
+            @Nullable GdextensionMetadataTarget gdextensionMetadataTarget,
+            @NotNull CompileOptions compileOptions
+    ) throws IOException {
+        var topLevelCanonicalNameMap = topLevelCanonicalNameMap(sourceInputs);
+
+        api.createModule(outputTarget.moduleId(), outputTarget.moduleName());
+        api.setCompileOptions(outputTarget.moduleId(), compileOptions);
+        api.setTopLevelCanonicalNameMap(outputTarget.moduleId(), topLevelCanonicalNameMap);
+        for (var sourceInput : sourceInputs) {
+            // hostPath is the resolved host input path; it lands in the compile-time class
+            // metadata as `source_path` while displayPath drives diagnostics/source_res_path.
+            api.putFile(
+                    outputTarget.moduleId(),
+                    sourceInput.virtualPath(),
+                    sourceInput.source(),
+                    sourceInput.displayPath(),
+                    sourceInput.hostPath().toString()
+            );
+        }
+
+        var taskId = api.compile(outputTarget.moduleId());
+        var completedSnapshot = waitForTask(taskId);
+        return renderCompletedTask(completedSnapshot, gdextensionMetadataTarget);
+    }
+
+    /// Positional arguments whose file name is exactly `project.godot`; position does not matter.
+    private @NotNull List<Path> projectPositionalFiles() {
+        var matches = new ArrayList<Path>();
+        for (var file : files) {
+            if (isProjectFile(file)) {
+                matches.add(file);
+            }
+        }
+        return matches;
+    }
+
+    private @NotNull List<Path> nonProjectArguments() {
+        var result = new ArrayList<Path>(files.size());
+        for (var file : files) {
+            if (!isProjectFile(file)) {
+                result.add(file);
+            }
+        }
+        return result;
+    }
+
+    private static boolean isProjectFile(@NotNull Path file) {
+        var fileName = file.getFileName();
+        return fileName != null && fileName.toString().equals(GodotProjectInput.PROJECT_FILE_NAME);
+    }
+
+    /// True when the user actually passed `name` on this invocation's command line, as opposed to
+    /// the option holding its annotation default. Needed only for project-mode option merging.
+    private boolean matchedOption(@NotNull String name) {
+        var commandLine = commandSpec == null ? null : commandSpec.commandLine();
+        var parseResult = commandLine == null ? null : commandLine.getParseResult();
+        if (parseResult == null) {
+            return false;
+        }
+        for (var option : parseResult.matchedOptions()) {
+            if (List.of(option.names()).contains(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private @NotNull OutputTarget projectOutputTarget(@NotNull GodotProjectInput projectInput) {
+        return outputTargetFromDir(projectInput.workDirectory(output));
+    }
+
+    /// Options for project mode: `--opt`/`--backend` explicitly given on this command line win,
+    /// otherwise the project's `gdcc/build/*` settings apply (AUTO stays `null` for the API).
+    private @NotNull CompileOptions projectCompileOptions(
+            @NotNull GodotProjectInput projectInput,
+            @NotNull OutputTarget outputTarget
+    ) {
+        return new CompileOptions(
+                godotVersion(),
+                outputTarget.projectPath(),
+                matchedOption("--opt") ? optimizationLevel() : projectInput.config().optimizationLevel(),
+                targetPlatform(),
+                projectInput.config().strictMode(),
+                CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT,
+                matchedOption("--backend") ? cCompilerKind() : projectInput.config().cCompilerKind()
+        );
+    }
+
+    private @NotNull List<SourceInput> projectSourceInputs(
+            @NotNull List<GodotProjectSourceCollector.PreparedSource> preparedSources
+    ) {
+        var inputs = new ArrayList<SourceInput>(preparedSources.size());
+        for (var prepared : preparedSources) {
+            var source = prepared.source();
+            var fileName = source.hostPath().getFileName().toString();
+            var dotIndex = fileName.lastIndexOf('.');
+            var stem = dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
+            inputs.add(new SourceInput(
+                    source.virtualPath(),
+                    Path.of(source.virtualPath()),
+                    source.hostPath(),
+                    stem,
+                    prepared.content(),
+                    source.displayPath()
+            ));
+        }
+        return inputs;
+    }
+
+    /// `--project` keeps its metadata-eligibility meaning in project mode; a different project
+    /// than the positional one is rejected, and no sidecar `.gdextension` is emitted (the publish
+    /// step writes `bin/gdcc.gdextension` instead).
+    private void validateProjectOptionForProjectMode(@NotNull GodotProjectInput projectInput) throws IOException {
+        if (project == null) {
+            return;
+        }
+        var projectFile = requireExistingProjectFile(project);
+        if (!projectFile.toRealPath().equals(projectInput.projectFile())) {
+            throw new IllegalArgumentException(
+                    "--project must reference the same project.godot given for project compilation: " + project
+            );
+        }
+    }
+
+    /// Validates an option-supplied project file path without reading it; shared by file-mode
+    /// metadata eligibility and project-mode consistency checks.
+    private @NotNull Path requireExistingProjectFile(@NotNull Path optionValue) {
+        var projectFile = optionValue.toAbsolutePath().normalize();
+        var projectFileName = projectFile.getFileName();
+        if (projectFileName == null || !GodotProjectInput.PROJECT_FILE_NAME.equals(projectFileName.toString())) {
+            throw new IllegalArgumentException("--project must point to a project.godot file: " + optionValue);
+        }
+        if (Files.notExists(projectFile)) {
+            throw new IllegalArgumentException("--project file does not exist: " + optionValue);
+        }
+        if (!Files.isRegularFile(projectFile)) {
+            throw new IllegalArgumentException("--project path is not a regular file: " + optionValue);
+        }
+        return projectFile;
+    }
+
     private @NotNull OutputTarget outputTarget(@NotNull List<SourceInput> sourceInputs) {
         var target = output == null ? Path.of(defaultOutputName(sourceInputs)) : output;
         if (target.toString().isBlank()) {
             throw new IllegalArgumentException("Output path must not be blank");
         }
-        var normalizedOutput = target.toAbsolutePath().normalize();
+        return outputTargetFromDir(target.toAbsolutePath().normalize());
+    }
+
+    /// The module id/name pair comes from the resolved work directory's last segment; both modes
+    /// share this derivation so the build directory and module identity stay in lockstep.
+    private @NotNull OutputTarget outputTargetFromDir(@NotNull Path normalizedOutput) {
         var moduleNamePath = normalizedOutput.getFileName();
         if (moduleNamePath == null) {
             throw new IllegalArgumentException("Output path must include a module name");
@@ -446,17 +611,7 @@ public final class GdccCommand implements Callable<Integer> {
             return null;
         }
 
-        var projectFile = project.toAbsolutePath().normalize();
-        var projectFileName = projectFile.getFileName();
-        if (projectFileName == null || !"project.godot".equals(projectFileName.toString())) {
-            throw new IllegalArgumentException("--project must point to a project.godot file: " + project);
-        }
-        if (Files.notExists(projectFile)) {
-            throw new IllegalArgumentException("--project file does not exist: " + project);
-        }
-        if (!Files.isRegularFile(projectFile)) {
-            throw new IllegalArgumentException("--project path is not a regular file: " + project);
-        }
+        var projectFile = requireExistingProjectFile(project);
         for (var sourceInput : sourceInputs) {
             if (!Objects.equals(nearestProjectFile(sourceInput.hostPath().getParent()), projectFile)) {
                 return null;
@@ -468,13 +623,7 @@ public final class GdccCommand implements Callable<Integer> {
     }
 
     private @Nullable Path nearestProjectFile(@NotNull Path sourceParent) {
-        for (Path current = sourceParent.toAbsolutePath().normalize(); current != null; current = current.getParent()) {
-            var candidate = current.resolve("project.godot");
-            if (Files.isRegularFile(candidate)) {
-                return candidate.toAbsolutePath().normalize();
-            }
-        }
-        return null;
+        return GodotProjectInput.nearestEnclosingProjectFile(sourceParent);
     }
 
     private int renderCompletedTask(

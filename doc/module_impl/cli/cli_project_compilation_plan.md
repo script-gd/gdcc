@@ -1,6 +1,6 @@
 # CLI 整项目编译实施计划
 
-状态：待实施。本文是计划，不代表当前 CLI 已支持以下行为。
+状态：实施中。第一、二步已实现并经定向测试验证；第三、四步未实施，对应行为尚不存在。
 
 ## 1. 目标与范围
 
@@ -149,17 +149,33 @@ CLI 不直接写 `.godot/extension_list.cfg`，不启动 Godot 或调用 scan/re
 
 ### 第一步：项目输入和配置
 
+状态：已完成。
+
 在 `cli` 下增加项目输入准备和配置读取组件，接入 `GdccCommand` 的模式分流。
 
 验收：项目入口、项目加显式 `.gd`、无 `.gd3` 但有显式 `.gd` 均能正确准备；多个项目、
 跨项目脚本和坏配置在 module 创建前拒绝；CLI 显式选项覆盖项目值，旧文件模式不回归。
 
+实施记录：新增 `GodotConfigFile`（Godot ConfigFile 语法解析）、`GodotProjectConfig`、
+`GodotProjectInput` 与 `GodotConfigException`/`GodotProjectException`；`GdccCommand` 以
+单个 `project.godot` positional 分流项目模式，经 picocli `ParseResult` 区分显式选项。
+覆盖测试：`GodotConfigFileTest`、`GodotProjectInputTest`、
+`GdccCommandProjectIntegrationTest`。
+
 ### 第二步：源收集和单次编译
+
+状态：已完成。
 
 实现自动/显式源集的合并、资源路径映射，复用现有 API 编译。
 
 验收：未指定的 `.gd` 即使有语法错误也不进入 VFS；显式 `.gd` 与 `.gd3` 进入同一任务，
 可按现有语义跨文件引用；去重、排除项、路径边界和 `.gd` 来源元数据均有正反例。
+
+实施记录：新增 `GodotProjectSourceCollector`（点目录跳过、Godot `String.match` 语义
+排除 glob、嵌套项目边界、托管区域禁入、符号链接拒绝、UTF-8 与准备期变动校验），经
+`GdccCommand.runCompilation` 把全部源放进同一 module 单次编译；工作目录锁与发布在
+第三步接入。覆盖测试：`GodotProjectSourceCollectorTest`、
+`GdccCommandProjectIntegrationTest`。
 
 ### 第三步：项目发布
 
@@ -186,7 +202,9 @@ CLI 不直接写 `.godot/extension_list.cfg`，不启动 Godot 或调用 scan/re
 `GodotProjectPublisherTest`、`GdccCommandProjectIntegrationTest`；扩展现有
 `LauncherSmokeTest`、`GdccCommandTaskTest` 和 `FileUtilTest`。
 
-Linux 使用定向测试包装脚本，以下新增类在实施前尚不存在：
+已随第一、二步落地：`GodotConfigFileTest`、`GodotProjectInputTest`、
+`GodotProjectSourceCollectorTest`、`GdccCommandProjectIntegrationTest`。
+Linux 使用定向测试包装脚本，其余新增类在实施前尚不存在：
 
 ```bash
 script/run-gradle-targeted-tests.sh --tests GodotProjectInputTest,GodotProjectSourceCollectorTest
@@ -207,4 +225,5 @@ script/run-gradle-targeted-tests.sh --tests GdccCommandInputTest,GdccCommandOpti
 本期运行 CLI 发布时需避免其他发布者同时写入。若要求与活动编辑器并发 Build、自动通知
 扫描或即时热重载，需要修改双方的发布协作协议，应另行确认；不以单方面 Java 锁冒充解决。
 
-本次仅重写实施计划，未实现产品代码或执行产品测试；不沿用旧版本计划的审阅结论。
+第一、二步产品代码与测试已实施；`bin/` 发布、锁与端到端验证仍未实现，
+不沿用旧版本计划的审阅结论。

@@ -8,16 +8,14 @@ import gd.script.gdcc.backend.c.build.CCompilerKind;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.GdextensionMetadataFile;
 import gd.script.gdcc.backend.c.build.ModuleLocalGodotBindingFixtureProjectBuilder;
+import gd.script.gdcc.cli.CliCompileTestSupport.Terminal;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.enums.GodotVersion;
-import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -625,41 +623,5 @@ class GdccCommandInputTest {
         assertEquals(TargetPlatform.getNativePlatform(), options.targetPlatform());
         assertFalse(options.strictMode());
         assertEquals(CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT, options.outputMountRoot());
-    }
-
-    private static final class Terminal {
-        private final CliCompileTestSupport.TestCompiler compiler;
-        private final API api;
-        private final StringWriter out = new StringWriter();
-        private final StringWriter err = new StringWriter();
-
-        private Terminal() {
-            this(CliCompileTestSupport.TestCompiler.succeeding());
-        }
-
-        private Terminal(@NotNull CliCompileTestSupport.TestCompiler compiler) {
-            this(compiler, CliCompileTestSupport.newApi(compiler));
-        }
-
-        private Terminal(@NotNull CliCompileTestSupport.TestCompiler compiler, @NotNull API api) {
-            this.compiler = compiler;
-            this.api = api;
-        }
-
-        GdccCommand command() {
-            return new GdccCommand(api, new PrintWriter(out, true), new PrintWriter(err, true));
-        }
-
-        String errText() {
-            return err.toString();
-        }
-
-        String outText() {
-            return out.toString();
-        }
-
-        void assertCompilerNotInvoked() {
-            assertEquals(0, compiler.invocationCount());
-        }
     }
 }

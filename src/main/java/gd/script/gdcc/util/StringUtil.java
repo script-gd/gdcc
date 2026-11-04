@@ -27,6 +27,16 @@ public final class StringUtil {
         }
     }
 
+    /// Deterministic SHA-256 digest, used for content-addressed file naming (e.g. published
+    /// libraries and project-identity derivation) where collision resistance is required.
+    public static byte @NotNull [] sha256(byte @NotNull [] input) {
+        try {
+            return MessageDigest.getInstance("SHA-256").digest(input);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 MessageDigest is not available", e);
+        }
+    }
+
     /// Uppercase hex of the first `count` bytes (fewer when the array is shorter).
     public static @NotNull String toHex(byte @NotNull [] bytes, int count) {
         var sb = new StringBuilder(count * 2);
