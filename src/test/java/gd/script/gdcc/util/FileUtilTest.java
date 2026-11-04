@@ -114,4 +114,18 @@ public class FileUtilTest {
         assertEquals("new", Files.readString(target));
         assertFalse(Files.exists(source));
     }
+
+    @Test
+    public void moveAtomicReplacingReplacesExistingTarget(@TempDir Path dir) throws IOException {
+        var target = dir.resolve("gdcc.gdextension");
+        var source = dir.resolve("staged.tmp");
+        Files.writeString(target, "old");
+        Files.writeString(source, "new");
+
+        FileUtil.moveAtomicReplacing(source, target);
+
+        assertEquals("new", Files.readString(target));
+        assertFalse(Files.exists(source));
+    }
+
 }

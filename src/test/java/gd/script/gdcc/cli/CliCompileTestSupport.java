@@ -149,6 +149,9 @@ final class CliCompileTestSupport {
         private final @NotNull List<CompileTaskEvent> events;
         private final @Nullable CountDownLatch enteredLatch;
         private final @Nullable CountDownLatch releaseLatch;
+        /// When true the compiler waits out the release latch even under thread interruption —
+        /// modelling a native toolchain that cannot be cut short once invoked.
+        private final boolean uninterruptibleWait;
         private final @NotNull AtomicInteger invocationCount = new AtomicInteger();
         private volatile @NotNull List<Path> lastIncludeDirs = List.of();
         private volatile @NotNull List<Path> lastCFiles = List.of();
@@ -158,33 +161,41 @@ final class CliCompileTestSupport {
                 @NotNull String buildLog,
                 @NotNull List<CompileTaskEvent> events,
                 @Nullable CountDownLatch enteredLatch,
-                @Nullable CountDownLatch releaseLatch
+                @Nullable CountDownLatch releaseLatch,
+                boolean uninterruptibleWait
         ) {
             this.success = success;
             this.buildLog = Objects.requireNonNull(buildLog, "buildLog must not be null");
             this.events = List.copyOf(events);
             this.enteredLatch = enteredLatch;
             this.releaseLatch = releaseLatch;
+            this.uninterruptibleWait = uninterruptibleWait;
         }
 
         static @NotNull TestCompiler succeeding() {
-            return new TestCompiler(true, "ok", List.of(), null, null);
+            return new TestCompiler(true, "ok", List.of(), null, null, false);
         }
 
         static @NotNull TestCompiler succeeding(@NotNull String buildLog) {
-            return new TestCompiler(true, buildLog, List.of(), null, null);
+            return new TestCompiler(true, buildLog, List.of(), null, null, false);
         }
 
         static @NotNull TestCompiler failing(@NotNull String buildLog) {
-            return new TestCompiler(false, buildLog, List.of(), null, null);
+            return new TestCompiler(false, buildLog, List.of(), null, null, false);
         }
 
         static @NotNull TestCompiler succeedingWithEvents(@NotNull CompileTaskEvent... events) {
-            return new TestCompiler(true, "ok", List.of(events), null, null);
+            return new TestCompiler(true, "ok", List.of(events), null, null, false);
         }
 
         static @NotNull TestCompiler blockingSuccess() {
-            return new TestCompiler(true, "ok", List.of(), new CountDownLatch(1), new CountDownLatch(1));
+            return new TestCompiler(true, "ok", List.of(), new CountDownLatch(1), new CountDownLatch(1), false);
+        }
+
+        /// Blocking variant whose release latch is re-entered after interruption — the compile
+        /// task stays non-terminal until released regardless of cancellation interrupts.
+        static @NotNull TestCompiler blockingSuccessUninterruptible() {
+            return new TestCompiler(true, "ok", List.of(), new CountDownLatch(1), new CountDownLatch(1), true);
         }
 
         @Override
@@ -250,6 +261,18 @@ final class CliCompileTestSupport {
 
         private void awaitReleaseIfNeeded() throws IOException {
             if (releaseLatch == null) {
+                return;
+            }
+            if (uninterruptibleWait) {
+                var released = false;
+                while (!released) {
+                    try {
+                        released = releaseLatch.await(30, TimeUnit.SECONDS);
+                    } catch (InterruptedException _) {
+                        // Re-enter: cancellation may interrupt the runner, but this wait
+                        // deliberately models a tool that still has to run to completion.
+                    }
+                }
                 return;
             }
             try {

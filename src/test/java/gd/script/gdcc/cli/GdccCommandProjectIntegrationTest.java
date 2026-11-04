@@ -14,8 +14,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+import org.jetbrains.annotations.NotNull;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Project-mode end-to-end coverage: `gdcc <project.godot> [x.gd ...]` collects auto-discovered
@@ -287,6 +292,275 @@ class GdccCommandProjectIntegrationTest {
         assertEquals(GdccCommand.EXIT_COMPILE_FAILED, exitCode);
         assertTrue(terminal.errText().contains("Compile failed"), terminal.errText());
         assertEquals(List.of("demo"), terminal.api.listModules().stream().map(ModuleSnapshot::moduleId).toList());
+    }
+
+    // ------------------------------------------------------------------ publish
+
+    /// The publish contract end-to-end: one module, one task, library named by
+    /// `<name>_<platform>_<level>_<arch>-<hash16>`, descriptor under `bin/` and no sidecar
+    /// `.gdextension` next to the build output.
+    @Test
+    void successfulProjectBuildPublishesLibraryAndDescriptor(@TempDir Path tempDir) throws IOException {
+        var projectFile = writeProject(tempDir.resolve("game"), "AlphaGame", "");
+        writeFile(tempDir.resolve("game/a.gd3"), validSource("Alpha"));
+        var workDir = tempDir.resolve("build/demo");
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(
+                "-o", workDir.toString(), projectFile.toString());
+
+        assertEquals(0, exitCode, terminal.errText());
+        var binDir = tempDir.resolve("game/bin");
+        var descriptorPath = binDir.resolve("gdcc.gdextension");
+        var libraries = Files.list(binDir)
+                .filter(p -> p.getFileName().toString().endsWith(".so"))
+                .map(p -> p.getFileName().toString())
+                .toList();
+        assertEquals(1, libraries.size(), "exactly one published library expected");
+        var libName = libraries.getFirst();
+        assertTrue(
+                libName.matches("libAlphaGame_linux_debug_x86_64-[0-9a-f]{16}\\.so"),
+                "unexpected library name: " + libName
+        );
+        assertEquals("dummy", Files.readString(binDir.resolve(libName)));
+
+        var descriptor = GodotConfigFile.parse(Files.readString(descriptorPath), descriptorPath.toString());
+        var managed = descriptor.findEntry("configuration", "gdcc_managed").orElseThrow().value();
+        assertTrue(assertInstanceOf(GodotConfigFile.BoolValue.class, managed).flag());
+        var entrySymbol = descriptor.findEntry("configuration", "entry_symbol").orElseThrow().value();
+        assertEquals("gdextension_entry", assertInstanceOf(GodotConfigFile.StringValue.class, entrySymbol).text());
+        var linux = descriptor.findEntry("libraries", "linux.x86_64").orElseThrow().value();
+        assertEquals("res://bin/" + libName, assertInstanceOf(GodotConfigFile.StringValue.class, linux).text());
+        var owned = descriptor.findEntry("configuration", "gdcc_libraries").orElseThrow().value();
+        assertEquals(List.of("res://bin/" + libName),
+                assertInstanceOf(GodotConfigFile.StringArrayValue.class, owned).items());
+
+        assertTrue(terminal.outText().contains("Published: " + descriptorPath), terminal.outText());
+        assertFalse(Files.exists(workDir.resolve("demo.gdextension")));
+        assertEquals(1, terminal.api.listModules().size());
+    }
+
+    /// Debug then release target the same `platform.arch` key; publishing twice replaces the
+    /// mapping while the earlier library file is left in `bin/`.
+    @Test
+    void debugThenReleaseRepublishUpdatesTheCanonicalKey(@TempDir Path tempDir) throws IOException {
+        var projectFile = writeProject(tempDir.resolve("game"), "Game", "");
+        writeFile(tempDir.resolve("game/a.gd3"), validSource("A"));
+        var binDir = tempDir.resolve("game/bin");
+        var first = new Terminal();
+        var second = new Terminal();
+
+        assertEquals(0, first.command().commandLine().execute(
+                "-o", tempDir.resolve("build/one").toString(), projectFile.toString()));
+        assertEquals(0, second.command().commandLine().execute(
+                "--opt", "release",
+                "-o", tempDir.resolve("build/two").toString(), projectFile.toString()));
+
+        var descriptor = GodotConfigFile.parse(
+                Files.readString(binDir.resolve("gdcc.gdextension")), "gdcc.gdextension");
+        var mapping = assertInstanceOf(GodotConfigFile.StringValue.class,
+                descriptor.findEntry("libraries", "linux.x86_64").orElseThrow().value()).text();
+        assertTrue(mapping.contains("linux_release_x86_64-"), mapping);
+        assertEquals(2, Files.list(binDir).filter(p -> p.getFileName().toString().endsWith(".so")).count());
+    }
+
+    @Test
+    void unmanagedDescriptorFailsBeforeModuleCreationAndStaysUntouched(@TempDir Path tempDir) throws IOException {
+        var projectFile = writeProject(tempDir.resolve("game"), "Game", "");
+        writeFile(tempDir.resolve("game/a.gd3"), validSource("A"));
+        var descriptorPath = writeFile(
+                tempDir.resolve("game/bin/gdcc.gdextension"),
+                "[configuration]\n\nentry_symbol=\"gdextension_entry\"\n");
+        var original = Files.readString(descriptorPath);
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(projectFile.toString());
+
+        assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+        assertTrue(terminal.errText().contains("unmanaged"), terminal.errText());
+        assertEquals(original, Files.readString(descriptorPath));
+        terminal.assertCompilerNotInvoked();
+        assertTrue(terminal.api.listModules().isEmpty());
+    }
+
+    // ------------------------------------------------------------------ locking
+
+    /// Same-JVM acquisition reports contention via OverlappingFileLockException, which is exactly
+    /// how a second CLI run must fail — before the module exists.
+    @Test
+    void projectLockContentionFailsBeforeModuleCreation(@TempDir Path tempDir) throws IOException {
+        var projectFile = writeProject(tempDir.resolve("game"), "Game", "");
+        writeFile(tempDir.resolve("game/a.gd3"), validSource("A"));
+        var projectLock = tempDir.resolve("game/.godot/gdcc/cli/publish.lock");
+        var terminal = new Terminal();
+
+        try (var ignored = gd.script.gdcc.util.FileLockGuard.tryAcquire(projectLock)) {
+            var exitCode = terminal.command().commandLine().execute(
+                    "-o", tempDir.resolve("build/demo").toString(), projectFile.toString());
+
+            assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+            assertTrue(terminal.errText().contains("already being published"), terminal.errText());
+            terminal.assertCompilerNotInvoked();
+            assertTrue(terminal.api.listModules().isEmpty());
+        }
+    }
+
+    @Test
+    void outputLockContentionFailsBeforeModuleCreation(@TempDir Path tempDir) throws IOException {
+        var projectFile = writeProject(tempDir.resolve("game"), "Game", "");
+        writeFile(tempDir.resolve("game/a.gd3"), validSource("A"));
+        var workDir = tempDir.resolve("build/demo");
+        Files.createDirectories(workDir);
+        var terminal = new Terminal();
+
+        try (var ignored = gd.script.gdcc.util.FileLockGuard.tryAcquire(workDir.resolve(".gdcc.lock"))) {
+            var exitCode = terminal.command().commandLine().execute(
+                    "-o", workDir.toString(), projectFile.toString());
+
+            assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+            assertTrue(terminal.errText().contains("locked by another gdcc run"), terminal.errText());
+            terminal.assertCompilerNotInvoked();
+            assertTrue(terminal.api.listModules().isEmpty());
+        }
+    }
+
+    /// Real two-process mutual exclusion: a separate JVM holding the project lock must block a
+    /// run using a different `-o` for the same project, and an output-lock holder must block a
+    /// run reusing that directory.
+    @Test
+    void locksAreExclusiveAcrossProcesses(@TempDir Path tempDir) throws Exception {
+        var projectFile = writeProject(tempDir.resolve("game"), "Game", "");
+        writeFile(tempDir.resolve("game/a.gd3"), validSource("A"));
+
+        // Case 1: project lock held by another process; this run uses a different -o.
+        var projectLock = tempDir.resolve("game/.godot/gdcc/cli/publish.lock");
+        var holder = LockHolderProcess.spawn(projectLock);
+        try {
+            assertEquals(LockHolderProcess.ACQUIRED_MARKER, LockHolderProcess.awaitMarker(holder));
+            var terminal = new Terminal();
+            var exitCode = terminal.command().commandLine().execute(
+                    "-o", tempDir.resolve("build/other").toString(), projectFile.toString());
+            assertEquals(GdccCommand.EXIT_USAGE, exitCode, terminal.errText());
+            terminal.assertCompilerNotInvoked();
+        } finally {
+            holder.destroyForcibly();
+            holder.waitFor();
+        }
+
+        // Case 2: output lock held by another process on the very -o this run wants.
+        var workDir = tempDir.resolve("build/demo");
+        Files.createDirectories(workDir);
+        var outputHolder = LockHolderProcess.spawn(workDir.resolve(".gdcc.lock"));
+        try {
+            assertEquals(LockHolderProcess.ACQUIRED_MARKER, LockHolderProcess.awaitMarker(outputHolder));
+            var terminal = new Terminal();
+            var exitCode = terminal.command().commandLine().execute(
+                    "-o", workDir.toString(), projectFile.toString());
+            assertEquals(GdccCommand.EXIT_USAGE, exitCode, terminal.errText());
+            terminal.assertCompilerNotInvoked();
+        } finally {
+            outputHolder.destroyForcibly();
+            outputHolder.waitFor();
+        }
+    }
+
+    /// Interrupting a run requests cancellation but the locks stay held until the task reaches a
+    /// terminal state — only then may the next run take them.
+    @Test
+    void cancellationKeepsLocksUntilTheTaskTerminates(@TempDir Path tempDir) throws Exception {
+        var projectFile = writeProject(tempDir.resolve("game"), "Game", "");
+        writeFile(tempDir.resolve("game/a.gd3"), validSource("A"));
+        var compiler = CliCompileTestSupport.TestCompiler.blockingSuccessUninterruptible();
+        var terminal = new Terminal(compiler);
+        var projectLock = tempDir.resolve("game/.godot/gdcc/cli/publish.lock");
+        var workDir = tempDir.resolve("build/demo");
+
+        var exitCode = new java.util.concurrent.atomic.AtomicInteger(-1);
+        var run = new Thread(() ->
+                exitCode.set(terminal.command().commandLine().execute(
+                        "-o", workDir.toString(), projectFile.toString())));
+        run.start();
+        try {
+            assertTrue(compiler.awaitEntered(), "compiler did not start");
+
+            run.interrupt();
+            // Wait until the run thread actually consumed the interrupt — the flag disappearing
+            // means cancellation was requested and the CLI is now in the terminal-state wait,
+            // the window a premature lock release would have to live in.
+            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+            while (run.isInterrupted() && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertFalse(run.isInterrupted(), "run thread never consumed the interrupt");
+
+            // While the cancelled-but-still-running task has not terminated, both locks must
+            // stay held — probe continuously so a release-and-regrab window cannot slip past.
+            var holdDeadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(300);
+            while (System.nanoTime() < holdDeadline) {
+                try (var probe = gd.script.gdcc.util.FileLockGuard.tryAcquire(projectLock)) {
+                    assertNull(probe, "project lock was released while the cancelled task still runs");
+                }
+                try (var probe = gd.script.gdcc.util.FileLockGuard.tryAcquire(workDir.resolve(".gdcc.lock"))) {
+                    assertNull(probe, "output lock was released while the cancelled task still runs");
+                }
+                Thread.sleep(2);
+            }
+        } finally {
+            compiler.release();
+        }
+
+        run.join(java.util.concurrent.TimeUnit.SECONDS.toMillis(30));
+        assertFalse(run.isAlive(), "run thread did not finish after compiler release");
+        assertEquals(GdccCommand.EXIT_INTERRUPTED, exitCode.get());
+
+        try (var reacquired = gd.script.gdcc.util.FileLockGuard.tryAcquire(projectLock)) {
+            assertNotNull(reacquired);
+        }
+        try (var reacquired = gd.script.gdcc.util.FileLockGuard.tryAcquire(workDir.resolve(".gdcc.lock"))) {
+            assertNotNull(reacquired);
+        }
+    }
+
+    /// An interrupt landing mid-publication (after the library install, before the descriptor
+    /// commit) is a cancellation, not a publish failure: the run exits 130 and the descriptor is
+    /// never committed. The barrier proves the publish path was actually reached; an
+    /// unreferenced library may legitimately be left installed.
+    @Test
+    void interruptionAtPublishTimeReturns130WithoutCommit(@TempDir Path tempDir) throws Exception {
+        var projectFile = writeProject(tempDir.resolve("game"), "Game", "");
+        writeFile(tempDir.resolve("game/a.gd3"), validSource("A"));
+        var barrierReached = new java.util.concurrent.CountDownLatch(1);
+        var releasePublish = new java.util.concurrent.CountDownLatch(1);
+        var previousBarrier = GodotProjectPublisher.midPublishBarrier;
+        GodotProjectPublisher.midPublishBarrier = () -> {
+            barrierReached.countDown();
+            try {
+                releasePublish.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        var terminal = new Terminal(CliCompileTestSupport.TestCompiler.succeeding());
+        var exitCode = new java.util.concurrent.atomic.AtomicInteger(-1);
+
+        var run = new Thread(() -> exitCode.set(terminal.command().commandLine().execute(
+                "-o", tempDir.resolve("build/demo").toString(), projectFile.toString())));
+        try {
+            run.start();
+            assertTrue(barrierReached.await(30, java.util.concurrent.TimeUnit.SECONDS),
+                    "publish never reached the mid-publication barrier");
+            run.interrupt();
+            releasePublish.countDown();
+            run.join(java.util.concurrent.TimeUnit.SECONDS.toMillis(30));
+
+            assertFalse(run.isAlive(), "run thread did not finish");
+            assertEquals(GdccCommand.EXIT_INTERRUPTED, exitCode.get());
+            assertFalse(Files.exists(tempDir.resolve("game/bin/gdcc.gdextension")));
+        } finally {
+            GodotProjectPublisher.midPublishBarrier = previousBarrier;
+            releasePublish.countDown();
+            run.join(java.util.concurrent.TimeUnit.SECONDS.toMillis(5));
+        }
     }
 
     private static void assertEntry(Terminal terminal, String moduleId, String virtualPath, String displayPath) {

@@ -85,4 +85,20 @@ public final class FileUtil {
                 ACCESS_DENIED_BACKOFF_MILLIS
         );
     }
+
+    /// Moves [source] onto [target] replacing it only through one atomic rename; fails when the
+    /// filesystem cannot do one. Unlike [moveReplacing] there is no non-atomic fallback — callers
+    /// that must never expose a delete-then-create window on [target] (e.g. a file a running
+    /// editor may reload at any time) use this variant.
+    ///
+    /// This is deliberately a single attempt: callers that validate [target] immediately before
+    /// committing (publishers guarding against external writers) retry the whole check+move unit
+    /// through [runWithAccessDeniedRetry] so the validation cannot go stale inside a retry loop.
+    public static void moveAtomicReplacing(@NotNull Path source, @NotNull Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException e) {
+            throw new IOException("atomic replace is not supported for " + source + " -> " + target, e);
+        }
+    }
 }

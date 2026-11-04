@@ -49,6 +49,29 @@ public enum TargetPlatform {
         };
     }
 
+    /// Godot platform feature name used in `.gdextension` `[libraries]` keys and published
+    /// library filenames (`windows`, `linux`, `macos`, `android`, `web`).
+    public @NotNull String godotPlatformFeature() {
+        return switch (family) {
+            case WINDOWS -> "windows";
+            case LINUX -> "linux";
+            case MACOS -> "macos";
+            case ANDROID -> "android";
+            case WEB -> "web";
+        };
+    }
+
+    /// Godot architecture feature name (`x86_64`, `arm64`, `rv64`, `wasm32`) — differs from the
+    /// `HardwareArchitecture` spellings (`aarch64` → `arm64`).
+    public @NotNull String godotArchitectureFeature() {
+        return switch (architecture) {
+            case X86_64 -> "x86_64";
+            case AARCH64 -> "arm64";
+            case RISCV64 -> "rv64";
+            case WASM32 -> "wasm32";
+        };
+    }
+
     public static @NotNull TargetPlatform getNativePlatform() {
         return getNativePlatform(
                 System.getProperty("os.name", ""),

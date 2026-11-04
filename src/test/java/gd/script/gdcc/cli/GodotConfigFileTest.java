@@ -32,6 +32,26 @@ class GodotConfigFileTest {
                         config.findEntry("application", "config/icon").orElseThrow().value()).text());
     }
 
+    /// Keys Godot writes through `property_name_encode` come back quoted when they contain `=`
+    /// `;` `[` `]` or non-ASCII/control characters; look-ups must see the decoded key, and a `=`
+    /// inside the quotes must not split the assignment early.
+    @Test
+    void quotedKeysDecodeAndMayContainSeparators() {
+        var config = parse("""
+                [deps]
+                "res://a=b.gd"="v1"
+                "k;[x]"=2
+                bare_key=3
+                """);
+
+        var first = config.findEntry("deps", "res://a=b.gd").orElseThrow().value();
+        assertEquals("v1", assertInstanceOf(GodotConfigFile.StringValue.class, first).text());
+        var second = config.findEntry("deps", "k;[x]").orElseThrow().value();
+        assertEquals(2, assertInstanceOf(GodotConfigFile.IntValue.class, second).number());
+        assertEquals(3, assertInstanceOf(GodotConfigFile.IntValue.class,
+                config.findEntry("deps", "bare_key").orElseThrow().value()).number());
+    }
+
     @Test
     void keepsValueRawTextForRoundTrip() {
         var config = parse("""

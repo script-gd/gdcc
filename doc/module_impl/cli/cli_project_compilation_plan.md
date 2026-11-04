@@ -1,6 +1,6 @@
 # CLI 整项目编译实施计划
 
-状态：实施中。第一、二步已实现并经定向测试验证；第三、四步未实施，对应行为尚不存在。
+状态：实施中。第一、二、三步已实现并经定向测试验证；第四步未实施，对应行为尚不存在。
 
 ## 1. 目标与范围
 
@@ -179,11 +179,28 @@ CLI 不直接写 `.godot/extension_list.cfg`，不启动 Godot 或调用 scan/re
 
 ### 第三步：项目发布
 
+状态：已完成。
+
 新增项目 publisher 和描述文件读写组件，加入工作目录锁、项目锁及原子提交。
 
 验收：新安装、接续 addon 文件、Debug/Release 替换同一目标、其他平台/架构保留、旧格式
 迁移均正确；未托管文件、坏类型、缺库、多库、hash 冲突或注入提交失败不损坏原安装。
 真实双进程验证相同输出、相同项目不同输出互斥，并验证取消后不提前放锁。
+
+实施记录：新增 `GdccExtensionDescriptor`（有序读-改-写模型 + `ConfigFile.save` 版式序列化
++ `property_name_encode` 键编码）与 `GodotProjectPublisher`（prepare/publish 两阶段：锁内
+预校验 + 描述文件快照；库经同目录暂存后以 `createLink` 免覆盖安装，同名文件仅在非符号链接
+且 SHA-256 全量一致时才采纳；受管 `res://bin/` 路径逐组件拒绝符号链接与 `..` 逃逸，并在
+提交时复核（防编译期布局被改写）；`platform.arch` 规范键、旧三段式 mode 键迁移与歧义拒绝、
+feature-tag 遮蔽键拒绝、`gdcc_libraries` 所有权维护、`validate_filename` 库名与 hash16、
+同目录临时文件 + 单次原子替换，整个"复核 + 提交"在 AccessDenied 重试内逐次重验）。
+`GodotConfigFile` 增补 quoted-key 解码；`TargetPlatform` 暴露 Godot platform/architecture
+feature 名供 `GdextensionMetadataFile` 与发布共用；`FileLockGuard` 用 `FileChannel.tryLock`
+实现跨进程锁并以 JVM 内注册表防止同进程二次获取削弱 POSIX 锁；`GdccCommand` 按"先项目锁
+后输出锁"在 module 创建前取锁并持有至发布结束，取消时等待任务终态再放锁，发布期中断按
+130 处理且不提交。覆盖测试：`GodotProjectPublisherTest`、`FileLockGuardTest`、
+`GdccCommandProjectIntegrationTest`（含真实双进程互斥、取消持锁与发布中断）、
+`FileUtilTest`、`GdccCommandInputTest`。
 
 ### 第四步：端到端与文档收口
 
@@ -204,6 +221,8 @@ CLI 不直接写 `.godot/extension_list.cfg`，不启动 Godot 或调用 scan/re
 
 已随第一、二步落地：`GodotConfigFileTest`、`GodotProjectInputTest`、
 `GodotProjectSourceCollectorTest`、`GdccCommandProjectIntegrationTest`。
+已随第三步落地：`GodotProjectPublisherTest`、`FileLockGuardTest`、`FileUtilTest` 增补，
+`GdccCommandProjectIntegrationTest`/`GdccCommandInputTest` 增补发布与锁用例。
 Linux 使用定向测试包装脚本，其余新增类在实施前尚不存在：
 
 ```bash

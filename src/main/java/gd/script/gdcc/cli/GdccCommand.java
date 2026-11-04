@@ -10,7 +10,9 @@ import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.GdextensionMetadataFile;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.enums.GodotVersion;
+import gd.script.gdcc.exception.CliLockException;
 import gd.script.gdcc.exception.GdccException;
+import gd.script.gdcc.exception.GdccPublishException;
 import gd.script.gdcc.frontend.FrontendClassNameContract;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
@@ -18,6 +20,7 @@ import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.logger.GdccLogger;
 import gd.script.gdcc.util.ConsoleOutputUtil;
+import gd.script.gdcc.util.FileLockGuard;
 import gd.script.gdcc.util.GdccVersion;
 import gd.script.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.ClassNameStatement;
@@ -44,6 +47,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 
 @Command(
         name = "gdcc",
@@ -56,6 +61,11 @@ public final class GdccCommand implements Callable<Integer> {
     static final int EXIT_USAGE = 2;
     static final int EXIT_INTERRUPTED = 130;
     private static final long POLL_INTERVAL_MILLIS = 10;
+
+    /// Lock guarding the `-o` work directory (both modes) against concurrent gdcc runs.
+    private static final String OUTPUT_LOCK_FILE_NAME = ".gdcc.lock";
+    /// Per-project lock guarding `bin/` publishes across different `-o` work directories.
+    private static final String PUBLISH_LOCK_FILE_NAME = "publish.lock";
 
     private final @NotNull API api;
     private final @NotNull GdScriptParserService parserService;
@@ -186,7 +196,7 @@ public final class GdccCommand implements Callable<Integer> {
             var outputTarget = outputTarget(sourceInputs);
             var gdextensionMetadataTarget = gdextensionMetadataTarget(sourceInputs, outputTarget);
             var compileOptions = compileOptions(outputTarget);
-            return runCompilation(sourceInputs, outputTarget, gdextensionMetadataTarget, compileOptions);
+            return runCompilation(sourceInputs, outputTarget, gdextensionMetadataTarget, compileOptions, null);
         } catch (CliInterruptedException exception) {
             return EXIT_INTERRUPTED;
         } catch (IOException exception) {
@@ -199,6 +209,10 @@ public final class GdccCommand implements Callable<Integer> {
     /// Project mode: exactly one `project.godot` positional triggers whole-project compilation —
     /// auto-discovered `.gd3` plus explicitly passed `.gd` sources compile in one module, with
     /// project settings supplying defaults that explicit CLI options still override.
+    ///
+    /// The project publish lock is taken before the output lock (a fixed order both modes share)
+    /// so two runs on the same project with different `-o` cannot race `bin/`, and lock
+    /// contention fails before any module exists.
     private int callProjectMode(@NotNull Path projectArgument) throws IOException {
         var projectInput = GodotProjectInput.load(projectArgument);
         var outputTarget = projectOutputTarget(projectInput);
@@ -210,38 +224,65 @@ public final class GdccCommand implements Callable<Integer> {
         var compileOptions = projectCompileOptions(projectInput, outputTarget);
         // Publishing lands in bin/gdcc.gdextension, so the file-mode sidecar metadata is not
         // generated for project mode even when --project is also given.
-        return runCompilation(sourceInputs, outputTarget, null, compileOptions);
+        try (var ignored = requireLock(
+                projectInput.cliCacheRoot().resolve(PUBLISH_LOCK_FILE_NAME),
+                "project " + projectInput.projectRoot() + " is already being published by another gdcc run")) {
+            return runCompilation(sourceInputs, outputTarget, null, compileOptions, projectInput);
+        }
     }
 
     /// The shared compile tail for both modes: the class map is resolved before the module is
     /// created so mapping errors stay pre-module usage failures, then one module takes all
     /// sources through a single compile task.
+    ///
+    /// The output-directory lock is held from before module creation until result handling —
+    /// including the `bin` publish for project mode — finishes. A non-null `publishProject` also
+    /// triggers the pre-compile `bin`/descriptor validation: everything about the existing
+    /// installation is known-good before the first generated file lands.
     private int runCompilation(
             @NotNull List<SourceInput> sourceInputs,
             @NotNull OutputTarget outputTarget,
             @Nullable GdextensionMetadataTarget gdextensionMetadataTarget,
-            @NotNull CompileOptions compileOptions
+            @NotNull CompileOptions compileOptions,
+            @Nullable GodotProjectInput publishProject
     ) throws IOException {
         var topLevelCanonicalNameMap = topLevelCanonicalNameMap(sourceInputs);
 
-        api.createModule(outputTarget.moduleId(), outputTarget.moduleName());
-        api.setCompileOptions(outputTarget.moduleId(), compileOptions);
-        api.setTopLevelCanonicalNameMap(outputTarget.moduleId(), topLevelCanonicalNameMap);
-        for (var sourceInput : sourceInputs) {
-            // hostPath is the resolved host input path; it lands in the compile-time class
-            // metadata as `source_path` while displayPath drives diagnostics/source_res_path.
-            api.putFile(
-                    outputTarget.moduleId(),
-                    sourceInput.virtualPath(),
-                    sourceInput.source(),
-                    sourceInput.displayPath(),
-                    sourceInput.hostPath().toString()
-            );
-        }
+        try (var ignored = requireLock(
+                outputTarget.projectPath().resolve(OUTPUT_LOCK_FILE_NAME),
+                "output directory " + outputTarget.projectPath() + " is locked by another gdcc run")) {
+            var publishPlan = publishProject == null
+                    ? null
+                    : GodotProjectPublisher.prepare(publishProject, compileOptions);
+            api.createModule(outputTarget.moduleId(), outputTarget.moduleName());
+            api.setCompileOptions(outputTarget.moduleId(), compileOptions);
+            api.setTopLevelCanonicalNameMap(outputTarget.moduleId(), topLevelCanonicalNameMap);
+            for (var sourceInput : sourceInputs) {
+                // hostPath is the resolved host input path; it lands in the compile-time class
+                // metadata as `source_path` while displayPath drives diagnostics/source_res_path.
+                api.putFile(
+                        outputTarget.moduleId(),
+                        sourceInput.virtualPath(),
+                        sourceInput.source(),
+                        sourceInput.displayPath(),
+                        sourceInput.hostPath().toString()
+                );
+            }
 
-        var taskId = api.compile(outputTarget.moduleId());
-        var completedSnapshot = waitForTask(taskId);
-        return renderCompletedTask(completedSnapshot, gdextensionMetadataTarget);
+            var taskId = api.compile(outputTarget.moduleId());
+            var completedSnapshot = waitForTask(taskId);
+            return renderCompletedTask(completedSnapshot, gdextensionMetadataTarget, publishPlan);
+        }
+    }
+
+    /// Acquires `lockFile` as an exclusive cross-process lock or fails the run — contention is a
+    /// usage-level error reported before module creation, never a silent wait.
+    private @NotNull FileLockGuard requireLock(@NotNull Path lockFile, @NotNull String description) throws IOException {
+        var guard = FileLockGuard.tryAcquire(lockFile);
+        if (guard == null) {
+            throw new CliLockException(description + " (" + lockFile + ")");
+        }
+        return guard;
     }
 
     /// Positional arguments whose file name is exactly `project.godot`; position does not matter.
@@ -582,7 +623,31 @@ public final class GdccCommand implements Callable<Integer> {
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             api.cancelCompileTask(taskId);
+            // Cancellation is only requested here — keep holding the locks until the task really
+            // reaches a terminal state so a following run cannot enter while native tools may
+            // still be writing into the work directory.
+            waitForTaskTerminal(taskId);
             throw new CliInterruptedException();
+        }
+    }
+
+    /// Polls until the task is completed without responding to interruption again — the thread is
+    /// already on its way out and only stays to observe the cancelled task's terminal state.
+    /// Interrupts arriving during the wait are consumed so `parkNanos` actually parks instead of
+    /// spinning, and the interrupt status is restored before the cancellation propagates.
+    private void waitForTaskTerminal(long taskId) {
+        var interrupted = false;
+        try {
+            while (!api.getCompileTask(taskId).completed()) {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(POLL_INTERVAL_MILLIS));
+                if (Thread.interrupted()) {
+                    interrupted = true;
+                }
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -628,13 +693,46 @@ public final class GdccCommand implements Callable<Integer> {
 
     private int renderCompletedTask(
             @NotNull CompileTaskSnapshot snapshot,
-            @Nullable GdextensionMetadataTarget gdextensionMetadataTarget
+            @Nullable GdextensionMetadataTarget gdextensionMetadataTarget,
+            @Nullable GodotProjectPublisher.PreparedPublish publishPlan
     ) throws IOException {
         var result = Objects.requireNonNull(snapshot.result(), "completed compile task must carry a result");
-        var metadataPath = result.success() && gdextensionMetadataTarget != null
-                ? writeGdextensionMetadata(result, gdextensionMetadataTarget)
-                : null;
-        renderResult(snapshot.moduleId(), result, metadataPath);
+        Path metadataPath = null;
+        Path publishedDescriptor = null;
+        String publishFailure = null;
+        var publishInterrupted = false;
+        if (result.success()) {
+            if (gdextensionMetadataTarget != null) {
+                metadataPath = writeGdextensionMetadata(result, gdextensionMetadataTarget);
+            }
+            if (publishPlan != null) {
+                if (Thread.currentThread().isInterrupted()) {
+                    publishInterrupted = true;
+                } else {
+                    try {
+                        publishedDescriptor = publishPlan.publish(result);
+                    } catch (GdccPublishException exception) {
+                        // An interrupted run never commits: mid-publish I/O failure or the
+                        // pre-commit interruption check both surface here as cancellation.
+                        publishInterrupted = Thread.currentThread().isInterrupted();
+                        if (!publishInterrupted) {
+                            publishFailure = exception.getMessage();
+                        }
+                    }
+                }
+            }
+        }
+        renderResult(snapshot.moduleId(), result, metadataPath, publishedDescriptor);
+        if (publishInterrupted) {
+            err.println("Publish interrupted before the descriptor commit; the installation is unchanged");
+            return EXIT_INTERRUPTED;
+        }
+        // A failed publish is reported separately from the successful compile and still counts
+        // as an overall failure — the previous installation is untouched either way.
+        if (publishFailure != null) {
+            err.println("Publish failed: " + publishFailure);
+            return EXIT_COMPILE_FAILED;
+        }
         if (result.success()) {
             return 0;
         }
@@ -659,7 +757,8 @@ public final class GdccCommand implements Callable<Integer> {
     private void renderResult(
             @NotNull String moduleId,
             @NotNull CompileResult result,
-            @Nullable Path gdextensionMetadataPath
+            @Nullable Path gdextensionMetadataPath,
+            @Nullable Path publishedDescriptorPath
     ) {
         for (var diagnostic : result.diagnostics().asList()) {
             err.println(formatDiagnostic(diagnostic));
@@ -676,6 +775,11 @@ public final class GdccCommand implements Callable<Integer> {
             }
             if (gdextensionMetadataPath != null) {
                 out.println("Metadata: " + gdextensionMetadataPath);
+            }
+            // "Published" states the descriptor file was written — it does not imply the running
+            // editor already loaded the extension.
+            if (publishedDescriptorPath != null) {
+                out.println("Published: " + publishedDescriptorPath);
             }
             if (verbosityLevel() >= 1) {
                 renderOutputLinks(result);

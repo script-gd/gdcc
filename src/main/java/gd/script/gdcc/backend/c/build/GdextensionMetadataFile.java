@@ -142,22 +142,11 @@ public final class GdextensionMetadataFile {
     }
 
     private static @NotNull String godotArchitectureName(@NotNull TargetPlatform targetPlatform) {
-        return switch (targetPlatform.architecture) {
-            case X86_64 -> "x86_64";
-            case AARCH64 -> "arm64";
-            case RISCV64 -> "rv64";
-            case WASM32 -> "wasm32";
-        };
+        return targetPlatform.godotArchitectureFeature();
     }
 
     private static @NotNull String platformFeature(@NotNull TargetPlatform targetPlatform) {
-        return switch (Objects.requireNonNull(targetPlatform, "targetPlatform must not be null")) {
-            case WINDOWS_X86_64, WINDOWS_AARCH64 -> "windows";
-            case LINUX_X86_64, LINUX_AARCH64, LINUX_RISCV64 -> "linux";
-            case MACOS_X86_64, MACOS_AARCH64 -> "macos";
-            case ANDROID_X86_64, ANDROID_AARCH64 -> "android";
-            case WEB_WASM32 -> "web";
-        };
+        return Objects.requireNonNull(targetPlatform, "targetPlatform must not be null").godotPlatformFeature();
     }
 
     private static @NotNull java.util.List<String> compatibilityLibraryKeys(@NotNull TargetPlatform targetPlatform) {

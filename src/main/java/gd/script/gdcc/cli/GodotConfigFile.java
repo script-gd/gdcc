@@ -193,23 +193,34 @@ final class GodotConfigFile {
         }
 
         private @NotNull Entry parseAssignment() {
-            var keyStart = cursor;
-            while (!eof()) {
-                var c = peek();
-                if (c == '=') {
-                    break;
+            final String key;
+            if (!eof() && peek() == '"') {
+                // Keys Godot writes through `property_name_encode` are quoted when they contain
+                // `=` `;` `[` `]` `"` or non-ASCII/control characters; decode them like values.
+                key = parseString(cursor).text();
+                skipHorizontalWhitespace();
+                if (eof() || peek() != '=') {
+                    throw fail("expected '=' after key '" + key + "'");
                 }
-                if (c == '\n' || c == '\r' || c == '[' || c == ';') {
+            } else {
+                var keyStart = cursor;
+                while (!eof()) {
+                    var c = peek();
+                    if (c == '=') {
+                        break;
+                    }
+                    if (c == '\n' || c == '\r' || c == '[' || c == ';') {
+                        throw fail("expected '=' after key '" + text.substring(keyStart, cursor).trim() + "'");
+                    }
+                    cursor++;
+                }
+                if (eof()) {
                     throw fail("expected '=' after key '" + text.substring(keyStart, cursor).trim() + "'");
                 }
-                cursor++;
-            }
-            if (eof()) {
-                throw fail("expected '=' after key '" + text.substring(keyStart, cursor).trim() + "'");
-            }
-            var key = text.substring(keyStart, cursor).trim();
-            if (key.isEmpty()) {
-                throw fail("empty key before '='");
+                key = text.substring(keyStart, cursor).trim();
+                if (key.isEmpty()) {
+                    throw fail("empty key before '='");
+                }
             }
             cursor++; // consume '='
             var value = parseValue();

@@ -31,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GdccCommandInputTest {
     private static final List<Path> DEFAULT_OUTPUT_BUILD_DIRECTORIES = List.of(
+            Path.of("demo"),
             Path.of("player_enemy"),
             Path.of("main_main")
     );
@@ -166,6 +167,26 @@ class GdccCommandInputTest {
         assertTrue(terminal.errText().contains("Input file must use .gd extension"), terminal.errText());
         terminal.assertCompilerNotInvoked();
         assertTrue(terminal.api.listModules().isEmpty());
+    }
+
+    /// File mode shares the output-directory lock with project mode: a second run targeting the
+    /// same output must fail before creating a module.
+    @Test
+    void outputLockContentionFailsBeforeCreatingModule(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
+        var workDir = tempDir.resolve("build/demo");
+        Files.createDirectories(workDir);
+        var terminal = new Terminal();
+
+        try (var ignored = gd.script.gdcc.util.FileLockGuard.tryAcquire(workDir.resolve(".gdcc.lock"))) {
+            var exitCode = terminal.command().commandLine().execute(
+                    "-o", workDir.toString(), source.toString());
+
+            assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+            assertTrue(terminal.errText().contains("locked by another gdcc run"), terminal.errText());
+            terminal.assertCompilerNotInvoked();
+            assertTrue(terminal.api.listModules().isEmpty());
+        }
     }
 
     @Test
