@@ -4,7 +4,9 @@ import gd.script.gdcc.api.ModuleSnapshot;
 import gd.script.gdcc.api.VfsEntrySnapshot;
 import gd.script.gdcc.backend.c.build.CCompilerKind;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
+import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.cli.CliCompileTestSupport.Terminal;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -13,8 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-
-import org.jetbrains.annotations.NotNull;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -312,14 +313,15 @@ class GdccCommandProjectIntegrationTest {
         assertEquals(0, exitCode, terminal.errText());
         var binDir = tempDir.resolve("game/bin");
         var descriptorPath = binDir.resolve("gdcc.gdextension");
+        var platform = TargetPlatform.getNativePlatform();
         var libraries = Files.list(binDir)
-                .filter(p -> p.getFileName().toString().endsWith(".so"))
+                .filter(p -> p.getFileName().toString().endsWith(libraryExtension(platform)))
                 .map(p -> p.getFileName().toString())
                 .toList();
         assertEquals(1, libraries.size(), "exactly one published library expected");
         var libName = libraries.getFirst();
         assertTrue(
-                libName.matches("libAlphaGame_linux_debug_x86_64-[0-9a-f]{16}\\.so"),
+                libName.matches(publishedLibraryNameRegex(platform, "AlphaGame", "debug")),
                 "unexpected library name: " + libName
         );
         assertEquals("dummy", Files.readString(binDir.resolve(libName)));
@@ -329,13 +331,15 @@ class GdccCommandProjectIntegrationTest {
         assertTrue(assertInstanceOf(GodotConfigFile.BoolValue.class, managed).flag());
         var entrySymbol = descriptor.findEntry("configuration", "entry_symbol").orElseThrow().value();
         assertEquals("gdextension_entry", assertInstanceOf(GodotConfigFile.StringValue.class, entrySymbol).text());
-        var linux = descriptor.findEntry("libraries", "linux.x86_64").orElseThrow().value();
+        var linux = descriptor.findEntry("libraries", canonicalLibraryKey(platform)).orElseThrow().value();
         assertEquals("res://bin/" + libName, assertInstanceOf(GodotConfigFile.StringValue.class, linux).text());
         var owned = descriptor.findEntry("configuration", "gdcc_libraries").orElseThrow().value();
         assertEquals(List.of("res://bin/" + libName),
                 assertInstanceOf(GodotConfigFile.StringArrayValue.class, owned).items());
 
-        assertTrue(terminal.outText().contains("Published: " + descriptorPath), terminal.outText());
+        // The publisher reports the descriptor under the project root's real path, which differs
+        // from @TempDir on Windows (8.3 names) and macOS (/var -> /private/var).
+        assertTrue(terminal.outText().contains("Published: " + descriptorPath.toRealPath()), terminal.outText());
         assertFalse(Files.exists(workDir.resolve("demo.gdextension")));
         assertEquals(1, terminal.api.listModules().size());
     }
@@ -358,10 +362,14 @@ class GdccCommandProjectIntegrationTest {
 
         var descriptor = GodotConfigFile.parse(
                 Files.readString(binDir.resolve("gdcc.gdextension")), "gdcc.gdextension");
+        var platform = TargetPlatform.getNativePlatform();
         var mapping = assertInstanceOf(GodotConfigFile.StringValue.class,
-                descriptor.findEntry("libraries", "linux.x86_64").orElseThrow().value()).text();
-        assertTrue(mapping.contains("linux_release_x86_64-"), mapping);
-        assertEquals(2, Files.list(binDir).filter(p -> p.getFileName().toString().endsWith(".so")).count());
+                descriptor.findEntry("libraries", canonicalLibraryKey(platform)).orElseThrow().value()).text();
+        var releaseInfix = platform.godotPlatformFeature() + "_release_"
+                + platform.godotArchitectureFeature() + "-";
+        assertTrue(mapping.contains(releaseInfix), mapping);
+        assertEquals(2, Files.list(binDir)
+                .filter(p -> p.getFileName().toString().endsWith(libraryExtension(platform))).count());
     }
 
     @Test
@@ -599,5 +607,26 @@ class GdccCommandProjectIntegrationTest {
                 func value() -> int:
                     return 3
                 """.formatted(className);
+    }
+
+    /// The canonical `[libraries]` key for the given platform (`<platform>.<arch>`).
+    private static String canonicalLibraryKey(TargetPlatform platform) {
+        return platform.godotPlatformFeature() + "." + platform.godotArchitectureFeature();
+    }
+
+    /// The host platform's shared-library file extension (`.so`, `.dll`, `.dylib`, `.wasm`).
+    private static String libraryExtension(TargetPlatform platform) {
+        var full = platform.sharedLibraryFileName("MARKERX");
+        return full.substring(full.indexOf("MARKERX") + "MARKERX".length());
+    }
+
+    /// Regex for a published library file name on the given platform:
+    /// `<libPrefix?><project>_<platform>_<level>_<arch>-<hash16>.<ext>` with exactly 16 lowercase
+    /// hex characters.
+    private static String publishedLibraryNameRegex(TargetPlatform platform, String projectName, String level) {
+        var base = projectName + "_" + platform.godotPlatformFeature() + "_" + level + "_"
+                + platform.godotArchitectureFeature() + "-";
+        var sample = platform.sharedLibraryFileName(base + "0000000000000000");
+        return Pattern.quote(sample).replace("0000000000000000", "\\E[0-9a-f]{16}\\Q");
     }
 }

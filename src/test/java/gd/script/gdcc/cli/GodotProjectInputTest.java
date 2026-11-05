@@ -241,9 +241,11 @@ class GodotProjectInputTest {
             Files.createSymbolicLink(tempDir.resolve("into-src"), input.projectRoot().resolve("src"));
             // The same trick pointed at the project ancestor must also fail.
             Files.createSymbolicLink(tempDir.resolve("to-parent"), tempDir);
-            // A link that resolves outside every project stays legal.
-            Files.createSymbolicLink(tempDir.resolve("outside-link"), tempDir.resolve("elsewhere-target"));
+            // A link that resolves outside every project stays legal. The target must exist
+            // first so Windows creates a directory-type link (a dangling link becomes a file
+            // link that cannot be traversed as a directory).
             Files.createDirectories(tempDir.resolve("elsewhere-target"));
+            Files.createSymbolicLink(tempDir.resolve("outside-link"), tempDir.resolve("elsewhere-target"));
         } catch (UnsupportedOperationException | IOException exception) {
             return; // platform without symlink support: nothing to verify
         }

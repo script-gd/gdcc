@@ -37,7 +37,10 @@ final class GodotProjectPublisherTest {
     // ---------------------------------------------------------------- helpers
 
     private @NotNull GodotProjectInput newProject(@NotNull String name) throws IOException {
-        var projectDir = Files.createDirectories(tempDir.resolve("project-" + name));
+        // The project name may hold filename-hostile characters that NTFS rejects outright
+        // (`:`, `?`, `<`, `|`, ...); they belong in `config/name`, not in the directory.
+        var dirName = "project-" + name.replaceAll("[<>:\"/\\\\|?*\\p{Cntrl}]", "_");
+        var projectDir = Files.createDirectories(tempDir.resolve(dirName));
         var escapedName = name.replace("\\", "\\\\").replace("\"", "\\\"");
         Files.writeString(
                 projectDir.resolve(GodotProjectInput.PROJECT_FILE_NAME),

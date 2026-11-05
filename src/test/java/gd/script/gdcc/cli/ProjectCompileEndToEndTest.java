@@ -196,7 +196,8 @@ class ProjectCompileEndToEndTest {
         assertTrue(outcome.stdout().contains("Compiled module "), () -> outcome.describe());
         assertTrue(outcome.stdout().contains("Artifact: "), () -> outcome.describe());
         var descriptor = game.resolve("bin/gdcc.gdextension");
-        assertTrue(outcome.stdout().contains("Published: " + descriptor), () -> outcome.describe());
+        // The launcher reports the descriptor under the project root's real path.
+        assertTrue(outcome.stdout().contains("Published: " + descriptor.toRealPath()), () -> outcome.describe());
 
         var publishedLibraryName = requirePublishedLibraryName(game);
 
