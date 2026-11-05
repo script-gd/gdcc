@@ -1837,7 +1837,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
 
     /// Lowers array/dictionary literals via plan-driven boundary materialization + one construct insn.
     ///
-    /// Contract (plan §6.3 / §7.2):
+    /// Contract:
     /// - result slot is the pre-declared `cfg_tmp_*` TEMP_SLOT for the item
     /// - each operand uses frozen plan `sourceType`/`targetType` through `materializeFrontendBoundaryValue`
     /// - no re-walk of AST children, no re-decide of compatibility, no opaque fallback

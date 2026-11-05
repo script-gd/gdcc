@@ -27,8 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Integration tests for `FrontendSnapshotQueryService` nodeAt / definitionAt / usagesAt /
 /// typeAt (`frontend_lsp_foundation_implementation.md` §2.4). All queries
-/// run against one shared playground module; every positive case is paired with the negative
-/// shapes the plan documents (absent sets, half-open edges, stale snapshots).
+/// run against one shared playground module; every positive case is paired with negative
+/// shapes (absent sets, half-open edges, stale snapshots).
 class FrontendSnapshotQueryServiceTest {
     private static final String BASE_PATH = "/src/base.gd";
     private static final String BASE_SOURCE = """

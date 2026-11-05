@@ -48,7 +48,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Anchors `FrontendForLoopSupport` route classification and plan construction to the plan document:
+/// Anchors `FrontendForLoopSupport` route classification and plan construction:
 /// bare `range(...)` is recognized purely by AST callee shape, int shorthand keeps only the stop
 /// operand, and unknown iterables fall back to generic Variant without faking AST.
 class FrontendForLoopSupportTest {

@@ -8,16 +8,14 @@ import gd.script.gdcc.backend.c.build.CCompilerKind;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.GdextensionMetadataFile;
 import gd.script.gdcc.backend.c.build.ModuleLocalGodotBindingFixtureProjectBuilder;
+import gd.script.gdcc.cli.CliCompileTestSupport.Terminal;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.enums.GodotVersion;
-import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -33,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GdccCommandInputTest {
     private static final List<Path> DEFAULT_OUTPUT_BUILD_DIRECTORIES = List.of(
+            Path.of("demo"),
             Path.of("player_enemy"),
             Path.of("main_main")
     );
@@ -168,6 +167,26 @@ class GdccCommandInputTest {
         assertTrue(terminal.errText().contains("Input file must use .gd extension"), terminal.errText());
         terminal.assertCompilerNotInvoked();
         assertTrue(terminal.api.listModules().isEmpty());
+    }
+
+    /// File mode shares the output-directory lock with project mode: a second run targeting the
+    /// same output must fail before creating a module.
+    @Test
+    void outputLockContentionFailsBeforeCreatingModule(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
+        var workDir = tempDir.resolve("build/demo");
+        Files.createDirectories(workDir);
+        var terminal = new Terminal();
+
+        try (var ignored = gd.script.gdcc.util.FileLockGuard.tryAcquire(workDir.resolve(".gdcc.lock"))) {
+            var exitCode = terminal.command().commandLine().execute(
+                    "-o", workDir.toString(), source.toString());
+
+            assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+            assertTrue(terminal.errText().contains("locked by another gdcc run"), terminal.errText());
+            terminal.assertCompilerNotInvoked();
+            assertTrue(terminal.api.listModules().isEmpty());
+        }
     }
 
     @Test
@@ -625,41 +644,5 @@ class GdccCommandInputTest {
         assertEquals(TargetPlatform.getNativePlatform(), options.targetPlatform());
         assertFalse(options.strictMode());
         assertEquals(CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT, options.outputMountRoot());
-    }
-
-    private static final class Terminal {
-        private final CliCompileTestSupport.TestCompiler compiler;
-        private final API api;
-        private final StringWriter out = new StringWriter();
-        private final StringWriter err = new StringWriter();
-
-        private Terminal() {
-            this(CliCompileTestSupport.TestCompiler.succeeding());
-        }
-
-        private Terminal(@NotNull CliCompileTestSupport.TestCompiler compiler) {
-            this(compiler, CliCompileTestSupport.newApi(compiler));
-        }
-
-        private Terminal(@NotNull CliCompileTestSupport.TestCompiler compiler, @NotNull API api) {
-            this.compiler = compiler;
-            this.api = api;
-        }
-
-        GdccCommand command() {
-            return new GdccCommand(api, new PrintWriter(out, true), new PrintWriter(err, true));
-        }
-
-        String errText() {
-            return err.toString();
-        }
-
-        String outText() {
-            return out.toString();
-        }
-
-        void assertCompilerNotInvoked() {
-            assertEquals(0, compiler.invocationCount());
-        }
     }
 }
