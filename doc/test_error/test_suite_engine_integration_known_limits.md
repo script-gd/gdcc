@@ -157,6 +157,12 @@ compile-check 以 `Array/Dictionary literal is ... temporarily blocked` 失败�
   到它，StringName 键悬空导致 SIGSEGV。缓解为 driver 在最终 marker/`quit` 前停留 **180 帧**
   让队列在扩展存活期内排空——窗口要的是墙钟时间：与 CPU 饱和的原生构建并发时 60 帧曾两次
   复现崩溃（文档再生成在受争夺 worker 线程上滞后），180 帧在同负载下强制重跑稳定全绿。
+- **并发编辑器数量由 `GodotEditorHotReloadTestSession` 的 JVM 级信号量封顶（4）**：
+  `junit-platform.properties` 的 `fixed.parallelism` 名义上限会被 ForkJoinPool
+  managed-block 补偿击穿——session 内的 `CompletableFuture` 等待使池不断扩容，全部场景
+  的编辑器曾同时启动并在小规格 runner（macOS aarch64）上互相饿死至 marker 超时。
+  `Semaphore` 的 AQS park 不触发补偿，是真实上限；permit 覆盖编辑器进程整个受监督
+  生命周期（`start` 获取、`abortProcess` 一次性释放）。
 - **fixture 类必须 `@tool` 才能观测 `_process`/`_physics_process`**：gdcc 对非 tool 类在编
   辑器内既定跳过帧循环虚拟（非 tool 脚本编辑器语义对齐），非热重载缺陷。
 - **解释型 driver 不得主动调用已知失效的 Callable / 已知错误 arity 的方法**：两者在

@@ -24,8 +24,10 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
@@ -67,6 +69,13 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
     private static final Duration PROCESS_START_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration CAPABILITY_PROBE_TIMEOUT = Duration.ofSeconds(90);
     private static final Duration CLOSE_KILL_GRACE = Duration.ofSeconds(5);
+    /// Bounds live editor processes JVM-wide. JUnit's fixed parallelism nominally caps concurrent
+    /// HR scenarios, but the CompletableFuture waits below trigger ForkJoinPool managed-block
+    /// compensation that grows the pool far past that cap — on small runners every scenario's
+    /// editor then launches at once and starves each other into marker timeouts. Semaphore
+    /// acquisition parks plainly (no managedBlock), so this bound actually holds.
+    private static final int MAX_CONCURRENT_EDITORS = 4;
+    private static final Semaphore EDITOR_PERMITS = new Semaphore(MAX_CONCURRENT_EDITORS, true);
     private static final String MINIMAL_PROJECT_GODOT = """
             ; Engine configuration file.
             config_version=5
@@ -96,6 +105,7 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
     private @Nullable Process process;
     private @Nullable Thread stdoutReader;
     private @Nullable Thread stderrReader;
+    private final AtomicBoolean editorPermitHeld = new AtomicBoolean();
 
     /// Creates a session bound to the Godot project directory that `prepareProject` will (re)create.
     public GodotEditorHotReloadTestSession(@NotNull Path projectDir) {
@@ -149,22 +159,33 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
             throw new IllegalStateException("prepareProject must run before start");
         }
         var godotBinary = requireEditorCapableGodotOrAbort();
-        var command = List.of(
-                godotBinary.toString(),
-                "--headless",
-                "--editor",
-                "--path",
-                projectDir.toString(),
-                "--script",
-                DRIVER_RESOURCE_PATH
-        );
-        var processBuilder = new ProcessBuilder(command);
-        processBuilder.directory(projectDir.toFile());
-        process = startProcess(processBuilder, PROCESS_START_TIMEOUT);
-        Consumer<String> onLine = this::observeLine;
-        stdoutReader = startStreamReader("stdout", process.getInputStream(), stdoutBuffer, onLine);
-        stderrReader = startStreamReader("stderr", process.getErrorStream(), stderrBuffer, onLine);
-        startProcessWaiter(process);
+        EDITOR_PERMITS.acquire();
+        editorPermitHeld.set(true);
+        try {
+            var command = List.of(
+                    godotBinary.toString(),
+                    "--headless",
+                    "--editor",
+                    "--path",
+                    projectDir.toString(),
+                    "--script",
+                    DRIVER_RESOURCE_PATH
+            );
+            var processBuilder = new ProcessBuilder(command);
+            processBuilder.directory(projectDir.toFile());
+            process = startProcess(processBuilder, PROCESS_START_TIMEOUT);
+            Consumer<String> onLine = this::observeLine;
+            stdoutReader = startStreamReader("stdout", process.getInputStream(), stdoutBuffer, onLine);
+            stderrReader = startStreamReader("stderr", process.getErrorStream(), stderrBuffer, onLine);
+            startProcessWaiter(process);
+        } catch (Exception | Error startFailure) {
+            try {
+                abortProcess();
+            } finally {
+                releaseEditorPermit();
+            }
+            throw startFailure;
+        }
     }
 
     /// Waits until the driver prints the given phase marker.
@@ -405,6 +426,15 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
                 Thread.currentThread().interrupt();
             }
         }
+        releaseEditorPermit();
+    }
+
+    /// Hands the concurrency permit back once the editor process is gone, exactly once per
+    /// acquisition — `abortProcess` runs on every failure, timeout and close path.
+    private void releaseEditorPermit() {
+        if (editorPermitHeld.compareAndSet(true, false)) {
+            EDITOR_PERMITS.release();
+        }
     }
 
     private void observeLine(@NotNull String line) {
@@ -524,15 +554,24 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
             }
             throw new IOException("Godot editor process start failed", cause);
         } catch (TimeoutException e) {
-            // The spawn attempt may still complete after we give up; make sure a late-started
-            // editor is killed instead of being left unsupervised.
-            started.thenAccept(lateProcess -> {
-                if (lateProcess != null) {
-                    lateProcess.destroyForcibly();
-                }
-            });
+            destroyLateStartedProcess(started);
             throw new IOException("Timed out while starting Godot editor process", e);
+        } catch (InterruptedException e) {
+            // Same leak window as the timeout path: the spawn thread may still finish after we
+            // give up, so the late process must be destroyed instead of left unsupervised.
+            destroyLateStartedProcess(started);
+            throw e;
         }
+    }
+
+    /// The spawn attempt may still complete after the caller gave up; make sure a late-started
+    /// editor is killed instead of being left unsupervised.
+    private static void destroyLateStartedProcess(@NotNull CompletableFuture<Process> started) {
+        started.thenAccept(lateProcess -> {
+            if (lateProcess != null) {
+                lateProcess.destroyForcibly();
+            }
+        });
     }
 
     private void recreateProjectDir() throws IOException {
