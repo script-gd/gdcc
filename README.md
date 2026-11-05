@@ -60,7 +60,7 @@ The most convenient way to use GDCC is through the GDCC editor plugin:
 
 You can also install the GDCC platform packages for command-line or CI/CD use; download and extract them to any directory.
 The normal platform packages are named like `gdcc-<version>-<os>-<arch>.zip`. Each normal platform package contains the `gdcc` launcher and other core files that may change between versions.
-The `*-full.zip` packages contain the same files plus all cross-compilation toolchains needed to run; see [CLI Usage](help/cli-usage.md) for details.
+The `*-full.zip` packages contain the same files plus all cross-compilation toolchains needed to run; see [CLI Usage](help/cli-usage.md) for details. Passing a `project.godot` to the CLI compiles the whole project (auto-discovered `.gd3` sources plus explicitly listed `.gd` files) and publishes the result into the project's `bin/` directory.
 
 # Community
 

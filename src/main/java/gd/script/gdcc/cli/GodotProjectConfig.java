@@ -12,7 +12,7 @@ import java.util.Objects;
 /// The GDCC-relevant settings extracted from `project.godot`, mirroring the keys the editor addon
 /// reads (`plugin.gd` registration + `gdcc_project_manager.gd` build reads), but strict instead of
 /// silently coercing: a wrong type or a feature-override sibling (`key.tag`) that could change the
-/// build is an error, matching the plan's "no silent wrong values" rule.
+/// build is an error instead of a silently applied wrong value.
 ///
 /// @param projectName       `application/config/name` — required, must stay non-blank after trim.
 /// @param excludedGlobs     `gdcc/sync/excluded_globs` — auto-discovery exclusion globs in Godot

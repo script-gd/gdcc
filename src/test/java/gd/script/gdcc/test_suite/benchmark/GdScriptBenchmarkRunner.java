@@ -521,7 +521,7 @@ public final class GdScriptBenchmarkRunner {
                 + ". Unexpected: " + String.join(", ", unexpectedPaths);
     }
 
-    /// Step 3 keeps project preparation benchmark-specific inside this runner while reusing the shared
+    /// Project preparation stays benchmark-specific inside this runner while reusing the shared
     /// Godot project writer for the actual file generation.
     private @NotNull GodotGdextensionTestRunner.ProjectSetup prepareProjectSetup(
             @NotNull BenchmarkCaseResources resources,

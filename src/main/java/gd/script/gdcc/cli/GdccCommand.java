@@ -54,7 +54,7 @@ import java.util.concurrent.locks.LockSupport;
         name = "gdcc",
         mixinStandardHelpOptions = true,
         versionProvider = GdccCommand.VersionProvider.class,
-        description = "Compile GDScript source files into a GDCC module."
+        description = "Compile GDScript/GD3 sources into a GDCC module, or a whole Godot project when one project.godot is passed."
 )
 public final class GdccCommand implements Callable<Integer> {
     static final int EXIT_COMPILE_FAILED = 1;
@@ -76,14 +76,16 @@ public final class GdccCommand implements Callable<Integer> {
             index = "0..*",
             arity = "1..*",
             paramLabel = "files",
-            description = "GDScript source files to compile into one module."
+            description = "GDScript .gd source files to compile into one module, or one project.godot " +
+                    "to compile the whole project (auto-discovered .gd3 plus any listed .gd files)."
     )
     List<Path> files = new ArrayList<>();
 
     @Option(
             names = {"-o", "--output"},
             paramLabel = "<output>",
-            description = "Output target path. Defaults to input filenames without .gd suffixes joined by underscores."
+            description = "Output target path. Defaults to input filenames without .gd suffixes joined by underscores in file mode. " +
+                    "In project mode this selects the internal build directory (default .godot/gdcc/cli/<project-identity>/); the publish target stays the project's bin/."
     )
     Path output;
 
@@ -134,7 +136,8 @@ public final class GdccCommand implements Callable<Integer> {
     @Option(
             names = "--project",
             paramLabel = "<project.godot>",
-            description = "Godot project.godot file. When every input belongs to this project, emit <output>/<output-name>.gdextension."
+            description = "Godot project.godot file. In file mode, when every input belongs to this project, emit <output>/<output-name>.gdextension. " +
+                    "In project mode it must reference the positional project.godot and emits no sidecar file."
     )
     Path project;
 

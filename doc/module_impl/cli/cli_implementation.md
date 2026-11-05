@@ -1,19 +1,21 @@
 # GDCC CLI 实现说明
 
 > 本文档作为本地 `gdcc` 命令行适配层的长期事实源。CLI 是
-> `gd.script.gdcc.api.API` 之上的薄适配层：它从宿主机 `.gd` 文件准备一个
-> API module，配置 compile options 与顶层 canonical name 映射，启动一个
-> compile task，drain task events，并把最终结果渲染给终端用户。本文档替代旧的
+> `gd.script.gdcc.api.API` 之上的薄适配层：它从宿主机 `.gd` 文件或一个
+> `project.godot` 准备一个 API module，配置 compile options 与顶层 canonical
+> name 映射，启动一个 compile task，drain task events，并把最终结果渲染给终端
+> 用户；项目模式下还会把成功产物发布到项目 `bin/`。本文档替代旧的
 > `cli_implementation_plan.md`，不再保留实施步骤、进度记录或验收流水账。
 
 ## 文档状态
 
 - 状态：事实源维护中
-- 更新时间：2026-09-13
+- 更新时间：2026-11-05
 - 适用范围：
   - `src/main/java/gd/script/gdcc/Main.java`
   - `src/main/java/gd/script/gdcc/cli/**`
   - `src/main/java/gd/script/gdcc/util/ConsoleOutputUtil.java`
+  - `src/main/java/gd/script/gdcc/util/FileLockGuard.java`
   - `src/main/java/gd/script/gdcc/util/GdccVersion.java`
   - `build.gradle.kts`
   - `src/test/java/gd/script/gdcc/cli/**`
@@ -37,12 +39,17 @@
   - `src/main/java/gd/script/gdcc/backend/c/build/CProjectBuilder.java`
   - `src/test/java/gd/script/gdcc/api/**`
   - `src/test/java/gd/script/gdcc/backend/c/build/**`
+  - `doc/module_impl/editor_addon/gd3_editor_integration_implementation.md`
+  - `src/editor_addon/addons/gdcc/**`（`.gd3` 排除 glob、库命名与描述文件格式的对齐基准）
 - 明确非目标：
   - 不实现网络或 RPC transport。
   - 不在 CLI 代码中实现第二套编译管线。
   - 除 `--prefix` 展开所需的窄范围 source-name discovery preflight 外，不让 CLI 直接 parse / lower / codegen。
   - 不新增一套镜像 `CompileOptions` 的配置抽象。
   - 不在 build 后移动或重命名 backend 产物。
+  - 不做场景/Script 挂载转换、Autoload 改写或 UID 迁移。
+  - 不启动 Godot、不写入 `.godot/extension_list.cfg`，也不主动控制正在运行的编辑器；
+    文件发布成功与编辑器已加载扩展是两个不同状态。
 
 ---
 
@@ -77,18 +84,27 @@ CLI 不拥有 frontend / LIR / backend 语义。source collection、semantic dia
 gdcc [options] <files...>
 ```
 
+`files` 中存在且只存在一个 basename 为 `project.godot` 的 positional 时进入项目模式，
+其余 positional 作为显式 `.gd` 源参与同一次编译；否则为文件模式：
+
+```powershell
+gdcc game/project.godot [options] [explicit.gd ...]
+```
+
 稳定选项：
 
-- `files`：非空宿主机 `.gd` 源文件列表。
-- `-o` / `--output <output>`：可选 output target path。
+- `files`：非空宿主机输入列表。文件模式下每个输入都必须是 `.gd`；项目模式下允许至多一个
+  `project.godot`，其余输入必须是 `.gd`。多个 `project.godot` positional 报 usage error。
+  `.gd` 源只能经命令行显式传入；CLI 不在 `project.godot` 中新增源清单或其他配置项。
+- `-o` / `--output <output>`：可选 output target path；项目模式下仅选择内部构建目录，不改变 `bin/` 发布目的地。
 - `--prefix <prefix>`：为顶层 source name 生成 canonical prefix。
 - `--class-map Source=Canonical`：显式顶层 source-to-canonical mapping，可重复传入。
 - `--gde <version>`：Godot GDExtension API 版本。当前唯一支持值是 `4.5.1`。
 - `--opt` / `--optimize <level>`：C backend 编译优化等级。支持 `debug`、`release`，默认 `debug`。
 - `--target <platform>`：C backend 目标平台。默认 native host platform。
 - `--backend <backend>`：C 编译器后端。支持 `zig`、`tcc`；省略时按优化等级自动选择（debug→tcc、release→zig）。
-- `--project <project.godot>`：Godot 项目文件。仅当所有输入脚本的最近 `project.godot` 都是该文件时，成功编译后生成
-  `.gdextension` metadata 文件。
+- `--project <project.godot>`：Godot 项目文件。文件模式下，仅当所有输入脚本的最近 `project.godot` 都是该文件时，成功编译后生成
+  `.gdextension` metadata 文件。项目模式下该选项只允许指向同一个 `project.godot`，且不额外生成 sidecar metadata。
 - `-v` / `--verbose`：可重复传入的 verbosity flag。`-v` 为 level 1，`-vv` 为 level 2。
 - `-V` / `--version`：输出编译器构建版本信息并退出，不创建 API module 或 compile task。
 
@@ -102,6 +118,9 @@ gdcc -o build/demo --class-map Player=RuntimePlayer --class-map Enemy=RuntimeEne
 gdcc -o build/demo --gde 4.5.1 -v src/player.gd src/enemy.gd
 gdcc -o build/demo --optimize release --target linux-x86-64 src/player.gd
 gdcc --project game/project.godot -o build/demo game/src/player.gd
+gdcc game/project.godot
+gdcc game/project.godot game/src/explicit_helper.gd
+gdcc --opt release --backend zig game/project.godot game/src/explicit_helper.gd
 gdcc --version
 ```
 
@@ -188,6 +207,8 @@ native 构建环境合同按后端不同：zig 后端使用 zig 自带 sysroot�
 
 ## 3. 输入与 Module 准备
 
+### 3.1 文件模式输入
+
 每个 input 必须满足：
 
 - path 文本非 blank。
@@ -209,6 +230,34 @@ basename 互相覆盖。`displayPath` 保留用户传入的原始 host path 文�
 
 重复 host file argument 当前被视为用户有意创建重复 source entry。来自不同目录的两个 `main.gd` 也会作为独立 VFS files
 写入；如果它们都依赖默认 `Main` source name，frontend diagnostic 是权威结果，CLI 不隐藏或改写该冲突。
+
+### 3.2 项目模式输入
+
+`GodotProjectInput` 加载 positional `project.godot`（必须存在、是 regular file、可解析），读取
+`application/config/name`（要求非空）与 `gdcc/*` 设置；`GodotConfigFile` 解析器支持 section、
+转义、多行值、字符串/布尔/整数/字符串数组与 `PackedStringArray` 字面量，未消费的值保留原始
+文本，畸形语法带 `origin:line` 报错。feature-override 兄弟键（如 `optimization_level.release`）
+在 CLI 消费键上被拒绝。
+
+最终源集为“自动发现的 `.gd3` ∪ 显式指定的 `.gd`”，由 `GodotProjectSourceCollector` 准备：
+
+- 以项目文件定位资源根递归扫描 `.gd3`；点目录跳过；`gdcc/sync/excluded_globs`（缺省
+  `["addons/gdcc/*"]`）按 Godot `String.match` 语义匹配（`*` 跨 `/`、`?` 单码点且不匹配 `.`）；
+  `addons/gdcc/`、`.godot/`、`bin/` 永不进入；遇到含 `project.godot` 的嵌套子项目停止进入该子树。
+  遍历不跟随目录符号链接；未被排除的 `.gd3` 文件链接在收集时拒绝。
+- 显式 `.gd` 相对 CLI 工作目录解析，必须是项目资源树内可读的 regular file；文件本身为符号
+  链接时拒绝，路径经 real-path 校验不得越出本项目或落入其他项目；它可以命中已被 glob
+  排除的路径，但仍不能落入托管区域。
+- 源按项目相对路径去重、排序；空源集报 usage error（仅显式 `.gd` 也是合法源集）。全部源
+  读成 UTF-8 后才创建 module，文件不可读、坏 UTF-8 或准备期变动在 module 创建前整体失败；
+  读取以 `NOFOLLOW_LINKS` 打开，并用 size/mtime/fileKey 与 real-path 做读取前后比对。
+- VFS 布局为 `/src/<项目相对路径>`，`displayPath = res://<相对路径>`，同时上传真实宿主绝对路径；
+  三者分别驱动 VFS、诊断/`source_res_path` 与 `source_path` 元数据。
+
+显式 `.gd` 只表示与 `.gd3` 同等的编译输入，不会让 Godot 把磁盘 `.gd` 当作脚本资源；若其
+`class_name` 与编译出的原生类同名，Godot 仍可能报 `Class "X" hides a native class`。CLI 不
+自动擦除或改名，可由既有 class map 区分；class map 无法分开两个本就相同的 source name，
+后者需要修改源码类名。
 
 ---
 
@@ -313,7 +362,43 @@ compatibility_minimum = "4.5"
 CLI 只生成 `.gdextension` 文件，不修改 Godot 的 `.godot/extension_list.cfg` 或编辑器缓存。用户仍可在 Godot 项目中按
 Godot 的 extension loading 流程启用该文件。
 
----
+### 4.5 项目模式工作目录与 `bin/` 发布
+
+项目模式的 output target 仍是“目录最后一段 = moduleId/moduleName、完整 path = `projectPath`”，
+但 `-o` 只允许落在 CLI 缓存子树或项目之外的非祖先目录：默认是
+`.godot/gdcc/cli/<safeName>_<root+name hash16>/`，显式 `-o` 不能进入任何 Godot 项目的资源树、
+不能落到 regular file 上；拼写路径与符号链接解析后的真实落点按同一边界双重校验。
+
+成功编译后 `GodotProjectPublisher` 把结果动态库发布到项目 `bin/` 并维护唯一的
+`bin/gdcc.gdextension`（addon 兼容格式）：
+
+- 发布只使用本次成功结果中唯一匹配目标平台的动态库，不扫描构建目录猜测产物；C、object、
+  PDB 等留在工作目录。编译前在锁内完成 `bin/`、既有描述文件、所有权元数据与全量
+  `[libraries]` 合并计划的校验；描述文件不存在时按新建处理，存在但未托管/坏类型/畸形键
+  直接拒绝，不创建 module。
+- 描述文件写入 `entry_symbol = "gdextension_entry"`、`compatibility_minimum = "4.5"`、
+  `reloadable = true`、`gdcc_managed = true`。
+- 库按 `[lib]<安全项目名>_<平台>_<debug|release>_<架构>-<sha256[:16]>` 命名，经同目录暂存后以
+  hard link 免覆盖安装；同名文件仅在非符号链接且完整 hash 一致时被采纳。
+- `[libraries]` 使用 `platform.arch` 规范键；旧 `platform.mode.arch` 三段式键迁移（debug/release
+  双值不一致时报歧义）；会遮蔽受管目标的 feature-tag 键、非 String 库路径值、`gdcc_library_aliases`
+  均按明确规则处理或拒绝；`gdcc_libraries` 只保留仍存在且逐组件无符号链接、无 `..` 逃逸的
+  `bin/` 内 res:// 路径（提交时复核），不按所有权列表删除文件，无关字段原样保留。
+- 提交序列：新库落盘 → 同目录临时描述文件 → “复核 bin/与描述文件快照 + 单次原子替换”整体在
+  AccessDenied 重试边界内逐轮重验；不支持原子替换即发布失败，不退化为先删后建。描述文件
+  序列化保留未触碰字段的 raw value，但不保留注释与排版，重复 section/key 按 Godot
+  `ConfigFile` 语义合并。
+- 不删除旧库；失败最多留下未引用的新库，原描述文件与旧安装保持可用。
+
+锁合同：固定顺序先项目锁 `.godot/gdcc/cli/publish.lock` 后输出锁 `<workdir>/.gdcc.lock`，均经
+`FileLockGuard`（`FileChannel.tryLock`）获取且 JVM 内注册表阻止同进程重复获取；争用在 module
+创建前失败。锁覆盖 module 创建、native 构建与结果处理；中断时先请求任务取消、等待终态，再放锁。
+项目模式不在工作目录生成第二个 `.gdextension`。
+
+锁只协调采用该协议的 CLI 进程：现有 editor addon 不参与该锁协议，双方同时 Build 会各自读取
+旧描述文件再写回、丢失另一方更新。因此 CLI 与 addon 兼容于**顺序**维护同一
+`bin/gdcc.gdextension`，不支持并发 Build；与活动编辑器并发构建、扫描通知或热重载需要
+双边发布协作协议。CLI 也不写 `.godot/extension_list.cfg`、不启动 Godot 或触发 scan/reload。
 
 ## 5. CompileOptions 合同
 
@@ -359,6 +444,15 @@ new CompileOptions(
 - 接受 `zig` 与 `tcc`，大小写不敏感；`zig` 映射到 `CCompilerKind.ZIG_CC`，`tcc` 映射到 `CCompilerKind.TINY_CC`。
 - 省略时 `cCompilerKind` 为 `null`（自动）：`debug` 构建走 tcc，`release` 构建走 zig。
 - unsupported `--backend` 在 API state mutation 和 compile task 创建前返回 usage error。
+
+项目模式规则：
+
+- `gdcc/build/optimization_level`（`DEBUG`/`RELEASE`，缺省 `DEBUG`）、`gdcc/build/strict_mode`
+  （bool，缺省 false）与 `gdcc/build/c_compiler_kind`（`AUTO`/`ZIG_CC`/`TINY_CC`，缺省 `AUTO`）
+  提供默认 compile options；`AUTO` 传 `null` 由 API 按优化级别选后端。
+- picocli `ParseResult` 区分显式 `--opt`/`--backend` 与声明默认值：显式 CLI 选项覆盖项目设置，
+  未显式传入时继承项目值。
+- strictMode 仅来自项目设置，CLI 没有对应 flag。
 
 CLI 当前没有 strict flag。后续除非明确扩展 CLI surface，否则不应因为 `CompileOptions` 有字段就添加未使用 flags。
 
@@ -471,7 +565,11 @@ CLI 渲染 `CompileResult.diagnostics()` 中的 frontend diagnostics。诊断 pa
 Compiled module <moduleId>
 Artifact: <artifact-path>
 Metadata: <metadata-path-if-generated>
+Published: <bin/gdcc.gdextension-path-if-published>
 ```
+
+`Metadata:` 只在文件模式 `--project` sidecar 生成时出现；`Published:` 只在项目模式成功发布时出现，
+表示描述文件已写入 `bin/gdcc.gdextension`，不代表运行中的编辑器已加载该扩展。
 
 失败时 stderr 输出：
 
@@ -479,6 +577,9 @@ Metadata: <metadata-path-if-generated>
 Compile failed: <outcome>
 <failure-message-if-present>
 ```
+
+编译成功但发布失败时，成功渲染照常输出，stderr 追加 `Publish failed: <message>`。
+发布期中断不提交安装，stderr 追加固定提示后按中断退出。
 
 `BUILD_FAILED` 默认在 stderr 打印非空 build log。frontend failure 默认不打印 build log，除非 verbosity level 至少为 `2`。
 
@@ -530,15 +631,19 @@ CLI stdout / stderr writer 使用各自 `PrintStream.charset()`。输出前按 c
 稳定 exit-code surface：
 
 - `0`：compile succeeded，或 `--help` / `--version` early-exit succeeded。
-- `1`：compile task completed，但 `CompileResult.outcome()` 不是 `SUCCESS`。
+- `1`：compile task completed，但 `CompileResult.outcome()` 不是 `SUCCESS`；或编译成功但 `bin/` 发布失败。
 - `2`：compile task 创建前的命令行用法或配置错误。
-- `130`：等待 compile task 时被用户中断，CLI 已尝试 cancel task。
+- `130`：等待 compile task 时被用户中断（CLI 已尝试 cancel task 并等待终态），或编译成功但
+  中断发生在描述文件提交之前。
 
 错误边界：
 
 - picocli option / parameter 错误返回 `2`。
 - picocli `--help` / `--version` 返回 `0`，不执行 CLI command body。
 - host input 校验、unsupported `--gde` / `--opt` / `--target` / `--backend`、显式 output target 错误、duplicate `--class-map` key 以及 API module creation failure 返回 `2`。
+- 项目模式的输入/配置/源准备错误、`-o` 边界违例、多个 `project.godot` positional、`--project`
+  指向不同项目、既有描述文件校验失败、项目锁或输出锁争用，都在 module 创建前返回 `2`。
+- 编译成功但发布校验/原子提交失败返回 `1`，原描述文件与旧库保持不变。
 - frontend diagnostics、frontend failure、native build failure 都是 compile result，不是 CLI usage error，返回 `1`。
 - class-name 合法性和 canonical mapping 深层语义继续由 `FrontendClassNameContract` / API / frontend diagnostics 负责。
 - API exceptions 在 CLI 边界渲染为 user-facing error，不包一层平行异常体系。
@@ -591,11 +696,29 @@ CLI 聚焦测试：
 - `ApiCompileArtifactLinkTest`、`ApiRecompileArtifactRefreshTest`：output publication 与 stale artifact refresh。
 - backend C project builder tests：generated files、shared include、artifact provenance。
 - `LauncherSmokeTest`（`gd.script.gdcc.launcher`）：经真实 launcher 二进制的后端选择端到端冒烟——无 zig 环境下 `--backend tcc` 完成编译、launcher 不再因缺 zig 而启动失败、`ZIG_HOME` 可发现时照常传播、`--backend zig` 缺 zig 时报既有缺失通道。
+- `GodotConfigFileTest`、`GodotProjectInputTest`：Godot 配置语法与项目输入/`-o` 边界正反例。
+- `GodotProjectSourceCollectorTest`：`.gd3` 自动发现、排除 glob、托管区域、显式 `.gd` 合并与
+  符号链接/编码/变动校验。
+- `GdccCommandProjectIntegrationTest`：项目模式分流、项目设置与 CLI 覆盖、发布、双锁互斥、
+  取消持锁、发布中断。
+- `GodotProjectPublisherTest` 与 `FileLockGuardTest`：描述文件合并/迁移/拒绝、`bin/` 发布
+  原子性、经 `midPublishBarrier` 测试缝注入的发布中段中断、跨进程锁。
+- `ProjectCompileEndToEndTest`：真实 launcher + 真实 Godot 的端到端锚点——临时项目经 launcher
+  编译并发布 `bin/gdcc.gdextension`（发布物必须由产品路径产生，测试不手工复制库或重写描述
+  文件）；隔离 Godot editor（`HOME`/`XDG_*` 指向临时目录，`--headless --editor
+  --quit-after 600`，较长存活窗口规避上游 godot#111048 的关闭竞态）扫描生成
+  `extension_list.cfg` 并加载扩展后，解释型 driver 验证 ClassDB 注册、跨文件调用、
+  `_gdcc_get_metadata` 来源元数据与 Godot `ConfigFile` 往返；超时与中断路径终止整棵进程树
+  （需要已构建的 launcher/dist jar/tinycc bundle 与 `GODOT_BIN`，缺失时按用例跳过）。
 
 推荐聚焦命令：
 
 ```powershell
-rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests GdccCommandOptionTest,GdccCommandInputTest,GdccCommandMappingTest,GdccCommandTaskTest,MainEntrypointTest,GdccVersionTest,FrontendClassNameContractTest
+rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests GdccCommandOptionTest,GdccCommandInputTest,GdccCommandMappingTest,GdccCommandTaskTest,MainEntrypointTest,GdccVersionTest,FrontendClassNameContractTest,GodotConfigFileTest,GodotProjectInputTest,GodotProjectSourceCollectorTest,GodotProjectPublisherTest,GdccCommandProjectIntegrationTest,FileLockGuardTest,FileUtilTest,LauncherSmokeTest,ProjectCompileEndToEndTest
+```
+
+```bash
+script/run-gradle-targeted-tests.sh --tests GdccCommandOptionTest,GdccCommandInputTest,GdccCommandMappingTest,GdccCommandTaskTest,MainEntrypointTest,GdccVersionTest,FrontendClassNameContractTest,GodotConfigFileTest,GodotProjectInputTest,GodotProjectSourceCollectorTest,GodotProjectPublisherTest,GdccCommandProjectIntegrationTest,FileLockGuardTest,FileUtilTest,LauncherSmokeTest,ProjectCompileEndToEndTest
 ```
 
 ---
@@ -607,3 +730,7 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
   `projectPath`，仍需要未来的 project-path lock 或 server-owned workspace policy 才能获得跨 module host filesystem 隔离。
 - `--prefix` source-name discovery preflight 会重复 API parse pass。当前这是 option expansion 的窄范围成本，不是编译管线替代品；若后续性能或语义变脆，应新增明确的 API / frontend preflight surface。
 - 可执行 wrapper scripts 暂未提供。当前稳定分发面是主 jar、同级 `lib/` runtime dependencies，以及包含两者的 zip distribution。
+- `bin/` 只追加不回收：不再被 `[libraries]` 引用的旧库保留在 `bin/`（所有权列表只校验存在性，
+  不驱动删除）；如需清理策略应另行设计。
+- 与 editor addon 并发 Build、活动编辑器扫描通知或热重载需要双边发布协作协议；当前仅保证
+  CLI 与 addon 顺序维护同一 `bin/gdcc.gdextension` 的格式兼容。

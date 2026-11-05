@@ -44,7 +44,7 @@ import java.util.Set;
 /// touched by an outside writer, installs the new hash-named library, then commits the merged
 /// descriptor through a same-directory temporary file plus an atomic replace. A failed publish
 /// therefore leaves the previous installation intact — at worst an unreferenced new library
-/// stays behind, which the plan explicitly permits.
+/// stays behind.
 final class GodotProjectPublisher {
     static final @NotNull String BIN_DIR_NAME = "bin";
     static final @NotNull String DESCRIPTOR_FILE_NAME = "gdcc.gdextension";
