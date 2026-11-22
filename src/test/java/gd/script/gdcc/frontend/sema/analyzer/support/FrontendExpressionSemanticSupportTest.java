@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import org.junit.jupiter.api.Test;
 
 import dev.superice.gdparser.frontend.ast.*;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.parse.FrontendModule;
@@ -1757,6 +1758,35 @@ class FrontendExpressionSemanticSupportTest {
                         false
                 )
         );
+    }
+
+    @Test
+    void resolveRecoveredInfixExpressionRejectsParsedCastWithoutResolvingOperand() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("recovered_cast.gd"), "var broken = value as void\n", diagnostics
+        );
+        var declaration = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().getFirst());
+        var recovered = assertInstanceOf(RecoveredInfixExpression.class, declaration.value());
+        assertEquals("value", assertInstanceOf(IdentifierExpression.class, recovered.operand()).name());
+        assertEquals("as", recovered.operator());
+        var parseDiagnostics = diagnostics.snapshot();
+        assertEquals(1, parseDiagnostics.size());
+        assertEquals(DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN, parseDiagnostics.getFirst().category());
+
+        var support = newBareSupport();
+        for (var finalizeWindow : List.of(false, true)) {
+            var result = support.resolveRemainingExplicitExpressionType(
+                    recovered, (_, _) -> fail("Recovered infix must not resolve children"), true, finalizeWindow
+            );
+            assertTrue(result.rootOwnsOutcome());
+            assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, result.expressionType().status());
+            assertNull(result.expressionType().publishedType());
+            assertEquals(
+                    "Parser recovered infix expression 'as' cannot participate in expression typing",
+                    result.expressionType().detailReason()
+            );
+        }
     }
 
     @Test

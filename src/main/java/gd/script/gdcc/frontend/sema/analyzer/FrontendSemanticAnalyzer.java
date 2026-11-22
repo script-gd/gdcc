@@ -1,12 +1,17 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
+import dev.superice.gdparser.frontend.ast.Node;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.parse.FrontendModule;
+import gd.script.gdcc.frontend.parse.FrontendParseRecovery;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.scope.ClassRegistry;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Objects;
 
 /// Basic frontend semantic-analyzer framework.
@@ -179,9 +184,8 @@ public final class FrontendSemanticAnalyzer {
     /// Runs the current frontend analyzer framework against one module using a shared
     /// `DiagnosticManager`.
     ///
-    /// `FrontendSourceUnit` no longer stores parse diagnostics. The analyzer therefore consumes
-    /// parse diagnostics only through the shared manager state that callers prepared earlier in
-    /// the pipeline.
+    /// Parser recovery attribution travels with the AST. The shared pipeline restores blocking
+    /// parser diagnostics if they are not covered in the supplied manager.
     ///
     /// This shared semantic entrypoint intentionally does not guarantee lowering readiness.
     /// Compile callers must use `analyzeForCompile(...)` and check the resulting diagnostics for
@@ -204,6 +208,8 @@ public final class FrontendSemanticAnalyzer {
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
 
         var analysisData = FrontendAnalysisData.bootstrap();
+        analysisData.updateSourceUnits(module.units());
+        publishParseRecoveriesByOwner(module, analysisData);
         var moduleSkeleton = classSkeletonBuilder.build(
                 module,
                 classRegistry,
@@ -218,8 +224,7 @@ public final class FrontendSemanticAnalyzer {
 
         // Error-subtree annotation lifts parser error nodes into `skippedSubtreeRoots()` after the
         // skeleton published its own rejected roots and before scope analysis consumes the table,
-        // so both scope and body phases skip exactly the parser-damaged subtrees.
-        // The step owns no diagnostics: `parse.lowering` already reported every mapped error node.
+        // so both scope and body phases skip the parser-damaged subtrees without reporting again.
         FrontendErrorSubtreeAnnotator.annotate(module, analysisData);
 
         // Scope analysis remains a dedicated phase after skeleton publication so later binder/body
@@ -270,8 +275,28 @@ public final class FrontendSemanticAnalyzer {
         // Loop-control legality is also diagnostics-only, but it must run on the shared semantic
         // path so invalid `break` / `continue` never rely on lowering fail-fast to become visible.
         loopControlFlowAnalyzer.analyze(analysisData, diagnosticManager);
+        FrontendParseRecovery.ensureUncoveredParseDiagnosticsReported(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;
+    }
+
+    private static void publishParseRecoveriesByOwner(
+            @NotNull FrontendModule module,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+        var byOwner = new IdentityHashMap<Node, ArrayList<FrontendParseRecovery>>();
+        for (var unit : module.units()) {
+            if (unit.parseFailed()) {
+                continue;
+            }
+            for (var recovery : unit.parseRecoveries()) {
+                var owner = recovery.owner();
+                if (owner != null) {
+                    byOwner.computeIfAbsent(owner, _ -> new ArrayList<>()).add(recovery);
+                }
+            }
+        }
+        byOwner.forEach((owner, bucket) -> analysisData.parseRecoveriesByOwner().put(owner, List.copyOf(bucket)));
     }
 
     /// Runs the shared semantic pipeline plus the compile-only final gate.

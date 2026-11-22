@@ -1,5 +1,7 @@
 package gd.script.gdcc.util;
 
+import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -9,6 +11,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 
 public final class StringUtil {
@@ -243,7 +246,7 @@ public final class StringUtil {
 
     /// Parses a GDScript integer literal lexeme into its 64-bit value.
     ///
-    /// Accepted shape: optional `0x`/`0b`/`0o` radix prefix (either case) plus digits with `_`
+    /// Accepted shape: optional `0x`/`0b`/`0o` radix prefix (either case) plus ASCII digits with `_`
     /// separators. The sign is intentionally excluded from this contract — unary `+`/`-` is owned
     /// by `UnaryExpression` handling in the parser AST, so signed input returns null. Malformed or
     /// overflowing lexemes also return null instead of throwing, letting reduction-style callers
@@ -279,14 +282,26 @@ public final class StringUtil {
         }
     }
 
+    /// Only the exact unsigned magnitude 2^63 can be consumed as `Long.MIN_VALUE`.
+    public static boolean isGdLongMinMagnitudeLexeme(@NotNull String rawLexeme) {
+        var magnitude = parseGdUnsignedIntegerLexeme(rawLexeme);
+        return magnitude != null && magnitude == Long.MIN_VALUE;
+    }
+
+    /// An outer unary minus may consume 2^63 only when its operand is the integer literal itself.
+    public static boolean isGdLongMinUnary(@NotNull UnaryExpression unaryExpression) {
+        return "-".equals(unaryExpression.operator())
+                && unaryExpression.operand() instanceof LiteralExpression literal
+                && ("integer".equals(literal.kind())
+                || ("number".equals(literal.kind()) && literal.sourceText().indexOf('.') < 0))
+                && isGdLongMinMagnitudeLexeme(literal.sourceText());
+    }
+
     /// Shared lexeme shape split: rejects signs, extracts the optional radix prefix, and applies
     /// the between-two-digits underscore rule. Returning the digits rather than a parsed value
     /// keeps signed and unsigned decoding behind one grammar.
     private static @Nullable GdIntegerLexeme decomposeGdIntegerLexeme(@NotNull String lexeme) {
         var text = Objects.requireNonNull(lexeme, "lexeme must not be null").trim();
-        if (text.isEmpty() || text.charAt(0) == '+' || text.charAt(0) == '-') {
-            return null;
-        }
         var radix = 10;
         var digits = text;
         if (digits.startsWith("0x") || digits.startsWith("0X")) {
@@ -299,10 +314,32 @@ public final class StringUtil {
             radix = 8;
             digits = digits.substring(2);
         }
-        if (digits.isEmpty() || !hasLegalUnderscorePlacement(digits, radix)) {
+        if (!isGdIntegerDigitSequence(digits, radix)) {
             return null;
         }
         return new GdIntegerLexeme(radix, digits);
+    }
+
+    /// Java's integer parsers accept a sign and non-ASCII digits. Validate the whole radix body
+    /// before conversion so only ASCII digits separated by optional single underscores are accepted.
+    private static boolean isGdIntegerDigitSequence(@NotNull String digits, int radix) {
+        var needsDigit = true;
+        for (var i = 0; i < digits.length(); i++) {
+            var ch = digits.charAt(i);
+            if (ch == '_' && !needsDigit) {
+                needsDigit = true;
+            } else if (isAsciiRadixDigit(ch, radix)) {
+                needsDigit = false;
+            } else {
+                return false;
+            }
+        }
+        return !needsDigit;
+    }
+
+    private static boolean isAsciiRadixDigit(char ch, int radix) {
+        return (isDecimalDigit(ch) && ch - '0' < radix)
+                || (radix == 16 && ((ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')));
     }
 
     private record GdIntegerLexeme(int radix, @NotNull String digits) {
@@ -320,7 +357,7 @@ public final class StringUtil {
         if (text.isEmpty() || text.charAt(0) == '+' || text.charAt(0) == '-') {
             return null;
         }
-        if (!hasLegalUnderscorePlacement(text, 10) || !isGdFloatLexemeBody(text.replace("_", ""))) {
+        if (!hasLegalFloatUnderscorePlacement(text) || !isGdFloatLexemeBody(text.replace("_", ""))) {
             return null;
         }
         try {
@@ -330,18 +367,16 @@ public final class StringUtil {
         }
     }
 
-    /// Underscores in a number literal must sit between two digits of the active radix; any other
-    /// placement (edges, doubled, next to the radix prefix) makes the lexeme malformed.
-    private static boolean hasLegalUnderscorePlacement(@NotNull String digits, int radix) {
-        for (var i = 0; i < digits.length(); i++) {
-            if (digits.charAt(i) != '_') {
+    /// Check separators before stripping them for significand and exponent validation.
+    private static boolean hasLegalFloatUnderscorePlacement(@NotNull String text) {
+        for (var i = 0; i < text.length(); i++) {
+            if (text.charAt(i) != '_') {
                 continue;
             }
-            if (i == 0 || i == digits.length() - 1) {
+            if (i == 0 || i == text.length() - 1) {
                 return false;
             }
-            if (Character.digit(digits.charAt(i - 1), radix) < 0
-                    || Character.digit(digits.charAt(i + 1), radix) < 0) {
+            if (!isDecimalDigit(text.charAt(i - 1)) || !isDecimalDigit(text.charAt(i + 1))) {
                 return false;
             }
         }
@@ -566,47 +601,69 @@ public final class StringUtil {
 
     /// Decodes a full GDScript source lexeme into the runtime payload stored by LIR.
     ///
-    /// Covers the complete Godot string literal form set: `"..."` / `'...'`, triple-quoted
-    /// multiline `"""..."""` / `'''...'''`, their raw `r`-prefixed variants, and `&"..."`
-    /// StringName literals. The returned payload never contains the outer quoting syntax.
+    /// Ordinary strings, raw `r`-prefixed strings, and `&`-prefixed StringName literals accept
+    /// both quote characters and single or triple delimiters. The returned payload has no delimiters.
     public static @NotNull String decodeGdStringLexeme(@NotNull String lexeme) {
         var text = Objects.requireNonNull(lexeme, "lexeme must not be null");
-        var index = 0;
-        var raw = false;
-        if (index < text.length() && text.charAt(index) == 'r') {
-            raw = true;
-            index++;
-        } else if (index < text.length() && text.charAt(index) == '&') {
-            // StringName literals exist only in the plain double-quoted form.
-            if (index + 1 >= text.length() || text.charAt(index + 1) != '"') {
-                throw invalidGdStringLexeme(text);
-            }
-            return decodeStringBody(text, index + 1, '"', false);
-        }
-        if (index >= text.length() || (text.charAt(index) != '"' && text.charAt(index) != '\'')) {
+        var raw = text.startsWith("r");
+        var quoteIndex = raw || text.startsWith("&") ? 1 : 0;
+        if (text.length() - quoteIndex < 2 || isNotGdStringQuote(text.charAt(quoteIndex))) {
             throw invalidGdStringLexeme(text);
         }
-        return decodeStringBody(text, index, text.charAt(index), raw);
+        return decodeStringBody(text, quoteIndex, text.charAt(quoteIndex), raw, StringUtil::invalidGdStringLexeme);
     }
 
-    /// Extracts the payload of a string lexeme whose opening quote sits at `quoteIndex`, handling
-    /// both the single-quote and triple-quote (multiline) delimiter forms.
-    private static @NotNull String decodeStringBody(@NotNull String text, int quoteIndex, char quote, boolean raw) {
-        var contentStart = quoteIndex + 1;
-        if (contentStart + 1 < text.length()
-                && text.charAt(contentStart) == quote
-                && text.charAt(contentStart + 1) == quote) {
-            contentStart += 2;
-            var closingDelimiter = String.valueOf(new char[]{quote, quote, quote});
-            if (text.length() < contentStart + 3 || !text.endsWith(closingDelimiter)) {
-                throw invalidGdStringLexeme(text);
+    /// The first unescaped closing delimiter must end the lexeme. To match the tokenizer, a
+    /// non-raw backslash-CR pair skips the following code point for delimiting, even when it is
+    /// not LF. Keep the original content so payload decoding can distinguish CR from CRLF.
+    private static @NotNull String decodeStringBody(
+            @NotNull String text,
+            int quoteIndex,
+            char quote,
+            boolean raw,
+            @NotNull Function<String, IllegalArgumentException> invalidLexemeFactory
+    ) {
+        var delimiterLength = hasTripleQuote(text, quoteIndex, quote) ? 3 : 1;
+        var contentStart = quoteIndex + delimiterLength;
+        var i = contentStart;
+        while (i < text.length()) {
+            var ch = text.charAt(i);
+            if (ch == '\\') {
+                if (++i == text.length()) {
+                    break;
+                }
+                var escaped = text.codePointAt(i);
+                if (raw) {
+                    if (escaped == quote || escaped == '\\') {
+                        i++;
+                    }
+                } else {
+                    i += Character.charCount(escaped);
+                    if (escaped == '\r' && i < text.length()) {
+                        i += Character.charCount(text.codePointAt(i));
+                    }
+                }
+            } else if (ch == quote && (delimiterLength == 1 || hasTripleQuote(text, i, quote))) {
+                if (i + delimiterLength != text.length()) {
+                    throw invalidLexemeFactory.apply(text);
+                }
+                return decodeStringContent(text.substring(contentStart, i), raw);
+            } else {
+                i++;
             }
-            return decodeStringContent(text.substring(contentStart, text.length() - 3), raw);
         }
-        if (text.length() < contentStart + 1 || text.charAt(text.length() - 1) != quote) {
-            throw invalidGdStringLexeme(text);
-        }
-        return decodeStringContent(text.substring(contentStart, text.length() - 1), raw);
+        throw invalidLexemeFactory.apply(text);
+    }
+
+    private static boolean isNotGdStringQuote(char ch) {
+        return ch != '"' && ch != '\'';
+    }
+
+    private static boolean hasTripleQuote(@NotNull String text, int index, char quote) {
+        return index <= text.length() - 3
+                && text.charAt(index) == quote
+                && text.charAt(index + 1) == quote
+                && text.charAt(index + 2) == quote;
     }
 
     /// Raw string payloads are verbatim: the Godot tokenizer only treats `\<quote>` and `\\`
@@ -615,17 +672,17 @@ public final class StringUtil {
         return raw ? content : unescapeQuoted(content);
     }
 
-    /// Decodes a `^"..."` NodePath source lexeme into the runtime payload stored by LIR.
+    /// Decodes a `^`-prefixed NodePath lexeme with single or triple delimiters of either quote.
     ///
     /// The returned payload never contains the leading `^` or the outer quotes. Malformed lexemes
     /// fail fast with `IllegalArgumentException`; producers that treat unreducible shapes as
     /// non-constant must catch and convert to their own miss sentinel.
     public static @NotNull String decodeNodePathLexeme(@NotNull String lexeme) {
         var text = Objects.requireNonNull(lexeme, "lexeme must not be null");
-        if (!text.startsWith("^\"") || text.length() < 3 || text.charAt(text.length() - 1) != '"') {
-            throw new IllegalArgumentException("Invalid GDScript node path lexeme: " + lexeme);
+        if (text.length() < 3 || text.charAt(0) != '^' || isNotGdStringQuote(text.charAt(1))) {
+            throw invalidGdNodePathLexeme(text);
         }
-        return unescapeQuoted(text.substring(2, text.length() - 1));
+        return decodeStringBody(text, 1, text.charAt(1), false, StringUtil::invalidGdNodePathLexeme);
     }
 
     /// Decodes a `$...` / `%...` get-node source lexeme into the NodePath payload passed to the
@@ -760,5 +817,9 @@ public final class StringUtil {
 
     private static @NotNull IllegalArgumentException invalidGdStringLexeme(@NotNull String lexeme) {
         return new IllegalArgumentException("Invalid GDScript string lexeme: " + lexeme);
+    }
+
+    private static @NotNull IllegalArgumentException invalidGdNodePathLexeme(@NotNull String lexeme) {
+        return new IllegalArgumentException("Invalid GDScript node path lexeme: " + lexeme);
     }
 }

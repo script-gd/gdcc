@@ -4,32 +4,38 @@ import dev.superice.gdparser.frontend.ast.SourceFile;
 import org.jetbrains.annotations.NotNull;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Objects;
 
-/// One parsed source unit: source text + AST.
+/// One source unit and its tolerant parse result.
 ///
-/// Parse diagnostics no longer live on the unit itself. They are reported directly into the
-/// shared `DiagnosticManager`, and later phases consume those diagnostics via manager snapshots
-/// published at explicit phase boundaries.
-///
-/// @param parseFailed whether this unit came from the parser's `parse.internal` recovery path
-/// (unexpected parser runtime failure). Such units carry an empty synthetic AST plus their
-/// already-reported `parse.internal` diagnostic; the class skeleton must exclude them so no
-/// fictional top-level script class pollutes cross-file references.
+/// @param parseFailed whether the parser failed unexpectedly; the synthetic AST must not
+///                    contribute a script class to the skeleton
+/// @param parseRecoveries parser diagnostics in parse order, tied to this AST generation;
+///                        empty on unexpected parser failure
 public record FrontendSourceUnit(
         @NotNull Path path,
         @NotNull String source,
         @NotNull SourceFile ast,
-        boolean parseFailed
+        boolean parseFailed,
+        @NotNull List<FrontendParseRecovery> parseRecoveries
 ) {
     public FrontendSourceUnit {
         Objects.requireNonNull(path, "path must not be null");
         Objects.requireNonNull(source, "source must not be null");
         Objects.requireNonNull(ast, "ast must not be null");
+        parseRecoveries = List.copyOf(Objects.requireNonNull(parseRecoveries, "parseRecoveries must not be null"));
+        if (parseFailed && !parseRecoveries.isEmpty()) {
+            throw new IllegalArgumentException("A failed parse cannot have parser recoveries");
+        }
     }
 
     /// Convenience constructor for units produced by a successful (possibly error-tolerant) parse.
     public FrontendSourceUnit(@NotNull Path path, @NotNull String source, @NotNull SourceFile ast) {
-        this(path, source, ast, false);
+        this(path, source, ast, false, List.of());
+    }
+
+    public FrontendSourceUnit(@NotNull Path path, @NotNull String source, @NotNull SourceFile ast, boolean parseFailed) {
+        this(path, source, ast, parseFailed, List.of());
     }
 }

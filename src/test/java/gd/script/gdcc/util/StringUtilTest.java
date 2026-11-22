@@ -1,16 +1,24 @@
 package gd.script.gdcc.util;
 
+import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.Point;
+import dev.superice.gdparser.frontend.ast.Range;
+import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class StringUtilTest {
+    private static final Range TINY = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
     @Test
     public void stripAnsiRemovesPicocliStyleSequences() {
         // Real picocli rendering on ANSI-capable terminals (observed on Windows CI agents).
@@ -272,6 +280,11 @@ public class StringUtilTest {
                 () -> assertEquals("tab\tquote\"", StringUtil.decodeGdStringLexeme("\"tab\\tquote\\\"\"")),
                 () -> assertEquals("tab\tquote\"", StringUtil.decodeGdStringLexeme("'tab\\tquote\\\"'")),
                 () -> assertEquals("Node_2D", StringUtil.decodeGdStringLexeme("&\"Node_2D\"")),
+                () -> assertEquals("name", StringUtil.decodeGdStringLexeme("&'name'")),
+                () -> assertEquals("a\"b", StringUtil.decodeGdStringLexeme("&\"a\\\"b\"")),
+                () -> assertEquals("a'b", StringUtil.decodeGdStringLexeme("&'a\\'b'")),
+                () -> assertEquals("b", StringUtil.decodeGdStringLexeme("&\"\"\"b\"\"\"")),
+                () -> assertEquals("b", StringUtil.decodeGdStringLexeme("&'''b'''")),
                 () -> assertEquals("A", StringUtil.decodeGdStringLexeme("\"\\u0041\"")),
                 () -> assertEquals("\uD83D\uDE00", StringUtil.decodeGdStringLexeme("\"\\U01F600\"")),
                 // Triple-quoted multiline payloads keep raw newlines.
@@ -289,6 +302,7 @@ public class StringUtilTest {
                 () -> assertEquals("a\\\"b", StringUtil.decodeGdStringLexeme("r\"a\\\"b\"")),
                 () -> assertEquals("a\\\\b", StringUtil.decodeGdStringLexeme("r'a\\\\b'")),
                 () -> assertEquals("C:\\path\\file.png", StringUtil.decodeGdStringLexeme("r\"C:\\path\\file.png\"")),
+                () -> assertEquals("a\\\r", StringUtil.decodeGdStringLexeme("r'a\\\r'")),
                 () -> assertEquals("x\ny", StringUtil.decodeGdStringLexeme("r\"\"\"x\ny\"\"\""))
         );
     }
@@ -303,10 +317,9 @@ public class StringUtilTest {
                 () -> assertMalformedLexeme("r'\""),
                 () -> assertMalformedLexeme("&hello"),
                 () -> assertMalformedLexeme("&\""),
-                () -> assertMalformedLexeme("&'name'"),
-                () -> assertMalformedLexeme("plain"),
-                // Escape-level failures surface through the same entry point.
-                () -> assertThrows(IllegalArgumentException.class, () -> StringUtil.decodeGdStringLexeme("\"\\q\""))
+                () -> assertMalformedLexeme("r'a\\\\' + 'b'"),
+                () -> assertMalformedLexeme("r'''a''' + '''b'''"),
+                () -> assertMalformedLexeme("plain")
         );
     }
 
@@ -315,9 +328,44 @@ public class StringUtilTest {
         assertAll(
                 () -> assertEquals("a/b", StringUtil.decodeNodePathLexeme("^\"a/b\"")),
                 () -> assertEquals("a\"b", StringUtil.decodeNodePathLexeme("^\"a\\\"b\"")),
+                () -> assertEquals("Node/Child", StringUtil.decodeNodePathLexeme("^'Node/Child'")),
+                () -> assertEquals("a'b", StringUtil.decodeNodePathLexeme("^'a\\'b'")),
+                () -> assertEquals("a/b", StringUtil.decodeNodePathLexeme("^\"\"\"a/b\"\"\"")),
+                () -> assertEquals("a/b", StringUtil.decodeNodePathLexeme("^'''a/b'''")),
                 () -> assertEquals("A", StringUtil.decodeNodePathLexeme("^\"\\u0041\"")),
                 () -> assertEquals("", StringUtil.decodeNodePathLexeme("^\"\""))
         );
+    }
+
+    @Test
+    public void decodeQuotedLexemesKeepsCrAndCrlfPayloadsDistinct() {
+        for (var prefix : List.of("", "&", "^")) {
+            assertEquals("a\\'b", decodeQuotedLexeme(prefix, "'a\\\r'b'"), prefix);
+            assertEquals("ab", decodeQuotedLexeme(prefix, "'a\\\r\nb'"), prefix);
+            assertEquals("a\\'''b", decodeQuotedLexeme(prefix, "'''a\\\r'''b'''"), prefix);
+            assertEquals("a'''b", decodeQuotedLexeme(prefix, "'''a\\'''b'''"), prefix);
+            assertEquals("a", decodeQuotedLexeme(prefix, "'''a\\\r\n'''"), prefix);
+        }
+    }
+
+    @Test
+    public void decodeQuotedLexemesRequiresFirstUnescapedDelimiterAtEnd() {
+        for (var prefix : List.of("", "&", "^")) {
+            assertMalformedQuotedLexeme(prefix, "'a\\\r");
+            assertMalformedQuotedLexeme(prefix, "'a\\\r'");
+            assertMalformedQuotedLexeme(prefix, "'''a\\\r'''");
+            assertMalformedQuotedLexeme(prefix, "'a\\'");
+            assertMalformedQuotedLexeme(prefix, "'a' + 'b'");
+            assertMalformedQuotedLexeme(prefix, "'''a''' + '''b'''");
+        }
+    }
+
+    @Test
+    public void decodeQuotedLexemesKeepsPayloadEscapeErrorsDistinct() {
+        for (var prefix : List.of("", "&", "^")) {
+            var error = assertThrows(IllegalArgumentException.class, () -> decodeQuotedLexeme(prefix, "'\\q'"));
+            assertEquals("Invalid escape in literal: \\q", error.getMessage(), prefix);
+        }
     }
 
     @Test
@@ -370,11 +418,24 @@ public class StringUtilTest {
                 () -> assertEquals(31L, StringUtil.parseGdIntegerLexeme("0X1f")),
                 () -> assertEquals(10L, StringUtil.parseGdIntegerLexeme("0b1010")),
                 () -> assertEquals(15L, StringUtil.parseGdIntegerLexeme("0o17")),
+                () -> assertEquals(15L, StringUtil.parseGdIntegerLexeme("0O1_7")),
                 () -> assertEquals(1_000_000L, StringUtil.parseGdIntegerLexeme("1_000_000")),
                 () -> assertEquals(0xFFFFL, StringUtil.parseGdIntegerLexeme("0xFF_FF")),
                 () -> assertEquals(42L, StringUtil.parseGdIntegerLexeme("  42  ")),
                 () -> assertEquals(Long.MAX_VALUE, StringUtil.parseGdIntegerLexeme("9223372036854775807"))
         );
+    }
+
+    @Test
+    public void parseGdIntegerLexemesRejectSignsAndNonAsciiOrOutOfRadixDigits() {
+        for (var lexeme : List.of(
+                "0x+1", "0x-1", "0b+1_0", "0O-1_7",
+                "1_١", "0b1_０", "0o1_٧", "0xA_Ｆ",
+                "0b10_2", "0o1_8", "0xA_G"
+        )) {
+            assertNull(StringUtil.parseGdIntegerLexeme(lexeme), lexeme);
+            assertNull(StringUtil.parseGdUnsignedIntegerLexeme(lexeme), lexeme);
+        }
     }
 
     @Test
@@ -399,6 +460,55 @@ public class StringUtilTest {
                 () -> assertNull(StringUtil.parseGdIntegerLexeme("0x_FF")),
                 () -> assertNull(StringUtil.parseGdIntegerLexeme("0xF_")),
                 () -> assertThrows(NullPointerException.class, () -> StringUtil.parseGdIntegerLexeme(null))
+        );
+    }
+
+    @Test
+    public void isGdLongMinMagnitudeLexemeAcceptsExactlyTwoToThePowerOf63InAllRadixes() {
+        for (var lexeme : List.of(
+                "9223372036854775808", "9_223_372_036_854_775_808",
+                "0x8000000000000000", "0X8000_0000_0000_0000",
+                "0o1" + "0".repeat(21), "0O1" + "_000".repeat(7),
+                "0b1" + "0".repeat(63), "0B1000" + "_0000".repeat(15)
+        )) {
+            assertTrue(StringUtil.isGdLongMinMagnitudeLexeme(lexeme), lexeme);
+        }
+        for (var lexeme : List.of(
+                "9223372036854775807", "9223372036854775809",
+                "0x7FFFFFFFFFFFFFFF", "0x8000000000000001", "0xFFFFFFFFFFFFFFFF",
+                "18446744073709551616", "99999999999999999999999999",
+                "-9223372036854775808", "+9223372036854775808",
+                "0x+8000000000000000", "0x+8_000000000000000", "0x-8000000000000000",
+                "٩_223372036854775808", "0x８000000000000000",
+                "_9223372036854775808", "9223372036854775808_", "9__223_372_036_854_775_808",
+                "0x_8000000000000000", "0b1" + "0".repeat(62) + "2",
+                "9223372036854775808.0", "9223372036854775808e0"
+        )) {
+            assertFalse(StringUtil.isGdLongMinMagnitudeLexeme(lexeme), lexeme);
+        }
+    }
+
+    @Test
+    public void isGdLongMinUnaryRequiresDirectIntegerMagnitudeUnderMinus() {
+        var magnitude = new LiteralExpression("integer", "9223372036854775808", TINY);
+        var compatibleNumber = new LiteralExpression("number", "0x8000000000000000", TINY);
+        var negation = new UnaryExpression("-", magnitude, TINY);
+        assertAll(
+                () -> assertTrue(StringUtil.isGdLongMinUnary(negation)),
+                () -> assertTrue(StringUtil.isGdLongMinUnary(new UnaryExpression("-", compatibleNumber, TINY))),
+                () -> assertFalse(StringUtil.isGdLongMinUnary(new UnaryExpression("+", magnitude, TINY))),
+                () -> assertFalse(StringUtil.isGdLongMinUnary(new UnaryExpression("~", magnitude, TINY))),
+                () -> assertFalse(StringUtil.isGdLongMinUnary(new UnaryExpression("-", negation, TINY))),
+                () -> assertFalse(StringUtil.isGdLongMinUnary(new UnaryExpression(
+                        "-", new LiteralExpression("float", magnitude.sourceText(), TINY), TINY))),
+                () -> assertFalse(StringUtil.isGdLongMinUnary(new UnaryExpression(
+                        "-", new LiteralExpression("number", "9223372036854775808.0", TINY), TINY))),
+                () -> assertFalse(StringUtil.isGdLongMinUnary(new UnaryExpression(
+                        "-", new LiteralExpression("integer", "9223372036854775809", TINY), TINY))),
+                () -> assertFalse(StringUtil.isGdLongMinUnary(new UnaryExpression(
+                        "-", new LiteralExpression("integer", "0x+8000000000000000", TINY), TINY))),
+                () -> assertFalse(StringUtil.isGdLongMinUnary(new UnaryExpression(
+                        "-", new LiteralExpression("number", "٩_223372036854775808", TINY), TINY)))
         );
     }
 
@@ -433,6 +543,20 @@ public class StringUtilTest {
                 () -> assertNull(StringUtil.parseGdFloatLexeme("1._5")),
                 () -> assertThrows(NullPointerException.class, () -> StringUtil.parseGdFloatLexeme(null))
         );
+    }
+
+    private static String decodeQuotedLexeme(String prefix, String quoted) {
+        var lexeme = prefix + quoted;
+        return "^".equals(prefix) ? StringUtil.decodeNodePathLexeme(lexeme) : StringUtil.decodeGdStringLexeme(lexeme);
+    }
+
+    private static void assertMalformedQuotedLexeme(String prefix, String quoted) {
+        var lexeme = prefix + quoted;
+        if ("^".equals(prefix)) {
+            assertMalformedNodePathLexeme(lexeme);
+        } else {
+            assertMalformedLexeme(lexeme);
+        }
     }
 
     private static void assertMalformedNodePathLexeme(String lexeme) {

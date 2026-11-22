@@ -2,6 +2,10 @@ package gd.script.gdcc.frontend.lowering;
 
 import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import gd.script.gdcc.frontend.diagnostic.FrontendPoint;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
@@ -125,7 +129,9 @@ import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
@@ -4893,10 +4899,10 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnDirectSlotSnapshotWriteback
                         extends RefCounted
-
+                        
                         func helper(value: String) -> String:
                             return value
-
+                        
                         func ping(part: String) -> PackedStringArray:
                             var parr := PackedStringArray()
                             parr.append(helper(part))
@@ -4948,7 +4954,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnDirectSlotSnapshotWritebackLoop
                         extends RefCounted
-
+                        
                         func ping(parts: PackedStringArray) -> PackedStringArray:
                             var parr := PackedStringArray()
                             for part in parts:
@@ -4998,7 +5004,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnDirectSlotAliasNoWriteback
                         extends RefCounted
-
+                        
                         func ping(values: PackedInt32Array, seed: int) -> void:
                             values.push_back(seed)
                         """,
@@ -5045,7 +5051,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnDirectSlotSnapshotSharedArray
                         extends RefCounted
-
+                        
                         func ping(seed: int) -> Array:
                             var arr: Array = [1]
                             arr.append(str(seed))
@@ -5096,10 +5102,10 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnDynamicVariantDirectSlotWriteback
                         extends RefCounted
-
+                        
                         func helper(value: Variant) -> Variant:
                             return value
-
+                        
                         func ping(seed: Variant) -> Variant:
                             var payload: Variant = PackedStringArray()
                             payload.append(helper(seed))
@@ -5241,7 +5247,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnBuiltinPropertyMutatingCall
                         extends RefCounted
-
+                        
                         func ping() -> void:
                             var poly := Polygon2D.new()
                             poly.polygon = PackedVector2Array([Vector2.ZERO])
@@ -5299,7 +5305,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnBuiltinPropertySubscriptWrite
                         extends RefCounted
-
+                        
                         func ping() -> void:
                             var poly := Polygon2D.new()
                             poly.polygon = PackedVector2Array([Vector2.ZERO, Vector2(3, 3)])
@@ -10066,20 +10072,18 @@ class FrontendLoweringBodyInsnPassTest {
 
     @Test
     void runLowersIntegerLiteralsAcrossRadixesAndSeparators() throws Exception {
-        // Body literal lowering shares the GDScript integer lexeme helper with enum evaluation,
-        // so `0x`/`0b`/`0o` prefixes and `_` separators must materialize identically here.
         var prepared = prepareContext(
                 "body_insn_int_literal_lexemes.gd",
                 """
                         class_name BodyInsnIntLiteralLexemes
                         extends RefCounted
-
+                        
                         func ping() -> int:
                             var hex = 0xF0
                             var bin = 0b101
-                            var oct = 0o17
+                            var decimal = 15
                             var sep = 1_000_000
-                            return hex + bin + oct + sep
+                            return hex + bin + decimal + sep
                         """,
                 Map.of("BodyInsnIntLiteralLexemes", "RuntimeBodyInsnIntLiteralLexemes"),
                 true
@@ -10104,6 +10108,38 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
+    /// Octal remains supported by the integer lexeme utility, not by the source parser.
+    @Test
+    void parserRejectsOctalSourceAndRetainsFollowingDeclaration() {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_octal_source.gd"),
+                """
+                        var bad = 0o17
+                        var after = 1
+                        """,
+                diagnostics
+        );
+        var published = diagnostics.snapshot().asList();
+        var lexicalErrorRanges = published.stream()
+                .filter(diagnostic -> DiagnosticCodes.LEXICAL_ERROR.equals(diagnostic.category())
+                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                .map(FrontendDiagnostic::range)
+                .toList();
+        var after = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().getLast());
+
+        assertAll(
+                () -> assertFalse(unit.parseFailed()),
+                () -> assertEquals(
+                        List.of(new FrontendRange(10, 11, new FrontendPoint(1, 11), new FrontendPoint(1, 12))),
+                        lexicalErrorRanges
+                ),
+                () -> assertFalse(published.stream().anyMatch(diagnostic -> "parse.internal".equals(diagnostic.category()))),
+                () -> assertEquals("after", after.name()),
+                () -> assertEquals("1", assertInstanceOf(LiteralExpression.class, after.value()).sourceText())
+        );
+    }
+
     @Test
     void runLowersFloatLiteralsWithSeparatorsAndExponents() throws Exception {
         var prepared = prepareContext(
@@ -10111,7 +10147,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnFloatLiteralLexemes
                         extends RefCounted
-
+                        
                         func ping() -> float:
                             var frac = 1.5
                             var sep = 1_000.5

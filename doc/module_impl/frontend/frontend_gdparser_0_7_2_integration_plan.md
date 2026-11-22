@@ -433,6 +433,54 @@ flowchart TD
   5. `src/test/java/gd/script/gdcc/frontend/sema/FrontendConstSkeletonTest.java`（前置将 `:544-552` `assertScalarConst` 末尾 `case GdConstantValue.BuiltinValue _` 替换为 `default -> fail("Expected scalar constant value for " + name + " but got " + value.type().getTypeName())`，消除 Batch 2C 扩展 `GdConstantValue` permits 时的 `compileTestJava` 穷尽性阻断）
 - **阶段验收**：合入 Batch 2A 消除唯一主代码编译阻断后，运行 `script/run-gradle-targeted-tests.sh --tests GdScriptParserServiceDiagnosticManagerTest,StringUtilTest` 100% 通过。
 
+#### Phase 1 实施状态
+
+- **实施进度**：Batch 1A 四项与 Batch 1B 五项均已实现，唯一主代码编译阻断已由用户授权提前正式修复。新增授权的八进制夹具迁移已通过整组验收与增量双审。Phase 1 已交付，其余阶段不在本次范围内。
+  - Batch 1A #1 `FrontendParseRecovery` 已实现六字段 record、`owner`/`facet` 同空约束、按活跃原始或已登记 `ERROR` 五字段完整匹配，基于单次快照增量补报且不改 claim；失败单元按文件复用既有 `parse.internal` 原文。
+  - Batch 1A #2 `FrontendSourceUnit` 已实现五组件 record、`List.copyOf` 防御性复制、拒绝 `parseFailed` 携带非空恢复列表，并保留 3/4 参构造。
+  - Batch 1A #3 `GdScriptParserService` 已切换纯 Java facade 并提供包级函数注入，保留诊断顺序、级别、消息、range 和 owner 身份；仅 null/空白 code 回退。异常产生单条 `parse.internal`，恢复列表为空。
+  - Batch 1A #4 `FrontendAnalysisData` 区分未发布与显式空 `sourceUnits`，支持手工骨架回退；新增 `diagnosticsOrNull` 而保留严格读取入口。恢复及传播侧表按身份索引并冻结，claim 视图只读，冻结后禁止写入。
+  - Batch 1B #1 `FrontendSemanticAnalyzer` 在 bootstrap 后、构建骨架前发布完整源单元，按 AST 身份分桶并保序，每桶防御性复制，不为独立诊断伪造宿主；在循环控制校验后、最终快照前补齐解析错误。
+  - Batch 1B #2 `StringUtil` 已统一普通、raw、`&`、`^` 单/三引号的边界扫描，要求首个有效闭合恰在词素末尾；非 raw 的反斜杠-CR 跨过后一码点，原正文仍交既有解码器，结构与载荷异常分开。`$`/`%` 行为不变；已新增精确 $2^{63}$ 幅值及直接整数一元负号判定。
+  - Batch 1B #3 `GdScriptParserServiceDiagnosticManagerTest` 已迁移到纯 Java 入口，共 10 个定向测试方法；实施者用实际 `0.7.2` JAR 的 JShell 确认了 4 个真实源码输入，不等同于运行 GDCC 测试。
+  - Batch 1B #4 `StringUtilTest` 已覆盖四种进制、数值边界和 AST 形状，覆盖 CR/CRLF、单/三引号、提前闭合、正文异常以及普通、`&`、`^` 分支和 raw 对照；保留 `$`/`%` 既有测试。
+  - Batch 1B #5 `FrontendConstSkeletonTest` 保留四个标量分支的断言，其余变体均由 `default -> fail(...)` 拒绝，消息含常量名与类型。
+  - **正式提前修复**：`FrontendExpressionSemanticSupport` 显式将 `RecoveredInfixExpression` 定型为根所有的 `UNSUPPORTED`，不解析其 operand；`FrontendExpressionSemanticSupportTest` 用真实截断 cast 锁定此行为。其余 Batch 2A 内容仍未实施。
+  - **审阅修订**：解析诊断测试只预置有宿主的注解错误，不要求它们必然重放；展示诊断不再要求对象身份，保留完整值及顺序断言。整数词素按进制校验 ASCII 数字与分隔符，signed/unsigned 两入口都拒绝进制前缀后的符号、非 ASCII 数字与超出进制的数字，并保留合法的 $2^{63}$ 幅值边界。
+- **已运行的基线验证（2026-11-23）**：干净工作树 `69e8f44e` 已锁定 `com.github.SuperIceCN:gdparser:0.7.2`。运行 `script/run-gradle-targeted-tests.sh --tests GdScriptParserServiceDiagnosticManagerTest,StringUtilTest`，退出码 `1`；`:compileJava` 唯一错误为 `FrontendExpressionSemanticSupport.java:1041` 的密封 `Expression` switch 未覆盖 `RecoveredInfixExpression`（Batch 2A）。未进入测试编译或执行，无测试断言结果。
+- **已运行的实现检查**：Batch 1A #1 新文件空白检查无诊断，1A #2–#4、1B #1–#5 的 `git diff --check` 通过。
+- **已运行的项目目录验收（2026-11-23）**：直接在 `/home/superice/projects/gdcc` 运行 `script/run-gradle-targeted-tests.sh --tests GdScriptParserServiceDiagnosticManagerTest,StringUtilTest`，退出码 `1`。首个且唯一的编译错误与基线一致：`:compileJava` 在 `FrontendExpressionSemanticSupport.java:1041` 因密封 `Expression` switch 未覆盖 `RecoveredInfixExpression` 而失败。未进入 `compileTestJava`、`:test` 或 JUnit，无测试断言结果。已取消隔离验收；临时目录中的未完镜像未用于测试，不纳入交付。
+- **已运行的解除阻断后验证（2026-11-23）**：在项目目录重跑原定两类，退出码 `0`，`GdScriptParserServiceDiagnosticManagerTest` 10 项、`StringUtilTest` 38 项全部通过。另运行 `FrontendConstSkeletonTest.scalarConstantsPublishFrozenValuesAndFacts` 与 `FrontendExpressionSemanticSupportTest.resolveRecoveredInfixExpressionRejectsParsedCastWithoutResolvingOperand`，退出码 `0`，两项均通过。两轮均由新生成的 JUnit XML 核实，零失败、错误或跳过。
+- **已运行的阶段验收（2026-11-23）**：审阅修订后在项目目录运行 `script/run-gradle-targeted-tests.sh --tests GdScriptParserServiceDiagnosticManagerTest,StringUtilTest,FrontendConstSkeletonTest.scalarConstantsPublishFrozenValuesAndFacts,FrontendExpressionSemanticSupportTest.resolveRecoveredInfixExpressionRejectsParsedCastWithoutResolvingOperand`。wrapper 和新鲜 JUnit XML 校验均退出 `0`；四个目标分别执行 10、39、1、1 项，合计 51 项全通过，零失败、错误或跳过。
+- **已运行的专项复核**：单独执行 `GdScriptParserServiceDiagnosticManagerTest.analyzeRestoresMissingErrorsAndFreezesOwnerBucketsWithoutLosingFailedUnits`（真实 `@tool(1)`、`class_name MixedTool` 输入走公开 `analyze`，未出现 NPE）、`StringUtilTest.decodeQuotedLexemesRequiresFirstUnescapedDelimiterAtEnd`（负例用普通字符串中的显式 `\r`）和 `StringUtilTest.decodeQuotedLexemesKeepsCrAndCrlfPayloadsDistinct`。wrapper 和 JUnit XML 校验均退出 `0`，三项全通过。
+- **已运行的整数调用方回归（迁移前）**：signed 消费整数 AST 词素；unsigned 用于最小整数幅值或已去掉负号的引擎常量元数据。已运行常量求值、枚举求值、导出注解、容器键、类常量骨架与 LIR 体降级的 9 个既有方法，8 项通过、1 项失败，wrapper 退出 `1`。`FrontendLoweringBodyInsnPassTest.runLowersIntegerLiteralsAcrossRadixesAndSeparators` 在 `parseModule` 的零解析诊断守卫失败，未进入整数解码或 LIR；直接使用 `gdparser-0.7.2.jar` 独立复现旧夹具 `0o17` 的 `parse.lexical.error` 和 `parse.statement.trailing`，同夹具 `0xF0`、`0b101`、`1_000_000` 均无诊断。
+- **已通过的独立审阅**：两位独立审阅者均批准已通过 51 项阶段验收的 Phase 1 实现和正式提前修复，共 11 个文件；批准不覆盖后续八进制源码夹具迁移。
+- **用户授权的单文件测试迁移**：`FrontendLoweringBodyInsnPassTest` 将旧源码夹具的 `0o17` 替换为等值十进制 `15`，保留精确 LIR 数值断言，并新增 `parserRejectsOctalSourceAndRetainsFollowingDeclaration`，验证 `0o17` 的解析诊断和后续声明恢复。仅修改测试，不取消词素工具的八进制兼容。
+- **已运行的最终项目验收（2026-11-23）**：在 GDCC 根目录用以下命令一次运行。wrapper 和 XML 校验均退出 `0`；同次的 9 份新鲜 JUnit XML 共 61 项（主验收 51 项、调用方 9 项、新增负例 1 项，无重叠），零失败、错误或跳过。保存同次 XML 与 SHA-256 清单于 `tmp/gdparser-0.7.2-phase1-xml-lr73zpl1/`，不纳入源码交付。
+
+  ```bash
+  targets=(
+    GdScriptParserServiceDiagnosticManagerTest
+    StringUtilTest
+    FrontendConstSkeletonTest.scalarConstantsPublishFrozenValuesAndFacts
+    FrontendExpressionSemanticSupportTest.resolveRecoveredInfixExpressionRejectsParsedCastWithoutResolvingOperand
+    FrontendConstantEvaluatorTest.evaluatesIntegerLiteralsAndOperators
+    FrontendConstantEvaluatorTest.integerArithmeticWrapsAndPreservesLongMinEdge
+    FrontendEnumConstantEvaluatorTest.evaluatesIntegerLiteralsAcrossRadixesAndSeparators
+    FrontendEnumConstantEvaluatorTest.rejectsNonIntLiteralsAndMalformedLexemes
+    FrontendExportAnnotationSupportTest.evaluateEncodesRangeHintStringFromExplicitArgumentsOnly
+    FrontendContainerLiteralSemanticSupportTest.dictionaryDuplicateDetectionUsesDecodedStringAndOctalIntegerValues
+    FrontendContainerLiteralSemanticSupportTest.unsupportedIntegerLexemeDoesNotCrashAndIsNotReducible
+    FrontendLoweringBodyInsnPassTest.runLowersIntegerLiteralsAcrossRadixesAndSeparators
+    FrontendConstSkeletonTest.globalsEngineAndLanguageConstantsResolveInInitializers
+    FrontendLoweringBodyInsnPassTest.parserRejectsOctalSourceAndRetainsFollowingDeclaration
+  )
+  script/run-gradle-targeted-tests.sh --tests "$(IFS=,; printf '%s' "${targets[*]}")"
+  ```
+
+- **最终独立双审**：两位审阅者均批准增量测试迁移，独立核对留存的 9 份 XML 与 SHA-256 清单，确认 61 项零失败、错误或跳过。
+- **已交付**：共享文件 `deliverables/gdcc-gdparser-0.7.2-phase1.zip`（版本 `1`，165,312 字节，SHA-256 `f61e548c96c2c970ce02877e46e9f87d186be6a8305ed1e94fc633800fea9601`）。包含 12 个白名单源码/测试文件，以及 `verification/` 下的同次 9 份 JUnit XML 与 `sha256.json`，均为相对路径。逐成员核对了共享 ZIP 与工作树或留存证据的字节内容；不包含构建配置、临时镜像、用户工作或其他文件。
+
 ### Phase 2：新 AST 契约、统一编译期常量求值扩展、`R6.2` 最小整数与 `ConstantValueItem` 降级全链路适配（分 4 批，每批 = 5 文件）
 - **Batch 2A（5 个文件）**：
   1. `src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendExpressionSemanticSupport.java`（`RecoveredInfixExpression` 显式 `unsupported` 分支 + `resolveLiteralExpressionType` 拦截有符号 64 位超界整数字面量返回 `rootOutcome(failed(...))` + `resolveBinaryExpressionType` / `resolveSubscriptExpressionType` / `resolveConditionalExpressionType`（条件稳定后） / `resolveCallArgumentTypes` 在 `finalizeWindow == true` 下继续分析后续独立操作数/实参）

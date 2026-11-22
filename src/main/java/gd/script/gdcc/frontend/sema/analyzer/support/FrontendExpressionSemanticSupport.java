@@ -53,6 +53,7 @@ import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.PreloadExpression;
+import dev.superice.gdparser.frontend.ast.RecoveredInfixExpression;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.TypeTestExpression;
@@ -1078,6 +1079,10 @@ public final class FrontendExpressionSemanticSupport {
             ));
             case ErrorExpression errorExpression -> rootOutcome(FrontendExpressionType.unsupported(
                     "Parser error expression '" + errorExpression.nodeType()
+                            + "' cannot participate in expression typing"
+            ));
+            case RecoveredInfixExpression recoveredInfix -> rootOutcome(FrontendExpressionType.unsupported(
+                    "Parser recovered infix expression '" + recoveredInfix.operator()
                             + "' cannot participate in expression typing"
             ));
             case LiteralExpression _,

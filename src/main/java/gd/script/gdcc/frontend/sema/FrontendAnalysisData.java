@@ -8,13 +8,15 @@ import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
 import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.parse.FrontendParseRecovery;
+import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.scope.FrontendRejectedClassConstant;
 import gd.script.gdcc.frontend.sema.patch.FrontendConstTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendPublishedFactTypeGuard;
-import gd.script.gdcc.util.FreezableIdentityMap;
-import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
@@ -22,6 +24,7 @@ import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import gd.script.gdcc.util.FreezableIdentityMap;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -43,6 +46,13 @@ import java.util.Set;
 public final class FrontendAnalysisData {
     private @Nullable FrontendModuleSkeleton moduleSkeleton;
     private @Nullable DiagnosticSnapshot diagnostics;
+    private @Nullable List<FrontendSourceUnit> sourceUnits;
+    private final FrontendAstSideTable<List<FrontendParseRecovery>> parseRecoveriesByOwner = new FrontendAstSideTable<>();
+    private final Map<FrontendParseRecovery, FrontendDiagnostic> claimedParseRecoveries = new IdentityHashMap<>();
+    private final Map<FrontendParseRecovery, FrontendDiagnostic> claimedParseRecoveriesView =
+            Collections.unmodifiableMap(claimedParseRecoveries);
+    private final FrontendAstSideTable<FrontendPropagatedFailureOrigin> propagatedFailureOrigins =
+            new FrontendAstSideTable<>();
     private final @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst;
     /// Skeleton/header phases mark roots here when later semantic traversal must skip the whole
     /// subtree. Scope analysis then withholds `scopesByAst()` publication for those roots and their
@@ -213,6 +223,31 @@ public final class FrontendAnalysisData {
         this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics must not be null");
     }
 
+    public void updateSourceUnits(@NotNull List<FrontendSourceUnit> sourceUnits) {
+        requireWritable();
+        this.sourceUnits = List.copyOf(Objects.requireNonNull(sourceUnits, "sourceUnits must not be null"));
+    }
+
+    public void claimParseRecovery(
+            @NotNull FrontendParseRecovery recovery,
+            @NotNull FrontendDiagnostic coveringDiagnostic
+    ) {
+        requireWritable();
+        claimedParseRecoveries.put(
+                Objects.requireNonNull(recovery, "recovery must not be null"),
+                Objects.requireNonNull(coveringDiagnostic, "coveringDiagnostic must not be null")
+        );
+    }
+
+    public void recordPropagatedFailureOrigin(
+            @NotNull Node node,
+            @NotNull Node primaryAnchor,
+            @Nullable FrontendParseRecovery originRecovery
+    ) {
+        requireWritable();
+        propagatedFailureOrigins.put(node, new FrontendPropagatedFailureOrigin(primaryAnchor, originRecovery));
+    }
+
     /// Permanently closes every mutation channel of this carrier (all side tables, the provenance
     /// index, and every `update*`/`applyPatch`/`mark*`/pending-list method). Invoked when the
     /// generation is published inside a `ModuleAnalysisSnapshot`; afterwards any mutation attempt
@@ -220,6 +255,8 @@ public final class FrontendAnalysisData {
     /// concurrent snapshot readers. Idempotent.
     public void freeze() {
         frozen = true;
+        parseRecoveriesByOwner.freeze();
+        propagatedFailureOrigins.freeze();
         annotationsByAst.freeze();
         skippedSubtreeRoots.freeze();
         scopesByAst.freeze();
@@ -461,6 +498,37 @@ public final class FrontendAnalysisData {
 
     public @NotNull DiagnosticSnapshot diagnostics() {
         return requirePublished(diagnostics, "diagnostics");
+    }
+
+    /// Allows diagnostic restoration before the shared pipeline publishes its first snapshot.
+    public @Nullable DiagnosticSnapshot diagnosticsOrNull() {
+        return diagnostics;
+    }
+
+    public @NotNull List<FrontendSourceUnit> sourceUnits() {
+        return requirePublished(sourceUnits, "sourceUnits");
+    }
+
+    /// Uses the full source list, including files without skeletons. Hand-built analyses
+    /// that did not publish a source list can still use their skeleton relations.
+    public @NotNull List<FrontendSourceUnit> effectiveSourceUnits() {
+        return sourceUnits != null
+                ? sourceUnits
+                : moduleSkeleton().sourceClassRelations().stream().map(FrontendSourceClassRelation::unit).toList();
+    }
+
+    /// Identity-keyed same-generation parser recoveries. Publishers must put immutable lists.
+    public @NotNull FrontendAstSideTable<List<FrontendParseRecovery>> parseRecoveriesByOwner() {
+        return parseRecoveriesByOwner;
+    }
+
+    /// A read-only identity map of recorded claims, which may not be active in a new manager.
+    public @NotNull Map<FrontendParseRecovery, FrontendDiagnostic> claimedParseRecoveries() {
+        return claimedParseRecoveriesView;
+    }
+
+    public @NotNull FrontendAstSideTable<FrontendPropagatedFailureOrigin> propagatedFailureOrigins() {
+        return propagatedFailureOrigins;
     }
 
     public @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst() {
@@ -1133,6 +1201,19 @@ public final class FrontendAnalysisData {
     @FunctionalInterface
     private interface SameValueChecker<V> {
         boolean sameValue(@NotNull V first, @NotNull V second);
+    }
+
+    /// Origin of a propagated failure, for reporting once at the primary anchor.
+    ///
+    /// @param primaryAnchor AST node that owns the failure rather than inheriting it
+    /// @param originRecovery parser recovery causing the failure, if any
+    public record FrontendPropagatedFailureOrigin(
+            @NotNull Node primaryAnchor,
+            @Nullable FrontendParseRecovery originRecovery
+    ) {
+        public FrontendPropagatedFailureOrigin {
+            Objects.requireNonNull(primaryAnchor, "primaryAnchor must not be null");
+        }
     }
 
     private record ValidatedLocalSlotTypeUpdate(

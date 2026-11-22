@@ -547,8 +547,7 @@ class FrontendConstSkeletonTest {
                     assertEquals(((Number) expectedScalar).doubleValue(), floatValue.value(), 1e-9);
             case GdConstantValue.BoolValue boolValue -> assertEquals(expectedScalar, boolValue.value());
             case GdConstantValue.StringValue stringValue -> assertEquals(expectedScalar, stringValue.value());
-            case GdConstantValue.BuiltinValue _ ->
-                    fail("Expected scalar constant value for " + name + " but got a builtin payload");
+            default -> fail("Expected scalar constant value for " + name + " but got " + value.type().getTypeName());
         }
     }
 
