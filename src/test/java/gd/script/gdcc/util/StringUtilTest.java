@@ -20,6 +20,41 @@ public class StringUtilTest {
     private static final Range TINY = new Range(0, 1, new Point(0, 0), new Point(0, 1));
 
     @Test
+    void gdWhitespaceStopsAtTheFirstNonWhitespaceOrIncompleteLineBreak() {
+        var text = "x \t\r\n\nz";
+        assertEquals(6, StringUtil.skipGdWhitespace(text, 1, text.length()));
+        assertEquals(3, StringUtil.skipGdWhitespace(text, 1, 4));
+        assertEquals(1, StringUtil.skipGdWhitespace(text, 1, 1));
+        assertEquals(0, StringUtil.skipGdWhitespace("\f ", 0, 2));
+        assertEquals(0, StringUtil.skipGdWhitespace("#\n", 0, 2));
+        assertEquals(0, StringUtil.skipGdWhitespace("\\\n", 0, 2));
+        assertTrue(StringUtil.isGdWhitespaceChar((byte) '\r'));
+        assertFalse(StringUtil.isGdWhitespaceChar('\u2003'));
+    }
+
+    @Test
+    void gdTriviaSkipsCommentsAndCompleteContinuationsWithinTheRange() {
+        var text = "x \\\n# =\rstill comment\r\n\\\r\n =";
+        var equals = text.length() - 1;
+        assertEquals(equals, StringUtil.skipGdTrivia(text, 1, text.length()));
+        assertEquals(equals, StringUtil.skipGdTrivia(text, 1, equals));
+        assertEquals(2, StringUtil.skipGdTrivia("x \\\r\n", 1, 4));
+        assertEquals(2, StringUtil.skipGdTrivia("x \\ ", 1, 4));
+        assertEquals(2, StringUtil.skipGdTrivia("x \r=", 1, 4));
+        assertEquals(0, StringUtil.skipGdTrivia("\"#literal\"", 0, 10));
+    }
+
+    @Test
+    void gdLineCommentStopsAtLfOrTheBoundEvenWhenItContainsCr() {
+        var text = "x# comment\r=\\\r\n=";
+        var lineFeed = text.length() - 2;
+        assertEquals(lineFeed, StringUtil.skipGdLineComment(text, 1, text.length()));
+        assertEquals(lineFeed - 1, StringUtil.skipGdLineComment(text, 1, lineFeed - 1));
+        assertEquals(8, StringUtil.skipGdLineComment("# tail =", 0, 8));
+        assertEquals(8, StringUtil.skipGdTrivia("# tail =", 0, 8));
+    }
+
+    @Test
     public void stripAnsiRemovesPicocliStyleSequences() {
         // Real picocli rendering on ANSI-capable terminals (observed on Windows CI agents).
         assertEquals("-o, --output", StringUtil.stripAnsi("\u001B[33m-o\u001B[39m, \u001B[33m--output\u001B[39m"));
@@ -110,7 +145,7 @@ public class StringUtilTest {
         assertEquals("Klein Übergang", StringUtil.capitalize("kleinÜbergang"));
         // Godot `is_hyphen` also covers U+2010/U+2011; `strip_edges` removes edge chars <= 32
         // (control characters included), unlike Java's Unicode-whitespace `strip()`.
-        assertEquals("State Idle", StringUtil.capitalize("state\u2010idle"));
+        assertEquals("State Idle", StringUtil.capitalize("state‐idle"));
         assertEquals("Idle", StringUtil.capitalize("\u0001idle"));
     }
 

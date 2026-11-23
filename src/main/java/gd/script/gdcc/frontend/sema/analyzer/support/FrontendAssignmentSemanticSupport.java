@@ -29,6 +29,7 @@ import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.EnumDeclaration;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.MissingAttributeStep;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -518,6 +519,11 @@ public final class FrontendAssignmentSemanticSupport {
                     nestedResolver,
                     finalizeWindow
             );
+            case MissingAttributeStep _ -> AssignmentTargetResult.failed(
+                    AssignmentTargetKind.ATTRIBUTE_PROPERTY,
+                    false,
+                    "Assignment target ends with a missing member name"
+            );
             default -> AssignmentTargetResult.unsupported(
                     AssignmentTargetKind.ATTRIBUTE_SUBSCRIPT,
                     true,
@@ -534,7 +540,7 @@ public final class FrontendAssignmentSemanticSupport {
             boolean finalizeWindow
     ) {
         var baseReceiver = context.chainReduction().headReceiverSupport().resolveHeadReceiver(subscriptExpression.base());
-        var baseIssue = toBaseReceiverIssue(AssignmentTargetKind.SUBSCRIPT, baseReceiver);
+        var baseIssue = toSubscriptBaseIssue(baseReceiver);
         if (baseIssue != null) {
             return baseIssue;
         }
@@ -813,10 +819,10 @@ public final class FrontendAssignmentSemanticSupport {
                 || targetKind == AssignmentTargetKind.ATTRIBUTE_PROPERTY;
     }
 
-    private static @Nullable AssignmentTargetResult toBaseReceiverIssue(
-            @NotNull AssignmentTargetKind targetKind,
+    private static @Nullable AssignmentTargetResult toSubscriptBaseIssue(
             @Nullable FrontendChainReductionHelper.ReceiverState receiverState
     ) {
+        var targetKind = AssignmentTargetKind.SUBSCRIPT;
         if (receiverState == null) {
             return AssignmentTargetResult.unsupported(
                     targetKind,

@@ -4,6 +4,7 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionAPI;
@@ -21,9 +22,12 @@ import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
+import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.MissingAttributeStep;
 import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -61,9 +65,9 @@ class FrontendAssignmentSemanticSupportTest {
                         """
         );
 
-        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
         var publishedResolver = publishedExpressionResolver(analyzed);
-        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var pingFunction = findPingFunction(analyzed.ast());
         var assignments = List.of(
                 assertInstanceOf(
                         AssignmentExpression.class,
@@ -97,6 +101,40 @@ class FrontendAssignmentSemanticSupportTest {
     }
 
     @Test
+    void missingAttributeTargetFailsWithoutOwningTheAssignmentAndStillResolvesTheRightSide() throws Exception {
+        var analyzed = analyze("missing_attribute_target.gd", """
+                extends RefCounted
+                func probe():
+                    self. = 2
+                """);
+        var assignment = findNode(analyzed.ast(), AssignmentExpression.class, _ -> true);
+        var attribute = assertInstanceOf(AttributeExpression.class, assignment.left());
+        assertInstanceOf(MissingAttributeStep.class, attribute.steps().getLast());
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
+        var target = FrontendAssignmentSemanticSupport.resolveAssignmentTarget(
+                support, attribute, publishedExpressionResolver(analyzed), true
+        );
+        assertEquals(FrontendAssignmentSemanticSupport.AssignmentTargetKind.ATTRIBUTE_PROPERTY, target.targetKind());
+        assertEquals(FrontendAssignmentSemanticSupport.AssignmentTargetStatus.FAILED, target.status());
+        assertFalse(target.rootOwnsOutcome());
+
+        var visited = new ArrayList<Expression>();
+        var result = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
+                assignment,
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                (expression, _) -> {
+                    visited.add(expression);
+                    return FrontendExpressionType.resolved(GdIntType.INT);
+                },
+                true
+        );
+        assertEquals(List.of(assignment.right()), visited);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, result.expressionType().status());
+        assertFalse(result.rootOwnsOutcome());
+    }
+
+    @Test
     void resolveAssignmentExpressionTypeTreatsBuiltinMemberBackedPropertiesAsWritableTargets() throws Exception {
         var analyzed = analyze(
                 "assignment_semantic_support_builtin_member_property.gd",
@@ -112,9 +150,9 @@ class FrontendAssignmentSemanticSupportTest {
                         """
         );
 
-        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
         var publishedResolver = publishedExpressionResolver(analyzed);
-        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+        var assignments = findNodes(findPingFunction(analyzed.ast()), AssignmentExpression.class, _ -> true);
 
         for (var successIndex : List.of(0, 1)) {
             var result = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
@@ -179,9 +217,9 @@ class FrontendAssignmentSemanticSupportTest {
                         """
         );
 
-        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
         var publishedResolver = publishedExpressionResolver(analyzed);
-        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var pingFunction = findPingFunction(analyzed.ast());
         var bareSignalAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression()
@@ -299,9 +337,9 @@ class FrontendAssignmentSemanticSupportTest {
                         """
         );
 
-        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
         var publishedResolver = publishedExpressionResolver(analyzed);
-        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var pingFunction = findPingFunction(analyzed.ast());
         var assignments = findNodes(pingFunction, AssignmentExpression.class, _ -> true);
 
         for (var successfulAssignment : assignments.subList(0, 4)) {
@@ -357,9 +395,9 @@ class FrontendAssignmentSemanticSupportTest {
                         """
         );
 
-        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
         var publishedResolver = publishedExpressionResolver(analyzed);
-        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+        var assignments = findNodes(findPingFunction(analyzed.ast()), AssignmentExpression.class, _ -> true);
 
         // `String % Array` resolves through metadata and the String -> String boundary is accepted.
         // The array-literal right-operand form is covered by the lowering MODULE test instead.
@@ -367,7 +405,7 @@ class FrontendAssignmentSemanticSupportTest {
         // only the status/published-type contract is asserted (matching the convention above).
         var stringFormatResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
                 support,
-                assignments.get(0),
+                assignments.getFirst(),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
@@ -402,7 +440,7 @@ class FrontendAssignmentSemanticSupportTest {
                         """
         );
 
-        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
         var publishedResolver = publishedExpressionResolver(analyzed);
         var compoundAssignment = findNode(analyzed.ast(), AssignmentExpression.class, assignment -> "+=".equals(assignment.operator()));
         var syntheticUnknownOperator = new AssignmentExpression(
@@ -440,9 +478,9 @@ class FrontendAssignmentSemanticSupportTest {
                 registryWithReadonlyEngineBase()
         );
 
-        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
         var publishedResolver = publishedExpressionResolver(analyzed);
-        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var pingFunction = findPingFunction(analyzed.ast());
         var bareAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression()
@@ -489,8 +527,7 @@ class FrontendAssignmentSemanticSupportTest {
                                     pass
                                 """
                 ),
-                ResolveRestriction.instanceContext(),
-                false
+                ResolveRestriction.instanceContext()
         );
 
         assertTrue(FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
@@ -508,7 +545,7 @@ class FrontendAssignmentSemanticSupportTest {
                 GdObjectType.OBJECT,
                 GdNilType.NIL
         ));
-        assertTrue(!FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
+        assertFalse(FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
                 support,
                 GdIntType.INT,
                 GdFloatType.FLOAT
@@ -559,13 +596,13 @@ class FrontendAssignmentSemanticSupportTest {
                         """
         );
 
-        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
         var publishedResolver = publishedExpressionResolver(analyzed);
-        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+        var assignments = findNodes(findPingFunction(analyzed.ast()), AssignmentExpression.class, _ -> true);
 
         var localVariantResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
                 support,
-                assignments.get(0),
+                assignments.getFirst(),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
@@ -641,13 +678,13 @@ class FrontendAssignmentSemanticSupportTest {
                         """
         );
 
-        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
         var publishedResolver = publishedExpressionResolver(analyzed);
-        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+        var assignments = findNodes(findPingFunction(analyzed.ast()), AssignmentExpression.class, _ -> true);
 
         var wideningResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
                 support,
-                assignments.get(0),
+                assignments.getFirst(),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
@@ -686,11 +723,11 @@ class FrontendAssignmentSemanticSupportTest {
                 """
                         class_name AssignmentSemanticSupportStringFamily
                         extends RefCounted
-
+                        
                         var text: String = ""
                         var name: StringName = &""
                         var count: int = 0
-
+                        
                         func ping() -> void:
                             name = text
                             text = name
@@ -698,13 +735,13 @@ class FrontendAssignmentSemanticSupportTest {
                         """
         );
 
-        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
         var publishedResolver = publishedExpressionResolver(analyzed);
-        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+        var assignments = findNodes(findPingFunction(analyzed.ast()), AssignmentExpression.class, _ -> true);
 
         var stringToStringName = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
                 support,
-                assignments.get(0),
+                assignments.getFirst(),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
@@ -751,13 +788,13 @@ class FrontendAssignmentSemanticSupportTest {
                         """
         );
 
-        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
         var publishedResolver = publishedExpressionResolver(analyzed);
-        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+        var assignments = findNodes(findPingFunction(analyzed.ast()), AssignmentExpression.class, _ -> true);
 
         var exactVariantSource = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
                 support,
-                assignments.get(0),
+                assignments.getFirst(),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
@@ -806,13 +843,13 @@ class FrontendAssignmentSemanticSupportTest {
                         """
         );
 
-        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
         var publishedResolver = publishedExpressionResolver(analyzed);
-        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+        var assignments = findNodes(findPingFunction(analyzed.ast()), AssignmentExpression.class, _ -> true);
 
         var objectAssignment = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
                 support,
-                assignments.get(0),
+                assignments.getFirst(),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
@@ -835,14 +872,13 @@ class FrontendAssignmentSemanticSupportTest {
 
     private @NotNull FrontendAssignmentSemanticSupport.Context createSupport(
             @NotNull AnalyzedScript analyzed,
-            @NotNull ResolveRestriction restriction,
-            boolean staticContext
+            @NotNull ResolveRestriction restriction
     ) {
         var chainReduction = new FrontendChainReductionFacade(
                 analyzed.analysisData(),
                 analyzed.analysisData().scopesByAst(),
                 () -> restriction,
-                () -> staticContext,
+                () -> false,
                 () -> null,
                 analyzed.classRegistry(),
                 (expression, finalizeWindow) -> FrontendChainReductionHelper.ExpressionTypeResult.fromPublished(
@@ -862,7 +898,7 @@ class FrontendAssignmentSemanticSupportTest {
     private static @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver publishedExpressionResolver(
             @NotNull AnalyzedScript analyzed
     ) {
-        return (expression, finalizeWindow) -> Objects.requireNonNull(
+        return (expression, _) -> Objects.requireNonNull(
                 analyzed.analysisData().expressionTypes().get(expression),
                 "Expected published expression type for " + expression.getClass().getSimpleName()
         );
@@ -879,7 +915,7 @@ class FrontendAssignmentSemanticSupportTest {
             @NotNull String fileName,
             @NotNull String source,
             @NotNull ClassRegistry registry
-    ) throws Exception {
+    ) {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
@@ -919,8 +955,8 @@ class FrontendAssignmentSemanticSupportTest {
         ));
     }
 
-    private static @NotNull FunctionDeclaration findFunction(@NotNull Node root, @NotNull String name) {
-        return findNode(root, FunctionDeclaration.class, function -> function.name().equals(name));
+    private static @NotNull FunctionDeclaration findPingFunction(@NotNull Node root) {
+        return findNode(root, FunctionDeclaration.class, function -> function.name().equals("ping"));
     }
 
     private static <T extends Node> @NotNull T findNode(

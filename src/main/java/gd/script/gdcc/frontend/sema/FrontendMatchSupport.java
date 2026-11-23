@@ -11,6 +11,7 @@ import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.constant.GdConstantValue;
 import gd.script.gdcc.type.GdExtensionTypeEnum;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdStringNameType;
@@ -98,9 +99,20 @@ public final class FrontendMatchSupport {
     /// Builds the structural plan for a whole `match` statement: per-section pattern routes and
     /// the complete bind inventory, without any resolved type or lowering fact.
     public static @NotNull FrontendMatchPlan buildPlan(@NotNull MatchStatement statement) {
+        return buildPlan(statement, null);
+    }
+
+    /// Plans surviving sections in source order without inventorying bindings in damaged sections.
+    public static @NotNull FrontendMatchPlan buildPlan(
+            @NotNull MatchStatement statement,
+            @Nullable FrontendAstSideTable<Boolean> skippedSubtreeRoots
+    ) {
         Objects.requireNonNull(statement, "statement must not be null");
         var sections = new ArrayList<FrontendMatchSectionPlan>();
         for (var section : statement.sections()) {
+            if (skippedSubtreeRoots != null && skippedSubtreeRoots.containsKey(section)) {
+                continue;
+            }
             var patterns = new ArrayList<FrontendMatchPatternPlan>();
             for (var pattern : section.patterns()) {
                 patterns.add(new FrontendMatchPatternPlan(
@@ -114,9 +126,7 @@ public final class FrontendMatchSupport {
         return new FrontendMatchPlan(statement, List.copyOf(sections));
     }
 
-    /// Whether an EXPRESSION / dictionary-key operand is a compile-time constant from published
-    /// facts. Constantness only selects the match lowering sub-mode (and dictionary-key legality);
-    /// it never decides pattern legality.
+    /// Whether a value pattern can use the constant comparison route instead of runtime evaluation.
     public static boolean isConstantPatternOperand(
             @NotNull FrontendAnalysisData analysisData,
             @NotNull Expression expression
@@ -129,8 +139,7 @@ public final class FrontendMatchSupport {
         var binding = analysisData.symbolBindings().get(expression);
         if (binding != null && binding.kind() == FrontendBindingKind.CONSTANT) {
             // A local `const` may legitimately carry a `Rejected` fact — its binding still
-            // claims the CONSTANT kind, but a failed frozen value can never become a constant
-            // match key and must fall back to runtime comparison.
+            // claims the CONSTANT kind, but a failed frozen value cannot use constant comparison.
             if (binding.declarationSite() instanceof VariableDeclaration variableDeclaration) {
                 return analysisData.constantFacts().get(variableDeclaration)
                         instanceof Evaluation.Resolved;
@@ -155,6 +164,23 @@ public final class FrontendMatchSupport {
         return member != null
                 && member.status() == FrontendMemberResolutionStatus.RESOLVED
                 && member.bindingKind() == FrontendBindingKind.CONSTANT;
+    }
+
+    /// Dictionary keys use the evaluator's published result, never the value-pattern heuristic.
+    public static @Nullable GdConstantValue resolvedDictionaryPatternKeyOrNull(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Expression keyExpression
+    ) {
+        return analysisData.constantFacts().get(keyExpression) instanceof Evaluation.Resolved(var value)
+                ? value
+                : null;
+    }
+
+    public static boolean isConstantDictionaryPatternKey(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Expression keyExpression
+    ) {
+        return resolvedDictionaryPatternKeyOrNull(analysisData, keyExpression) != null;
     }
 
     /// Published type of a lowering-ready expression, or `null` when the fact is missing / unstable.
@@ -233,7 +259,10 @@ public final class FrontendMatchSupport {
             }
             case DictionaryExpression dictionary -> {
                 for (var entry : dictionary.entries()) {
-                    collectPatternBindingsInto(entry.value(), false, sink);
+                    var value = entry.value();
+                    if (value != null) {
+                        collectPatternBindingsInto(value, false, sink);
+                    }
                 }
             }
             default -> {

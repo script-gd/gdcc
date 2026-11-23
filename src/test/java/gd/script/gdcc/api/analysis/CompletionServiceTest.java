@@ -1,6 +1,9 @@
 package gd.script.gdcc.api.analysis;
 
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.Node;
 import gd.script.gdcc.api.API;
+import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
@@ -14,6 +17,8 @@ import static gd.script.gdcc.api.analysis.QueryTestSupport.file;
 import static gd.script.gdcc.api.analysis.QueryTestSupport.files;
 import static gd.script.gdcc.api.analysis.QueryTestSupport.offset;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -324,14 +329,50 @@ class CompletionServiceTest {
     }
 
     @Test
-    void memberAccessOnFactFreeReceiverReturnsEmptyWithoutThrowing() {
-        // A partial chain sitting at a function tail (before the next `func`) loses its
-        // receiver facts in this gdparser version: the completion context still classifies
-        // MEMBER_ACCESS, but without receiver facts the answer is an empty list, never an
-        // exception (acceptance 2's "no type facts" form).
-        var result = FrontendSnapshotCompletionService.completionCandidatesAt(
-                snapshot, BUILTIN_PATH, endOf(BUILTIN_SOURCE, "dropped = v.", 0));
+    void memberAccessOnTypedReceiverAtFunctionTailListsMembers() {
+        var cursor = endOf(BUILTIN_SOURCE, "dropped = v.", 0);
+        var result = FrontendSnapshotCompletionService.completionCandidatesAt(snapshot, BUILTIN_PATH, cursor);
         assertEquals(CompletionContextKind.MEMBER_ACCESS, result.contextKind());
+        assertNotNull(result.replaceableRange());
+        assertEquals(cursor, result.replaceableRange().startByte());
+        assertEquals(cursor, result.replaceableRange().endByte());
+        assertHas(result, "x", CompletionCandidateKind.PROPERTY);
+        assertHas(result, "y", CompletionCandidateKind.PROPERTY);
+        assertHas(result, "normalized", CompletionCandidateKind.METHOD);
+    }
+
+    @Test
+    void memberAccessOnUnknownReceiverReturnsEmptyWithoutThrowing() {
+        var path = "/src/comp_unknown_receiver.gd";
+        var source = """
+                class_name ReceiverProbe
+                extends Node
+                var v: Vector2 = Vector2(1, 2)
+                func test():
+                    var out = unknown_recv.
+                func after():
+                    pass
+                """;
+        var unknownSnapshot = QueryTestSupport.analyze(api, "completion_unknown_receiver", files(file(path, source)));
+        var unitIndex = unknownSnapshot.astIndex().forDisplayPath(path);
+        assertNotNull(unitIndex);
+        var receiver = assertInstanceOf(IdentifierExpression.class, unitIndex.nodeAt(offset(source, "unknown_recv", 0)));
+        var analysis = unknownSnapshot.analysisData();
+        var receiverType = analysis.expressionTypes().get(receiver);
+        assertNotNull(receiverType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, receiverType.status());
+        assertNull(receiverType.publishedType());
+        for (Node node = receiver; node != null; node = unitIndex.parentOf(node)) {
+            assertFalse(analysis.skippedSubtreeRoots().containsKey(node));
+        }
+
+        var cursor = endOf(source, "unknown_recv.", 0);
+        var result = FrontendSnapshotCompletionService.completionCandidatesAt(
+                unknownSnapshot, path, cursor);
+        assertEquals(CompletionContextKind.MEMBER_ACCESS, result.contextKind());
+        assertNotNull(result.replaceableRange());
+        assertEquals(cursor, result.replaceableRange().startByte());
+        assertEquals(cursor, result.replaceableRange().endByte());
         assertTrue(result.candidates().isEmpty());
     }
 
@@ -406,6 +447,43 @@ class CompletionServiceTest {
         assertHas(result, "x", CompletionCandidateKind.PROPERTY);
         assertNotNull(result.replaceableRange());
         assertEquals(endOf(BUILTIN_SOURCE, "(v).", 0), result.replaceableRange().startByte());
+    }
+
+    @Test
+    void parenthesizedReceiverSkipsOnlyAsciiWhitespace() {
+        var path = "/src/comp_receiver_trivia.gd";
+        var source = """
+                # UTF-8 前缀
+                class_name CompReceiverTrivia
+                extends Node
+                var v: Vector2
+                
+                func probe():
+                    var single = (v \t).no
+                    var lf = (v \t
+                    ).no
+                    var crlf = (v \t\r
+                    ).no
+                    var cr = (v\r).no
+                    var comment = (v # ignored
+                    ).no
+                    var continuation = (v \\
+                    ).no
+                """;
+        var triviaSnapshot = QueryTestSupport.analyze(api, "completion_receiver_trivia", files(file(path, source)));
+        for (var occurrence = 0; occurrence < 6; occurrence++) {
+            var cursor = endOf(source, ").no", occurrence);
+            var result = FrontendSnapshotCompletionService.completionCandidatesAt(triviaSnapshot, path, cursor);
+            assertEquals(CompletionContextKind.MEMBER_ACCESS, result.contextKind());
+            assertNotNull(result.replaceableRange());
+            assertEquals(cursor - 2, result.replaceableRange().startByte());
+            assertEquals(cursor, result.replaceableRange().endByte());
+            if (occurrence < 4) {
+                assertHas(result, "x", CompletionCandidateKind.PROPERTY);
+            } else {
+                assertTrue(result.candidates().isEmpty(), "comment and continuation are not whitespace");
+            }
+        }
     }
 
     @Test

@@ -6,8 +6,12 @@ import org.jetbrains.annotations.Nullable;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /// Collects frontend diagnostics during one analysis pipeline.
 ///
@@ -20,6 +24,10 @@ import java.util.Objects;
 /// diagnostics captured from this mutable manager at explicit phase boundaries.
 public final class DiagnosticManager {
     private final @NotNull List<FrontendDiagnostic> diagnostics = new ArrayList<>();
+    private @Nullable Set<FrontendDiagnostic> exactDiagnostics;
+    private @Nullable Map<SourceRange, Integer> firstErrorsByRange;
+    private int indexedExactCount;
+    private int indexedRangeCount;
 
     /// Appends one diagnostic to the current pipeline state.
     public void report(@NotNull FrontendDiagnostic diagnostic) {
@@ -72,11 +80,57 @@ public final class DiagnosticManager {
         return diagnostics.isEmpty();
     }
 
+    /// Checks the current manager for an exact diagnostic, including its severity and message.
+    public boolean contains(@NotNull FrontendDiagnostic diagnostic) {
+        var index = exactDiagnostics;
+        if (index == null) {
+            index = new HashSet<>();
+            exactDiagnostics = index;
+        }
+        while (indexedExactCount < diagnostics.size()) {
+            index.add(diagnostics.get(indexedExactCount++));
+        }
+        return index.contains(diagnostic);
+    }
+
+    /// Returns the first reported error at either exact range in the given source.
+    /// A range's position in the argument list does not affect the result.
+    public @Nullable FrontendDiagnostic firstErrorAtTwoRanges(
+            @Nullable String sourcePath,
+            @NotNull FrontendRange firstRange,
+            @NotNull FrontendRange secondRange
+    ) {
+        var index = firstErrorsByRange;
+        if (index == null) {
+            index = new HashMap<>();
+            firstErrorsByRange = index;
+        }
+        // The list is append-only. The first ordinal per range preserves report order across both
+        // ranges without retaining a copy of each snapshot or changing what snapshots publish.
+        while (indexedRangeCount < diagnostics.size()) {
+            var ordinal = indexedRangeCount++;
+            var diagnostic = diagnostics.get(ordinal);
+            var range = diagnostic.range();
+            if (diagnostic.severity() == FrontendDiagnosticSeverity.ERROR && range != null) {
+                index.putIfAbsent(new SourceRange(diagnostic.sourcePath(), range), ordinal);
+            }
+        }
+        var first = index.get(new SourceRange(sourcePath, firstRange));
+        var second = index.get(new SourceRange(sourcePath, secondRange));
+        if (first == null) {
+            return second == null ? null : diagnostics.get(second);
+        }
+        return diagnostics.get(second == null ? first : Math.min(first, second));
+    }
+
     /// Exports an immutable snapshot of the current diagnostic state.
     ///
     /// The returned wrapper is detached from future mutations, so later reports do not
     /// rewrite diagnostics that were already published at an earlier phase boundary.
     public @NotNull DiagnosticSnapshot snapshot() {
         return new DiagnosticSnapshot(diagnostics);
+    }
+
+    private record SourceRange(@Nullable String sourcePath, @NotNull FrontendRange range) {
     }
 }

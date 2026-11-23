@@ -3,12 +3,14 @@ package gd.script.gdcc.frontend.sema;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
+import dev.superice.gdparser.frontend.ast.MatchSection;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Parameter;
@@ -66,6 +68,73 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendSuiteResolverTest {
     private static final @NotNull String STATEMENT_SNAPSHOT_TEST_CATEGORY = "sema.suite_statement_snapshot_probe";
+
+    @Test
+    void statementResolutionVisitsDictionaryKeysAndHealthySiblingBranches() throws Exception {
+        var input = phaseInput("suite_match_key_resolution.gd", """
+                class_name SuiteMatchKeyResolution
+                extends Node
+                
+                func ping(value):
+                    if value:
+                        pass
+                    elif value == 1:
+                        return 11
+                    elif value == 2:
+                        return 22
+                    match value:
+                        {1, "b": var kept, ..}:
+                            return 33
+                        {"skipped"}:
+                            return 44
+                        _:
+                            return 55
+                """);
+        var ping = findStatement(input.unit().ast().statements(), FunctionDeclaration.class, _ -> true);
+        var conditional = assertInstanceOf(IfStatement.class, ping.body().statements().getFirst());
+        var match = assertInstanceOf(MatchStatement.class, ping.body().statements().getLast());
+        var first = match.sections().getFirst();
+        var dictionary = assertInstanceOf(DictionaryExpression.class, first.patterns().getFirst());
+        var keyOnly = dictionary.entries().getFirst();
+        var withValue = dictionary.entries().getLast();
+        assertNull(keyOnly.value());
+        assertNotNull(withValue.value());
+        input.analysisData().skippedSubtreeRoots().put(conditional.elifClauses().getFirst(), true);
+        input.analysisData().skippedSubtreeRoots().put(match.sections().get(1), true);
+        var healthyElif = conditional.elifClauses().getLast();
+        var visited = new ArrayList<Node>();
+        var keys = new ArrayList<Expression>();
+
+        resolveWith(input, new FrontendStatementResolver.OwnerProcedures() {
+            @Override
+            public void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+                visited.add(root);
+            }
+
+            @Override
+            public void runMatchDictionaryKeyConstResolution(
+                    @NotNull FrontendSuiteContext context,
+                    @NotNull MatchSection section,
+                    @NotNull Expression keyRoot
+            ) {
+                assertSame(first, section);
+                assertSame(keyRoot, visited.getLast(), "ordinary typing must precede key evaluation");
+                keys.add(keyRoot);
+            }
+        });
+
+        assertEquals(List.of(keyOnly.key(), withValue.key()), keys);
+        assertEquals(List.of(
+                conditional.condition(),
+                healthyElif.condition(),
+                healthyElif.body().statements().getFirst(),
+                match.value(),
+                keyOnly.key(),
+                withValue.key(),
+                first.body().statements().getFirst(),
+                match.sections().getLast().body().statements().getFirst()
+        ), visited);
+    }
 
     @Test
     void sourceOrderTraversalMatchesAstOrderAndOwnerOrderIsFixed() throws Exception {

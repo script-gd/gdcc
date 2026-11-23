@@ -2,13 +2,17 @@ package gd.script.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
+import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
+import gd.script.gdcc.frontend.parse.FrontendParseRecovery;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.scope.CallableScopeKind;
@@ -82,7 +86,7 @@ public class FrontendSuiteResolver {
     /// - valid only because the forward table is frozen before this resolver runs:
     ///   `FrontendScopeAnalyzer` is its sole writer, and the suite phase never adds node→scope
     ///   entries (`resetCaptureType` rewrites scope-internal `ScopeValue`s, not the table);
-    /// - the cache lives and dies with this per-run resolver instance — no cross-run staleness;
+    /// - each root `resolve` starts with a fresh cache because scope identities are per analysis;
     /// - if a future phase ever publishes new node→scope entries mid-suite, this index must be
     ///   invalidated or rebuilt instead of trusted.
     private @Nullable Map<Scope, Node> cachedScopeToAstIndex;
@@ -106,6 +110,9 @@ public class FrontendSuiteResolver {
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         Objects.requireNonNull(analysisData, "analysisData must not be null");
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
+
+        cachedScopeToAstIndex = null;
+        lambdaNameCountersByOwningClass.clear();
 
         // Parameter-default sweep runs before any callable body so body call sites only observe
         // finalized `defaultValueFunc` metadata (accepted) or required parameters (reclaimed).
@@ -143,9 +150,12 @@ public class FrontendSuiteResolver {
         for (var statement : block.statements()) {
             // The body phase is a formal consumer of `skippedSubtreeRoots()`: parser error
             // subtrees (annotated before scope analysis) are skipped wholesale here instead of
-            // reaching structural fail-fast points with damaged AST. The parser already owns the
-            // diagnostic for each skipped root (single-owner recovery rule).
+            // reaching structural fail-fast points with damaged AST.
             if (context.analysisData().skippedSubtreeRoots().containsKey(statement)) {
+                if (statement instanceof ExpressionStatement expressionStatement
+                        && expressionStatement.expression() instanceof LambdaExpression lambda) {
+                    reportSkippedBareLambda(context, expressionStatement, lambda);
+                }
                 continue;
             }
             statementResolver.resolveStatement(context, statement, this::resolveChildSuite);
@@ -158,6 +168,53 @@ public class FrontendSuiteResolver {
             transaction.applyTo(context.analysisData());
         }
         context.analysisData().updateDiagnostics(context.diagnosticManager().snapshot());
+    }
+
+    /// Bare statement lambdas never reach statement resolution. Own their fallback here so the
+    /// shared and compile paths keep one error even when the parser's manager was not reused.
+    private static void reportSkippedBareLambda(
+            @NotNull FrontendSuiteContext context,
+            @NotNull ExpressionStatement statement,
+            @NotNull LambdaExpression lambda
+    ) {
+        var analysisData = context.analysisData();
+        var recoveries = analysisData.parseRecoveriesByOwner().get(statement);
+        var bareLambdaRecoveries = recoveries == null ? List.<FrontendParseRecovery>of() : recoveries.stream()
+                                                                                           .filter(recovery -> recovery.severity() == FrontendDiagnosticSeverity.ERROR
+                                                                                                               && recovery.code().equals("parse.lambda.bare_statement"))
+                                                                                           .toList();
+        var sourcePath = FrontendDiagnostic.sourcePathText(context.sourcePath());
+        var lambdaRange = Objects.requireNonNull(FrontendRange.fromAstRange(lambda.range()));
+        var statementRange = Objects.requireNonNull(FrontendRange.fromAstRange(statement.range()));
+        var diagnosticManager = context.diagnosticManager();
+        // Find every recovery's own active diagnostic before publishing any new claims or errors.
+        var exactCoverage = new ArrayList<FrontendDiagnostic>(bareLambdaRecoveries.size());
+        FrontendDiagnostic covering = null;
+        for (var recovery : bareLambdaRecoveries) {
+            var active = FrontendParseRecovery.findActiveCoveringDiagnostic(
+                    recovery, analysisData, diagnosticManager, sourcePath
+            );
+            exactCoverage.add(active);
+            if (covering == null && active != null) {
+                covering = active;
+            }
+        }
+        if (covering == null) {
+            covering = diagnosticManager.firstErrorAtTwoRanges(sourcePath, lambdaRange, statementRange);
+        }
+        if (covering == null) {
+            covering = FrontendDiagnostic.error(
+                    UNSUPPORTED_BINDING_SUBTREE_CATEGORY,
+                    "Standalone lambda statements are not supported",
+                    sourcePath,
+                    lambdaRange
+            );
+            diagnosticManager.report(covering);
+        }
+        for (var i = 0; i < bareLambdaRecoveries.size(); i++) {
+            var active = exactCoverage.get(i);
+            analysisData.claimParseRecovery(bareLambdaRecoveries.get(i), active != null ? active : covering);
+        }
     }
 
     private void resolveCallableOwner(
@@ -302,13 +359,16 @@ public class FrontendSuiteResolver {
         }
         // The declared return type resolves exactly once here, at nested-resolve entry: type-check
         // (return slot) and lowering (shell return type) both consume the published plan value, so
-        // an unknown annotation warns once and the two consumers can never drift.
+        // an unknown annotation warns once and a damaged return slot cannot independently fail twice.
         var returnType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 lambda.returnType(),
                 lambdaScope,
                 analysisData.moduleSkeleton().topLevelCanonicalNameMap(),
                 context.sourcePath(),
-                context.diagnosticManager()
+                context.diagnosticManager(),
+                analysisData,
+                lambda,
+                "function.return_type"
         );
         var identity = analysisData.lambdaIdentities().get(lambda);
         if (identity == null) {

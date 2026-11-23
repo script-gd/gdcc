@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema.analyzer.support;
 
 import org.jetbrains.annotations.NotNull;
 
+import java.util.EnumSet;
 import java.util.Objects;
 import java.util.Set;
 
@@ -26,23 +27,33 @@ public interface EvaluationPolicy {
     /// short-circuit/conditional expressions, the constructor whitelist, member projections,
     /// and registry dispatch on attribute chains.
     static @NotNull EvaluationPolicy general() {
-        return new CapabilitySet(
-                Set.of(
-                        Capability.INT_ARITHMETIC,
-                        Capability.INT_POWER,
-                        Capability.LONG_MIN_LITERAL,
-                        Capability.FLOAT_ARITHMETIC,
-                        Capability.BOOL_OPERATORS,
-                        Capability.STRING_OPERATORS,
-                        Capability.COMPARISON,
-                        Capability.CONSTRUCTOR,
-                        Capability.BUILTIN_OPERATORS,
-                        Capability.MEMBER_PROJECTION,
-                        Capability.TERNARY,
-                        Capability.ATTRIBUTE_ACCESS,
-                        Capability.REGISTERED_MEMBER_CALL
-                ),
-                EvaluationDomain.GENERAL
+        return new CapabilitySet(generalCapabilities(), EvaluationDomain.GENERAL);
+    }
+
+    /// Pattern keys admit special literals without widening ordinary `const` declarations.
+    static @NotNull EvaluationPolicy matchConstant() {
+        var capabilities = EnumSet.copyOf(generalCapabilities());
+        capabilities.add(Capability.NULL_LITERAL);
+        capabilities.add(Capability.STRING_NAME_LITERAL);
+        capabilities.add(Capability.NODE_PATH_LITERAL);
+        return new CapabilitySet(capabilities, EvaluationDomain.GENERAL);
+    }
+
+    private static @NotNull Set<Capability> generalCapabilities() {
+        return Set.of(
+                Capability.INT_ARITHMETIC,
+                Capability.INT_POWER,
+                Capability.LONG_MIN_LITERAL,
+                Capability.FLOAT_ARITHMETIC,
+                Capability.BOOL_OPERATORS,
+                Capability.STRING_OPERATORS,
+                Capability.COMPARISON,
+                Capability.CONSTRUCTOR,
+                Capability.BUILTIN_OPERATORS,
+                Capability.MEMBER_PROJECTION,
+                Capability.TERNARY,
+                Capability.ATTRIBUTE_ACCESS,
+                Capability.REGISTERED_MEMBER_CALL
         );
     }
 
@@ -84,7 +95,13 @@ public interface EvaluationPolicy {
         /// Any attribute chain step (namespace member read, projection, registered call).
         ATTRIBUTE_ACCESS,
         /// Registered const member calls dispatched through the context's registry.
-        REGISTERED_MEMBER_CALL
+        REGISTERED_MEMBER_CALL,
+        /// The `null` literal as a frozen value.
+        NULL_LITERAL,
+        /// `&`-prefixed StringName literals, not StringName constructors or operators.
+        STRING_NAME_LITERAL,
+        /// `^`-prefixed NodePath literals, not NodePath constructors or operators.
+        NODE_PATH_LITERAL
     }
 
     /// Evaluation-surface identity used to phrase `Rejected` reasons.
@@ -95,8 +112,8 @@ public interface EvaluationPolicy {
         ENUM
     }
 
-    /// Fixed-capability policy implementation. The production surfaces come from `general()` and
-    /// `enumPrePass()`; tests may compose custom sets to probe individual capability gates.
+    /// Fixed-capability policy implementation. Tests may compose custom sets to probe individual
+    /// capability gates.
     ///
     /// @param capabilities admitted capabilities (stored immutably)
     /// @param domain       rejection-phrasing surface

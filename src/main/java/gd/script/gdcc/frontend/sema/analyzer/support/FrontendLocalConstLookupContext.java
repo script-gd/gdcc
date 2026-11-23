@@ -13,6 +13,7 @@ import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteContext;
 import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
+import gd.script.gdcc.gdextension.ExtensionGlobalEnum;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.GdScriptClassConstant;
@@ -24,13 +25,14 @@ import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Objects;
 
-/// Scope-facing `LookupContext` for one block-local `const` initializer.
+/// Scope-facing `LookupContext` for one block-local `const` initializer or match dictionary key.
 ///
 /// Unlike the class-level pre-pass context — which freezes "earlier same-class constants only" —
 /// the local domain resolves through the ordinary lexical chain: earlier local constants (read
@@ -39,7 +41,7 @@ import java.util.Objects;
 /// `Other.Inner.CONST`, `Vector2.ZERO`, `Control.PRESET_CENTER`).
 ///
 /// Two lexical rules are enforced here rather than by the scope graph itself:
-/// - declaration-order visibility: a `const`/`var` whose declaration ends after the initializer's
+/// - declaration-order visibility: a `const`/`var` whose declaration ends after the expression's
 ///   start byte is filtered out of its layer, so self references and forward references fall
 ///   through to outer bindings exactly like `var` rules do
 /// - constant facts, not scope slots, carry frozen values: a binding whose declaration is a local
@@ -47,8 +49,8 @@ import java.util.Objects;
 ///   value, `Rejected` is terminal `Blocked`, and a missing fact is `Blocked` rather than a
 ///   silent fall-through.
 public final class FrontendLocalConstLookupContext implements LookupContext {
-    private final @NotNull VariableDeclaration declaration;
-    private final @NotNull Expression initializer;
+    private final int visibilityAnchorStartByte;
+    private final boolean allowMatchEnumNamespaces;
     private final @NotNull Scope declarationScope;
     private final @NotNull FrontendTypedLexicalEnvironment typedEnvironment;
     private final @NotNull FrontendAnalysisData analysisData;
@@ -60,8 +62,31 @@ public final class FrontendLocalConstLookupContext implements LookupContext {
             @NotNull Scope declarationScope,
             @NotNull FrontendSuiteContext context
     ) {
-        this.declaration = Objects.requireNonNull(declaration, "declaration must not be null");
-        this.initializer = Objects.requireNonNull(declaration.value(), "const declaration must have an initializer");
+        var initializer = Objects.requireNonNull(
+                Objects.requireNonNull(declaration, "declaration must not be null").value(),
+                "const declaration must have an initializer"
+        );
+        this(initializer.range().startByte(), declarationScope, context, false);
+    }
+
+    /// Evaluate a pattern key at its own source position and admit qualified engine enum values
+    /// without changing ordinary local `const` lookup.
+    public static @NotNull FrontendLocalConstLookupContext forMatchDictionaryKey(
+            @NotNull Expression keyRoot,
+            @NotNull Scope keyScope,
+            @NotNull FrontendSuiteContext context
+    ) {
+        return new FrontendLocalConstLookupContext(keyRoot.range().startByte(), keyScope, context, true);
+    }
+
+    private FrontendLocalConstLookupContext(
+            int visibilityAnchorStartByte,
+            @NotNull Scope declarationScope,
+            @NotNull FrontendSuiteContext context,
+            boolean allowMatchEnumNamespaces
+    ) {
+        this.visibilityAnchorStartByte = visibilityAnchorStartByte;
+        this.allowMatchEnumNamespaces = allowMatchEnumNamespaces;
         this.declarationScope = Objects.requireNonNull(declarationScope, "declarationScope must not be null");
         this.typedEnvironment = Objects.requireNonNull(context.typedEnvironment(), "typedEnvironment");
         this.analysisData = Objects.requireNonNull(context.analysisData(), "analysisData");
@@ -72,7 +97,7 @@ public final class FrontendLocalConstLookupContext implements LookupContext {
     @Override
     public @NotNull LookupResult resolve(@NotNull String name) {
         // Declaration-order filtered walk over block/callable layers: a hit whose declaration
-        // ends after the initializer begins is not yet visible, so the layer is skipped and the
+        // ends after the anchor expression begins is not yet visible, so the layer is skipped and the
         // walk continues outward instead of answering the hidden binding.
         var scope = declarationScope;
         while (scope instanceof BlockScope || scope instanceof CallableScope) {
@@ -84,7 +109,7 @@ public final class FrontendLocalConstLookupContext implements LookupContext {
             if (hit.isAllowed()) {
                 var value = hit.requireValue();
                 if (value.declaration() instanceof VariableDeclaration variableDeclaration
-                        && !isVisibleAtInitializer(variableDeclaration)) {
+                        && !isVisibleAtAnchor(variableDeclaration)) {
                     scope = scope.getParentScope();
                     continue;
                 }
@@ -118,19 +143,17 @@ public final class FrontendLocalConstLookupContext implements LookupContext {
     /// builtin `GdType` identities fall through to the shared metadata decoder.
     @Override
     public @NotNull LookupResult resolveMember(@NotNull Object namespaceIdentity, @NotNull String memberName) {
-        if (namespaceIdentity instanceof GdScriptEnumGroup group) {
-            var member = group.findMember(memberName);
-            return member != null
-                    ? new LookupResult.ResolvedConstant(new GdConstantValue.IntValue(member.value()))
-                    : new LookupResult.Unknown();
-        }
-        if (namespaceIdentity instanceof GdObjectType objectType) {
-            return resolveEngineClassMember(classRegistry, objectType.className(), memberName);
-        }
-        if (namespaceIdentity instanceof ClassDef classDef) {
+        return switch (namespaceIdentity) {
+            case GdScriptEnumGroup group -> {
+                var member = group.findMember(memberName);
+                yield member != null
+                        ? new LookupResult.ResolvedConstant(new GdConstantValue.IntValue(member.value()))
+                        : new LookupResult.Unknown();
+            }
+            case GdObjectType(var className) -> resolveEngineClassMember(classRegistry, className, memberName);
             // Qualified constants follow the same nearest-layer inheritance walk ordinary
             // chains use: `Child.C` may legally name a constant declared on `Base`.
-            return switch (FrontendClassConstantLookup.probeInHierarchy(
+            case ClassDef classDef -> switch (FrontendClassConstantLookup.probeInHierarchy(
                     classRegistry,
                     classDef,
                     memberName,
@@ -138,14 +161,37 @@ public final class FrontendLocalConstLookupContext implements LookupContext {
             )) {
                 case FrontendClassConstantLookup.ProbeResult.Usable usable ->
                         toClassConstantOutcome(memberName, usable.constant());
-                case FrontendClassConstantLookup.ProbeResult.TerminalBlocked blocked ->
-                        new LookupResult.Blocked(
-                                "'" + memberName + "' is a class constant of '" + classDef.getName()
-                                        + "' whose initializer failed to evaluate");
+                case FrontendClassConstantLookup.ProbeResult.TerminalBlocked _ -> new LookupResult.Blocked(
+                        "'" + memberName + "' is a class constant of '" + classDef.getName()
+                                + "' whose initializer failed to evaluate");
                 case FrontendClassConstantLookup.ProbeResult.Miss _ -> new LookupResult.Unknown();
             };
-        }
-        return LookupContext.super.resolveMember(namespaceIdentity, memberName);
+            default -> {
+                var outcome = LookupContext.super.resolveMember(namespaceIdentity, memberName);
+                if (!allowMatchEnumNamespaces || !(outcome instanceof LookupResult.Unknown)) {
+                    yield outcome;
+                }
+                yield switch (namespaceIdentity) {
+                    case ExtensionGlobalEnum globalEnum -> {
+                        var member = globalEnum.values().stream()
+                                .filter(value -> value.name().equals(memberName))
+                                .findFirst()
+                                .orElse(null);
+                        yield member != null
+                                ? new LookupResult.ResolvedConstant(new GdConstantValue.IntValue(member.value()))
+                                : outcome;
+                    }
+                    case GdType builtinType -> {
+                        var enumValue = classRegistry.findBuiltinClassEnumValueInHierarchy(builtinType.getTypeName(),
+                                memberName);
+                        yield enumValue != null
+                                ? new LookupResult.ResolvedConstant(new GdConstantValue.IntValue(enumValue.enumValue().value()))
+                                : outcome;
+                    }
+                    default -> outcome;
+                };
+            }
+        };
     }
 
     @Override
@@ -170,10 +216,10 @@ public final class FrontendLocalConstLookupContext implements LookupContext {
             return switch (value.declaration()) {
                 case VariableDeclaration variableDeclaration -> {
                     var fact = typedEnvironment.constantFact(variableDeclaration);
-                    if (fact instanceof Evaluation.Resolved resolved) {
-                        yield new LookupResult.ResolvedConstant(resolved.value());
+                    if (fact instanceof Evaluation.Resolved(var constant)) {
+                        yield new LookupResult.ResolvedConstant(constant);
                     }
-                    if (fact instanceof Evaluation.Rejected rejected) {
+                    if (fact instanceof Evaluation.Rejected) {
                         yield new LookupResult.Blocked(
                                 "'" + name + "' failed to evaluate at its declaration; "
                                         + "the reference depends on an invalid constant");
@@ -181,8 +227,7 @@ public final class FrontendLocalConstLookupContext implements LookupContext {
                     yield new LookupResult.Blocked(
                             "'" + name + "' is a constant that has not been evaluated");
                 }
-                case GdScriptEvaluatedConstant evaluated ->
-                        new LookupResult.ResolvedConstant(evaluated.value());
+                case GdScriptEvaluatedConstant evaluated -> new LookupResult.ResolvedConstant(evaluated.value());
                 case GdScriptEnumConstant enumConstant ->
                         new LookupResult.ResolvedConstant(new GdConstantValue.IntValue(enumConstant.value()));
                 case GdScriptEnumGroup enumGroup -> new LookupResult.ResolvedNamespace(enumGroup);
@@ -203,16 +248,19 @@ public final class FrontendLocalConstLookupContext implements LookupContext {
                     "'" + name + "' is a function parameter, not a compile-time constant");
             case CAPTURE -> new LookupResult.NonConstant(
                     "'" + name + "' is a lambda capture, not a compile-time constant");
+            case GLOBAL_ENUM ->
+                    allowMatchEnumNamespaces && value.declaration() instanceof ExtensionGlobalEnum globalEnum
+                            ? new LookupResult.ResolvedNamespace(globalEnum)
+                            : new LookupResult.NonConstant("'" + name + "' is not a compile-time constant");
             default -> new LookupResult.NonConstant(
                     "'" + name + "' is not a compile-time constant");
         };
     }
 
-    /// Whether `variableDeclaration` ends strictly before the local const initializer begins —
-    /// the same declaration-order visibility rule ordinary `var` lookup applies, reused here so
-    /// a const initializer can never read itself or a later same-name local.
-    private boolean isVisibleAtInitializer(@NotNull VariableDeclaration variableDeclaration) {
-        return variableDeclaration.range().endByte() <= initializer.range().startByte();
+    /// Only declarations ending at or before the anchor are visible, so neither an initializer
+    /// nor a pattern key is shadowed by a later local declaration.
+    private boolean isVisibleAtAnchor(@NotNull VariableDeclaration variableDeclaration) {
+        return variableDeclaration.range().endByte() <= visibilityAnchorStartByte;
     }
 
     /// Global fallback plus the type-meta namespace: bare engine enum values, JSON global
@@ -242,8 +290,7 @@ public final class FrontendLocalConstLookupContext implements LookupContext {
                 // non-constants/namespaces so `Error(1)` cannot sneak through as an `int`
                 // constructor.
                 return switch (typeMeta.kind()) {
-                    case BUILTIN, ENGINE_CLASS ->
-                            new LookupResult.ResolvedNamespace(typeMeta.instanceType());
+                    case BUILTIN, ENGINE_CLASS -> new LookupResult.ResolvedNamespace(typeMeta.instanceType());
                     case GDCC_CLASS -> typeMeta.declaration() instanceof ClassDef classDef
                             ? new LookupResult.ResolvedNamespace(classDef)
                             : new LookupResult.NonConstant(
@@ -252,8 +299,11 @@ public final class FrontendLocalConstLookupContext implements LookupContext {
                             ? new LookupResult.ResolvedNamespace(group)
                             : new LookupResult.NonConstant(
                             "'" + name + "' is a named enum group, not a constant value");
-                    case GLOBAL_ENUM -> new LookupResult.NonConstant(
-                            "'" + name + "' is a global enum, not a constant value");
+                    case GLOBAL_ENUM ->
+                            allowMatchEnumNamespaces && typeMeta.declaration() instanceof ExtensionGlobalEnum globalEnum
+                                    ? new LookupResult.ResolvedNamespace(globalEnum)
+                                    : new LookupResult.NonConstant(
+                                    "'" + name + "' is a global enum, not a constant value");
                 };
             }
         }
@@ -268,8 +318,7 @@ public final class FrontendLocalConstLookupContext implements LookupContext {
             @NotNull GdScriptClassConstant constant
     ) {
         return switch (constant.declaration()) {
-            case GdScriptEvaluatedConstant evaluated ->
-                    new LookupResult.ResolvedConstant(evaluated.value());
+            case GdScriptEvaluatedConstant evaluated -> new LookupResult.ResolvedConstant(evaluated.value());
             case GdScriptEnumGroup enumGroup -> new LookupResult.ResolvedNamespace(enumGroup);
             case GdScriptEnumConstant enumConstant ->
                     new LookupResult.ResolvedConstant(new GdConstantValue.IntValue(enumConstant.value()));

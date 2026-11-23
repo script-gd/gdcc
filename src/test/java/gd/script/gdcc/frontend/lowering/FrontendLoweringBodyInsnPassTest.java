@@ -1,6 +1,8 @@
 package gd.script.gdcc.frontend.lowering;
 
 import gd.script.gdcc.enums.GodotOperator;
+import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.constant.GdConstantValue;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
@@ -29,13 +31,21 @@ import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPass;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringFunctionPreparationPass;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
+import gd.script.gdcc.frontend.sema.FrontendInterfaceSurface;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
+import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendBodyOwnerProcedures;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendInterfacePhase;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendStatementResolver;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteContext;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteResolver;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
@@ -117,6 +127,7 @@ import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
@@ -129,6 +140,7 @@ import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
+import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
 import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
@@ -510,11 +522,11 @@ class FrontendLoweringBodyInsnPassTest {
         assertAll(
                 () -> assertFalse(diagnostics.hasErrors()),
                 () -> assertEquals(2, methodCalls.size()),
-                () -> assertEquals("append", methodCalls.get(0).methodName()),
+                () -> assertEquals("append", methodCalls.getFirst().methodName()),
                 () -> assertEquals("size", methodCalls.get(1).methodName()),
                 // Each call loads the shared container exactly once as its receiver.
                 () -> assertEquals(2, staticLoads.size()),
-                () -> assertEquals(staticLoads.get(0).resultId(), methodCalls.get(0).objectId()),
+                () -> assertEquals(staticLoads.getFirst().resultId(), methodCalls.getFirst().objectId()),
                 () -> assertEquals(staticLoads.get(1).resultId(), methodCalls.get(1).objectId()),
                 () -> assertTrue(staticStores.isEmpty(),
                         "reference-carrier receiver mutation must not write back to static storage")
@@ -1787,7 +1799,7 @@ class FrontendLoweringBodyInsnPassTest {
                         .filter(StoreStaticInsn.class::isInstance)
                         .map(StoreStaticInsn.class::cast)
                         .filter(instruction -> instruction.staticName().equals("vectors"))
-                        .count(), () -> dump),
+                        .count(), dump),
                 () -> assertEquals(0, instructions.stream()
                                 .filter(StoreStaticInsn.class::isInstance)
                                 .map(StoreStaticInsn.class::cast)
@@ -5168,12 +5180,11 @@ class FrontendLoweringBodyInsnPassTest {
                 .map(AssignInsn.class::cast)
                 .filter(insn -> insn.resultId().equals("payload"))
                 .toList();
-        var continuationBlock = requireBlock(function, applyGoto.targetBbId());
         // The continuation must keep threading the rest of the sequence after the gate; follow
         // the goto chain from the continuation until the block that owns the return terminator.
-        LirBasicBlock returnBlock = continuationBlock;
-        while (returnBlock.getTerminator() instanceof GotoInsn gotoInsn) {
-            returnBlock = requireBlock(function, gotoInsn.targetBbId());
+        var returnBlock = requireBlock(function, applyGoto.targetBbId());
+        while (returnBlock.getTerminator() instanceof GotoInsn(var targetBbId)) {
+            returnBlock = requireBlock(function, targetBbId);
         }
         assertInstanceOf(ReturnInsn.class, returnBlock.getTerminator());
         assertAll(
@@ -10011,7 +10022,7 @@ class FrontendLoweringBodyInsnPassTest {
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
                 () -> assertEquals(2, constructs.size()),
-                () -> assertNotEquals(constructs.get(0).resultId(), constructs.get(1).resultId()),
+                () -> assertNotEquals(constructs.getFirst().resultId(), constructs.get(1).resultId()),
                 () -> assertEquals(8, operandSlotIds.size()),
                 () -> assertEquals(
                         8,
@@ -10067,6 +10078,92 @@ class FrontendLoweringBodyInsnPassTest {
                         "keys() must be called on the materialized enum group Dictionary slot"
                 ),
                 () -> assertEquals(call.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersMinimumIntegerLocalAndReturnAsDirectSignedLiterals() throws Exception {
+        var module = parseModule(
+                List.of(new SourceFixture("body_insn_minimum_integer.gd", """
+                        class_name BodyInsnMinimumInteger
+                        extends RefCounted
+                        
+                        func ping() -> int:
+                            var minimum = -9223372036854775808
+                            return -0x8000000000000000
+                        
+                        func ordinary() -> int:
+                            return -7
+                        """)),
+                Map.of("BodyInsnMinimumInteger", "RuntimeBodyInsnMinimumInteger")
+        );
+        var source = module.units().getFirst().ast().statements().stream()
+                .filter(FunctionDeclaration.class::isInstance)
+                .map(FunctionDeclaration.class::cast)
+                .filter(declaration -> declaration.name().equals("ping"))
+                .findFirst()
+                .orElseThrow();
+        var local = assertInstanceOf(VariableDeclaration.class, source.body().statements().getFirst());
+        var returnStatement = assertInstanceOf(ReturnStatement.class, source.body().statements().getLast());
+        var initializer = assertInstanceOf(UnaryExpression.class, local.value());
+        var returnValue = assertInstanceOf(UnaryExpression.class, returnStatement.value());
+        var defaultProcedures = new FrontendBodyOwnerProcedures();
+        var suiteResolver = new FrontendSuiteResolver(new FrontendStatementResolver(new FrontendStatementResolver.OwnerProcedures() {
+            @Override
+            public void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+                if (root == local || root == returnStatement) {
+                    // Publish signed roots only so any attempted CFG read of a magnitude fails.
+                    context.typedEnvironment().putExpressionType(
+                            FrontendSemanticStage.EXPR_TYPE,
+                            root == local ? initializer : returnValue,
+                            FrontendExpressionType.resolved(GdIntType.INT)
+                    );
+                } else {
+                    defaultProcedures.runExprType(context, root);
+                }
+            }
+
+            @Override
+            public void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+                defaultProcedures.runVarTypePost(context, root);
+            }
+        }));
+        var diagnostics = new DiagnosticManager();
+        var lowering = new FrontendLoweringContext(module, new ClassRegistry(ExtensionApiLoader.loadDefault()), diagnostics);
+        new FrontendLoweringAnalysisPass(new FrontendSemanticAnalyzer(new FrontendInterfacePhase(), suiteResolver)).run(lowering);
+        assertFalse(diagnostics.hasErrors(), () -> diagnostics.snapshot().toString());
+        var expressionTypes = lowering.requireAnalysisData().expressionTypes();
+        assertFalse(expressionTypes.containsKey(initializer.operand()));
+        assertFalse(expressionTypes.containsKey(returnValue.operand()));
+        new FrontendLoweringClassSkeletonPass().run(lowering);
+        new FrontendLoweringFunctionPreparationPass().run(lowering);
+        new FrontendLoweringBuildCfgPass().run(lowering);
+
+        var contexts = lowering.requireFunctionLoweringContexts();
+        var ping = requireContext(
+                contexts, FunctionLoweringContext.Kind.EXECUTABLE_BODY, "RuntimeBodyInsnMinimumInteger", "ping"
+        ).targetFunction();
+        var ordinary = requireContext(
+                contexts, FunctionLoweringContext.Kind.EXECUTABLE_BODY, "RuntimeBodyInsnMinimumInteger", "ordinary"
+        ).targetFunction();
+        new FrontendLoweringBodyInsnPass().run(lowering);
+
+        var instructions = allInstructions(ping);
+        var literals = instructions.stream().filter(LiteralIntInsn.class::isInstance).map(LiteralIntInsn.class::cast).toList();
+        var initializerPack = instructions.stream()
+                .filter(PackVariantInsn.class::isInstance)
+                .map(PackVariantInsn.class::cast)
+                .filter(pack -> pack.valueId().equals(literals.getFirst().resultId()))
+                .findFirst()
+                .orElseThrow();
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals(List.of(Long.MIN_VALUE, Long.MIN_VALUE), literals.stream().map(LiteralIntInsn::value).toList()),
+                () -> assertEquals("cfg_tmp_minimum_0", literals.getFirst().resultId()),
+                () -> assertEquals(initializerPack.resultId(), assignSourcesByTarget(instructions).get("minimum")),
+                () -> assertEquals(literals.getLast().resultId(), requireOnlyReturnInsn(ping).returnValueId()),
+                () -> assertEquals(0, countInstructions(instructions, UnaryOpInsn.class)),
+                () -> assertEquals(1, countInstructions(allInstructions(ordinary), UnaryOpInsn.class))
         );
     }
 
@@ -10874,9 +10971,9 @@ class FrontendLoweringBodyInsnPassTest {
                         parentNameCalls.stream().map(CallMethodInsn::methodName).toList()
                 ),
                 () -> assertEquals(2, parentNameLives.size()),
-                () -> assertEquals(parentNameCalls.get(0).resultId(), parentNameCalls.get(1).objectId()),
+                () -> assertEquals(parentNameCalls.getFirst().resultId(), parentNameCalls.get(1).objectId()),
                 () -> assertEquals(parentNameCalls.get(1).resultId(), parentNameCalls.get(2).objectId()),
-                () -> assertEquals(parentNameCalls.get(0).resultId(), parentNameLives.get(0).objectId()),
+                () -> assertEquals(parentNameCalls.getFirst().resultId(), parentNameLives.getFirst().objectId()),
                 () -> assertEquals(parentNameCalls.get(1).resultId(), parentNameLives.get(1).objectId()),
                 () -> assertEquals(parentNameCalls.get(2).resultId(), requireOnlyReturnInsn(parentNameFunction).returnValueId())
         );
@@ -10943,14 +11040,14 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(List.of("Child", "%Unique"), literals.stream().map(LiteralNodePathInsn::value).toList()),
                 () -> assertEquals(2, getNodeCalls.size()),
                 () -> assertEquals(
-                        literals.get(0).resultId(),
-                        onlyVariableOperandId(getNodeCalls.get(0).args())
+                        literals.getFirst().resultId(),
+                        onlyVariableOperandId(getNodeCalls.getFirst().args())
                 ),
                 () -> assertEquals(
                         literals.get(1).resultId(),
                         onlyVariableOperandId(getNodeCalls.get(1).args())
                 ),
-                () -> assertTrue(pairInsns.indexOf(getNodeCalls.get(0)) < pairInsns.indexOf(literals.get(1))),
+                () -> assertTrue(pairInsns.indexOf(getNodeCalls.getFirst()) < pairInsns.indexOf(literals.get(1))),
                 () -> assertTrue(pairInsns.indexOf(literals.get(1)) < pairInsns.indexOf(getNodeCalls.get(1))),
                 () -> assertTrue(pairInsns.indexOf(firstPack) < pairInsns.indexOf(constructInsn)),
                 () -> assertTrue(pairInsns.indexOf(secondPack) < pairInsns.indexOf(constructInsn)),
@@ -11366,7 +11463,7 @@ class FrontendLoweringBodyInsnPassTest {
 
         assertTrue(
                 prepared.diagnostics().hasErrors(),
-                () -> "returning a NodePath literal from a String function must stay a type error"
+                "returning a NodePath literal from a String function must stay a type error"
         );
     }
 
@@ -13184,83 +13281,101 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
-    void runLowersDictionaryPatternIntoHasGateAndKeyedFetch() throws Exception {
-        var prepared = prepareContext(
-                "body_insn_match_dict.gd",
-                """
-                        class_name BodyInsnMatchDict
+    void runLowersPublishedDictionaryKeyFactsIntoLiteralOperandsForHasAndFetch() throws Exception {
+        var module = parseModule(
+                List.of(new SourceFixture("body_insn_folded_match_keys.gd", """
+                        class_name BodyInsnFoldedMatchKeys
                         extends RefCounted
                         
-                        func ping(value) -> int:
+                        func ping(value: Dictionary) -> int:
                             match value:
-                                {"k": var v}:
-                                    return v
+                                {1 + 2, null: _, &'active': _, ^'Node/Child': var found, ..}:
+                                    return 1
                                 _:
                                     return 0
-                        """,
-                Map.of("BodyInsnMatchDict", "RuntimeBodyInsnMatchDict"),
-                true
+                        """)),
+                Map.of("BodyInsnFoldedMatchKeys", "RuntimeBodyInsnFoldedMatchKeys")
         );
-        var pingContext = requireContext(
-                prepared.context().requireFunctionLoweringContexts(),
-                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
-                "RuntimeBodyInsnMatchDict",
-                "ping"
+        var function = assertInstanceOf(FunctionDeclaration.class, module.units().getFirst().ast().statements().getLast());
+        var match = assertInstanceOf(MatchStatement.class, function.body().statements().getFirst());
+        var dictionary = assertInstanceOf(DictionaryExpression.class, match.sections().getFirst().patterns().getFirst());
+        var foldedKeys = List.of(
+                new GdConstantValue.IntValue(3),
+                new GdConstantValue.NullValue(),
+                new GdConstantValue.StringNameValue("active"),
+                new GdConstantValue.NodePathValue("Node/Child")
         );
-        new FrontendLoweringBodyInsnPass().run(prepared.context());
-        var function = pingContext.targetFunction();
-        var instructions = allInstructions(function);
-        assertAll(
-                () -> assertFalse(prepared.diagnostics().hasErrors()),
-                () -> assertTrue(instructions.stream()
-                        .filter(CallMethodInsn.class::isInstance)
-                        .map(CallMethodInsn.class::cast)
-                        .anyMatch(insn -> insn.methodName().equals("has"))),
-                () -> assertTrue(instructions.stream()
-                        .filter(CallMethodInsn.class::isInstance)
-                        .map(CallMethodInsn.class::cast)
-                        .anyMatch(insn -> insn.methodName().equals("size"))),
-                () -> assertEquals(1, countInstructions(instructions, VariantGetKeyedInsn.class)),
-                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(function, "v")),
-                () -> assertTrue(assignSourcesByTarget(instructions).containsKey("v"))
-        );
-    }
+        assertEquals(foldedKeys.size(), dictionary.entries().size());
+        var suiteResolver = new FrontendSuiteResolver() {
+            @Override
+            public void resolve(
+                    @NotNull FrontendInterfaceSurface interfaceSurface,
+                    @NotNull ClassRegistry classRegistry,
+                    @NotNull FrontendAnalysisData analysisData,
+                    @NotNull DiagnosticManager diagnosticManager
+            ) {
+                super.resolve(interfaceSurface, classRegistry, analysisData, diagnosticManager);
+                for (var index = 0; index < foldedKeys.size(); index++) {
+                    analysisData.constantFacts().put(
+                            dictionary.entries().get(index).key(), new Evaluation.Resolved(foldedKeys.get(index))
+                    );
+                }
+            }
+        };
+        var diagnostics = new DiagnosticManager();
+        var context = new FrontendLoweringContext(module, new ClassRegistry(ExtensionApiLoader.loadDefault()), diagnostics);
+        new FrontendLoweringAnalysisPass(new FrontendSemanticAnalyzer(new FrontendInterfacePhase(), suiteResolver)).run(context);
+        assertFalse(diagnostics.hasErrors(), () -> diagnostics.snapshot().toString());
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        new FrontendLoweringBodyInsnPass().run(context);
 
-    @Test
-    void runLowersNestedDictionaryInArrayWithBothFetchKinds() throws Exception {
-        var prepared = prepareContext(
-                "body_insn_match_nested.gd",
-                """
-                        class_name BodyInsnMatchNested
-                        extends RefCounted
-                        
-                        func ping(value) -> int:
-                            match value:
-                                [{"k": var x}]:
-                                    return x
-                                _:
-                                    return 0
-                        """,
-                Map.of("BodyInsnMatchNested", "RuntimeBodyInsnMatchNested"),
-                true
-        );
-        var pingContext = requireContext(
-                prepared.context().requireFunctionLoweringContexts(),
+        var ping = requireContext(
+                context.requireFunctionLoweringContexts(),
                 FunctionLoweringContext.Kind.EXECUTABLE_BODY,
-                "RuntimeBodyInsnMatchNested",
+                "RuntimeBodyInsnFoldedMatchKeys",
                 "ping"
-        );
-        new FrontendLoweringBodyInsnPass().run(prepared.context());
-        var instructions = allInstructions(pingContext.targetFunction());
+        ).targetFunction();
+        var instructions = allInstructions(ping);
+        var calls = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(call -> call.methodName().equals("has"))
+                .toList();
+        var packedSourceByTarget = instructions.stream()
+                .filter(PackVariantInsn.class::isInstance)
+                .map(PackVariantInsn.class::cast)
+                .collect(Collectors.toMap(PackVariantInsn::resultId, PackVariantInsn::valueId));
+        var emittedKeys = new LinkedHashSet<GdConstantValue>();
+        for (var call : calls) {
+            var argument = assertInstanceOf(LirInstruction.VariableOperand.class, call.args().getFirst());
+            var source = packedSourceByTarget.get(argument.id());
+            assertNotNull(source);
+            var literal = instructions.stream().filter(insn -> source.equals(insn.resultId())).findFirst().orElseThrow();
+            emittedKeys.add(switch (literal) {
+                case LiteralIntInsn value -> new GdConstantValue.IntValue(value.value());
+                case LiteralNilInsn _ -> new GdConstantValue.NullValue();
+                case LiteralStringNameInsn value -> new GdConstantValue.StringNameValue(value.value());
+                case LiteralNodePathInsn value -> new GdConstantValue.NodePathValue(value.value());
+                default -> fail("Expected a literal for dictionary key but found " + literal);
+            });
+        }
+        var fetches = instructions.stream()
+                .filter(VariantGetKeyedInsn.class::isInstance)
+                .map(VariantGetKeyedInsn.class::cast)
+                .toList();
+        var nodePathLiteral = instructions.stream()
+                .filter(LiteralNodePathInsn.class::isInstance)
+                .map(LiteralNodePathInsn.class::cast)
+                .findFirst()
+                .orElseThrow();
         assertAll(
-                () -> assertFalse(prepared.diagnostics().hasErrors()),
-                () -> assertEquals(1, countInstructions(instructions, VariantGetIndexedInsn.class)),
-                () -> assertEquals(1, countInstructions(instructions, VariantGetKeyedInsn.class)),
-                () -> assertTrue(instructions.stream()
-                        .filter(CallMethodInsn.class::isInstance)
-                        .map(CallMethodInsn.class::cast)
-                        .filter(insn -> insn.methodName().equals("size"))
-                        .count() >= 2)
+                () -> assertEquals(foldedKeys.size(), calls.size()),
+                () -> assertEquals(Set.copyOf(foldedKeys), emittedKeys),
+                () -> assertEquals(1, fetches.size()),
+                () -> assertEquals(nodePathLiteral.resultId(), packedSourceByTarget.get(fetches.getFirst().keyId())),
+                () -> assertEquals(1, countInstructions(instructions, BinaryOpInsn.class), "Only the length check needs a binary op")
         );
     }
 
@@ -13646,7 +13761,7 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(GodotOperator.NOT, notInsn.op()),
                 () -> assertEquals(inInsn.resultId(), notInsn.operandId()),
                 () -> assertTrue(
-                        instructions.indexOf(inInsn) >= 0 && instructions.indexOf(inInsn) < instructions.indexOf(notInsn),
+                        instructions.contains(inInsn) && instructions.indexOf(inInsn) < instructions.indexOf(notInsn),
                         "BinaryOpInsn(IN) must precede UnaryOpInsn(NOT) in the lowered instruction stream"
                 ),
                 () -> assertEquals(notInsn.resultId(), branch.conditionVarId()),
@@ -13699,7 +13814,7 @@ class FrontendLoweringBodyInsnPassTest {
     ) {
         bindings.compute(
                 identifierExpression,
-                (k, originalBinding) -> new FrontendBinding(
+                (_, originalBinding) -> new FrontendBinding(
                         "self",
                         FrontendBindingKind.SELF,
                         originalBinding == null ? identifierExpression : originalBinding.declarationSite()

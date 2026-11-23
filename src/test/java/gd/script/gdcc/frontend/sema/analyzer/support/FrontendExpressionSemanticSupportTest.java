@@ -5,13 +5,16 @@ import java.util.*;
 import java.util.function.Predicate;
 
 import org.jetbrains.annotations.NotNull;
+
 import static org.junit.jupiter.api.Assertions.*;
+
 import org.junit.jupiter.api.Test;
 
 import dev.superice.gdparser.frontend.ast.*;
 import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.scope.*;
@@ -26,6 +29,154 @@ import gd.script.gdcc.type.*;
 
 class FrontendExpressionSemanticSupportTest {
     private static final @NotNull Range TINY = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
+    @Test
+    void resolveIntegerLiteralsRejectsSignedOverflowWithoutPublishingType() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("integer_bounds.gd"), """
+                var highest = 9223372036854775807
+                var overflow = 9223372036854775808
+                var hex_overflow = 0xFFFFFFFFFFFFFFFF
+                """, diagnostics);
+        assertTrue(diagnostics.isEmpty());
+        var literals = unit.ast().statements().stream()
+                .map(statement -> assertInstanceOf(VariableDeclaration.class, statement))
+                .map(declaration -> assertInstanceOf(LiteralExpression.class, declaration.value()))
+                .toList();
+        var support = newBareSupport();
+        assertEquals(
+                FrontendExpressionType.resolved(GdIntType.INT),
+                support.resolveLiteralExpressionType(literals.getFirst()).expressionType()
+        );
+        assertEquals(
+                FrontendExpressionType.resolved(GdFloatType.FLOAT),
+                support.resolveLiteralExpressionType(new LiteralExpression("number", "1.5", TINY)).expressionType()
+        );
+        for (var literal : List.of(
+                literals.get(1), literals.getLast(), new LiteralExpression("number", "9223372036854775808", TINY)
+        )) {
+            var result = support.resolveLiteralExpressionType(literal);
+            assertTrue(result.rootOwnsOutcome());
+            assertEquals(
+                    FrontendExpressionType.failed(
+                            "Integer literal '" + literal.sourceText() + "' is malformed or overflows 64-bit signed int"
+                    ),
+                    result.expressionType()
+            );
+        }
+    }
+
+    @Test
+    void finalizeExpressionTypingVisitsIndependentOperandsAndKeepsFirstFailure() throws Exception {
+        var support = newBareSupport();
+        var first = identifier("first");
+        var second = identifier("second");
+        var third = identifier("third");
+        var condition = identifier("condition");
+        var firstFailure = FrontendExpressionType.failed("first dependency");
+        var secondFailure = FrontendExpressionType.failed("second dependency");
+        var expectedArray = new GdArrayType(GdIntType.INT);
+        for (var finalizeWindow : List.of(false, true)) {
+            var visited = new ArrayList<Expression>();
+            NestedExpressionResolver resolver = (expression, actualWindow) -> {
+                assertEquals(finalizeWindow, actualWindow);
+                visited.add(expression);
+                return expression == first ? firstFailure : secondFailure;
+            };
+            var binary = support.resolveBinaryExpressionType(
+                    new BinaryExpression("+", first, second, TINY), resolver, finalizeWindow
+            );
+            assertEquals(finalizeWindow ? List.of(first, second) : List.of(first), visited);
+            assertEquals(firstFailure, binary.expressionType());
+            assertFalse(binary.rootOwnsOutcome());
+
+            visited.clear();
+            var subscript = support.resolveSubscriptExpressionType(
+                    new SubscriptExpression(first, List.of(second, third), TINY), resolver, finalizeWindow
+            );
+            assertEquals(finalizeWindow ? List.of(first, second, third) : List.of(first), visited);
+            assertEquals(firstFailure, subscript.expressionType());
+            assertFalse(subscript.rootOwnsOutcome());
+
+            visited.clear();
+            var conditional = new ConditionalExpression(condition, first, second, TINY);
+            var conditionalResult = support.resolveConditionalExpressionType(
+                    conditional, (expression, window, contextualType) -> {
+                        if (expression == condition) {
+                            assertNull(contextualType);
+                            visited.add(condition);
+                            return FrontendExpressionType.resolved(GdIntType.INT);
+                        }
+                        assertSame(expectedArray, contextualType);
+                        return resolver.resolve(expression, window);
+                    }, finalizeWindow, expectedArray
+            );
+            assertEquals(finalizeWindow ? List.of(condition, first, second) : List.of(condition, first), visited);
+            assertEquals(firstFailure, conditionalResult.expressionType());
+            assertFalse(conditionalResult.rootOwnsOutcome());
+
+            var failedCondition = support.resolveConditionalExpressionType(conditional, (expression, _, _) -> {
+                assertSame(condition, expression, "an unstable condition must not visit either arm");
+                return secondFailure;
+            }, finalizeWindow, expectedArray);
+            assertEquals(secondFailure, failedCondition.expressionType());
+            assertFalse(failedCondition.rootOwnsOutcome());
+        }
+    }
+
+    @Test
+    void finalizeCallArgumentsContinuesWithSelectedFixedParameterTypes() throws Exception {
+        var analyzed = analyze("finalize_call_arguments.gd", """
+                class_name FinalizeCallArguments
+                extends RefCounted
+                
+                func take(first: int, second: String, third: Array[int]) -> int:
+                    return first
+                
+                func probe():
+                    take(1, "ok", [1])
+                """);
+        var probe = findFunction(analyzed.ast(), "probe");
+        var statement = assertInstanceOf(ExpressionStatement.class, probe.body().statements().getFirst());
+        var call = assertInstanceOf(CallExpression.class, statement.expression());
+        var arguments = call.arguments();
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var firstFailure = FrontendExpressionType.failed("first argument");
+
+        var preview = support.resolveCallExpressionType(call, (expression, window, _) -> {
+            assertFalse(window);
+            if (expression == call.callee()) {
+                return FrontendExpressionType.resolved(new GdCallableType());
+            }
+            assertSame(arguments.getFirst(), expression, "preview must stop at the first unstable argument");
+            return firstFailure;
+        }, true, false);
+        assertEquals(firstFailure, preview.expressionType());
+        assertFalse(preview.rootOwnsOutcome());
+
+        var finalized = new ArrayList<Expression>();
+        var finalizedTypes = new ArrayList<GdType>();
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var result = support.resolveCallExpressionType(call, (expression, window, expectedType) -> {
+            if (!window || expression == call.callee()) {
+                return publishedResolver.resolve(expression, false);
+            }
+            finalized.add(expression);
+            finalizedTypes.add(expectedType);
+            if (expression == arguments.getFirst()) {
+                return firstFailure;
+            }
+            if (expression == arguments.get(1)) {
+                return FrontendExpressionType.failed("second argument");
+            }
+            return publishedResolver.resolve(expression, false);
+        }, true, true);
+        assertEquals(arguments, finalized);
+        assertEquals(List.of(GdIntType.INT, GdStringType.STRING, new GdArrayType(GdIntType.INT)), finalizedTypes);
+        assertEquals(firstFailure, result.expressionType());
+        assertFalse(result.rootOwnsOutcome());
+        assertNull(result.publishedCallOrNull());
+    }
 
     @Test
     void resolveIdentifierExpressionTypeMaterializesCallableValuesAndRejectsBareTypeMeta() throws Exception {
@@ -469,10 +620,9 @@ class FrontendExpressionSemanticSupportTest {
                 },
                 () -> {
                     // Cast is no longer deferred: Variant source + hard target publishes RESOLVED(target).
-                    var publishedCastType = castType;
-                    assertNotNull(publishedCastType);
-                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, publishedCastType.status());
-                    assertEquals("int", publishedCastType.publishedType().getTypeName());
+                    assertNotNull(castType);
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, castType.status());
+                    assertEquals("int", castType.publishedType().getTypeName());
                 }
         );
     }
@@ -815,7 +965,7 @@ class FrontendExpressionSemanticSupportTest {
                 .map(UnaryExpression.class::cast)
                 .toList();
 
-        var negateResult = support.resolveUnaryExpressionType(expressions.get(0), publishedResolver, false);
+        var negateResult = support.resolveUnaryExpressionType(expressions.getFirst(), publishedResolver, false);
         assertTrue(negateResult.rootOwnsOutcome());
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, negateResult.expressionType().status());
         assertEquals("int", negateResult.expressionType().publishedType().getTypeName());
@@ -866,7 +1016,7 @@ class FrontendExpressionSemanticSupportTest {
         var support = newBareSupport();
         var unknownOperatorResult = support.resolveUnaryExpressionType(
                 new UnaryExpression("??", integerLiteral("1"), TINY),
-                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdIntType.INT),
+                (_, _) -> FrontendExpressionType.resolved(GdIntType.INT),
                 false
         );
         assertTrue(unknownOperatorResult.rootOwnsOutcome());
@@ -1046,7 +1196,7 @@ class FrontendExpressionSemanticSupportTest {
                 .map(ExpressionStatement::expression)
                 .map(BinaryExpression.class::cast)
                 .toList();
-        var pointType = publishedResolver.resolve(((BinaryExpression) expressions.getFirst()).left(), false);
+        var pointType = publishedResolver.resolve(expressions.getFirst().left(), false);
         assertEquals(
                 new GdObjectType("ExpressionSemanticSupportObjectNilBinary__sub__Point"),
                 pointType.publishedType()
@@ -1172,7 +1322,7 @@ class FrontendExpressionSemanticSupportTest {
                 .map(BinaryExpression.class::cast)
                 .toList();
 
-        var resolvedInResult = support.resolveBinaryExpressionType(expressions.get(0), publishedResolver, false);
+        var resolvedInResult = support.resolveBinaryExpressionType(expressions.getFirst(), publishedResolver, false);
         assertTrue(resolvedInResult.rootOwnsOutcome());
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, resolvedInResult.expressionType().status());
         assertEquals("bool", resolvedInResult.expressionType().publishedType().getTypeName());
@@ -1189,7 +1339,7 @@ class FrontendExpressionSemanticSupportTest {
 
         var unknownOperatorResult = newBareSupport().resolveBinaryExpressionType(
                 new BinaryExpression("??", integerLiteral("1"), integerLiteral("2"), TINY),
-                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdIntType.INT),
+                (_, _) -> FrontendExpressionType.resolved(GdIntType.INT),
                 false
         );
         assertTrue(unknownOperatorResult.rootOwnsOutcome());
@@ -1203,7 +1353,7 @@ class FrontendExpressionSemanticSupportTest {
 
         var logicalAndResult = support.resolveBinaryExpressionType(
                 new BinaryExpression("&&", integerLiteral("1"), integerLiteral("2"), TINY),
-                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdIntType.INT),
+                (_, _) -> FrontendExpressionType.resolved(GdIntType.INT),
                 false
         );
         assertTrue(logicalAndResult.rootOwnsOutcome());
@@ -1212,7 +1362,7 @@ class FrontendExpressionSemanticSupportTest {
 
         var logicalOrResult = support.resolveBinaryExpressionType(
                 new BinaryExpression("||", identifier("payload"), integerLiteral("0"), TINY),
-                (expression, finalizeWindow) -> expression instanceof IdentifierExpression
+                (expression, _) -> expression instanceof IdentifierExpression
                         ? FrontendExpressionType.dynamic("synthetic runtime-open payload")
                         : FrontendExpressionType.resolved(GdIntType.INT),
                 false
@@ -1229,7 +1379,7 @@ class FrontendExpressionSemanticSupportTest {
         // Happy path: a typed Variant right operand keeps static String precision.
         var variantRightResult = support.resolveBinaryExpressionType(
                 new BinaryExpression("%", identifier("fmt"), identifier("payload"), TINY),
-                (expression, finalizeWindow) -> expression instanceof IdentifierExpression identifier
+                (expression, _) -> expression instanceof IdentifierExpression identifier
                         && identifier.name().equals("fmt")
                         ? FrontendExpressionType.resolved(GdStringType.STRING)
                         : FrontendExpressionType.resolved(GdVariantType.VARIANT),
@@ -1242,7 +1392,7 @@ class FrontendExpressionSemanticSupportTest {
         // Happy path: an untyped (dynamic) right operand keeps static String precision.
         var dynamicRightResult = support.resolveBinaryExpressionType(
                 new BinaryExpression("%", identifier("fmt"), identifier("payload"), TINY),
-                (expression, finalizeWindow) -> expression instanceof IdentifierExpression identifier
+                (expression, _) -> expression instanceof IdentifierExpression identifier
                         && identifier.name().equals("fmt")
                         ? FrontendExpressionType.resolved(GdStringType.STRING)
                         : FrontendExpressionType.dynamic("synthetic runtime-open payload"),
@@ -1260,7 +1410,7 @@ class FrontendExpressionSemanticSupportTest {
         // Invariant: exact static right operands still resolve through metadata unchanged.
         var exactIntResult = support.resolveBinaryExpressionType(
                 new BinaryExpression("%", identifier("fmt"), identifier("value"), TINY),
-                (expression, finalizeWindow) -> expression instanceof IdentifierExpression identifier
+                (expression, _) -> expression instanceof IdentifierExpression identifier
                         && identifier.name().equals("fmt")
                         ? FrontendExpressionType.resolved(GdStringType.STRING)
                         : FrontendExpressionType.resolved(GdIntType.INT),
@@ -1274,7 +1424,7 @@ class FrontendExpressionSemanticSupportTest {
         // has no entry for "Node"), and the FAILED detail wording stays unchanged.
         var nodeRightResult = support.resolveBinaryExpressionType(
                 new BinaryExpression("%", identifier("fmt"), identifier("node"), TINY),
-                (expression, finalizeWindow) -> expression instanceof IdentifierExpression identifier
+                (expression, _) -> expression instanceof IdentifierExpression identifier
                         && identifier.name().equals("fmt")
                         ? FrontendExpressionType.resolved(GdStringType.STRING)
                         : FrontendExpressionType.resolved(new GdObjectType("Node")),
@@ -1289,7 +1439,7 @@ class FrontendExpressionSemanticSupportTest {
         // Negative: a `null` right operand stays fail-closed and reports the Nil type name.
         var nilRightResult = support.resolveBinaryExpressionType(
                 new BinaryExpression("%", identifier("fmt"), identifier("payload"), TINY),
-                (expression, finalizeWindow) -> expression instanceof IdentifierExpression identifier
+                (expression, _) -> expression instanceof IdentifierExpression identifier
                         && identifier.name().equals("fmt")
                         ? FrontendExpressionType.resolved(GdStringType.STRING)
                         : FrontendExpressionType.resolved(GdNilType.NIL),
@@ -1304,7 +1454,7 @@ class FrontendExpressionSemanticSupportTest {
         // Negative: MODULE with a non-String left operand is unchanged numeric-modulo semantics.
         var intLeftResult = support.resolveBinaryExpressionType(
                 new BinaryExpression("%", identifier("value"), identifier("fmt"), TINY),
-                (expression, finalizeWindow) -> expression instanceof IdentifierExpression identifier
+                (expression, _) -> expression instanceof IdentifierExpression identifier
                         && identifier.name().equals("fmt")
                         ? FrontendExpressionType.resolved(GdStringType.STRING)
                         : FrontendExpressionType.resolved(GdIntType.INT),
@@ -1319,7 +1469,7 @@ class FrontendExpressionSemanticSupportTest {
         // Invariant: a runtime-open left operand still routes through Variant semantics.
         var variantLeftResult = support.resolveBinaryExpressionType(
                 new BinaryExpression("%", identifier("payload"), identifier("value"), TINY),
-                (expression, finalizeWindow) -> expression instanceof IdentifierExpression identifier
+                (expression, _) -> expression instanceof IdentifierExpression identifier
                         && identifier.name().equals("payload")
                         ? FrontendExpressionType.resolved(GdVariantType.VARIANT)
                         : FrontendExpressionType.resolved(GdIntType.INT),
@@ -1332,7 +1482,7 @@ class FrontendExpressionSemanticSupportTest {
         // Invariant: a StringName left operand does not use the String-format precision rule.
         var stringNameLeftResult = support.resolveBinaryExpressionType(
                 new BinaryExpression("%", identifier("fmt"), identifier("payload"), TINY),
-                (expression, finalizeWindow) -> expression instanceof IdentifierExpression identifier
+                (expression, _) -> expression instanceof IdentifierExpression identifier
                         && identifier.name().equals("fmt")
                         ? FrontendExpressionType.resolved(GdStringNameType.STRING_NAME)
                         : FrontendExpressionType.resolved(GdVariantType.VARIANT),
@@ -1351,7 +1501,7 @@ class FrontendExpressionSemanticSupportTest {
         // container normalization entries (Array[T] -> "Array", Dictionary[K,V] -> "Dictionary")
         // and the exact-name "Object" entry. The full matrix is inherited from the Godot
         // evaluator and is not enumerated exhaustively here.
-        var sampledRightTypes = List.<GdType>of(
+        var sampledRightTypes = List.of(
                 GdIntType.INT,
                 GdFloatType.FLOAT,
                 GdBoolType.BOOL,
@@ -1366,7 +1516,7 @@ class FrontendExpressionSemanticSupportTest {
         for (var rightType : sampledRightTypes) {
             var result = support.resolveBinaryExpressionType(
                     new BinaryExpression("%", identifier("fmt"), identifier("payload"), TINY),
-                    (expression, finalizeWindow) -> expression instanceof IdentifierExpression identifier
+                    (expression, _) -> expression instanceof IdentifierExpression identifier
                             && identifier.name().equals("fmt")
                             ? FrontendExpressionType.resolved(GdStringType.STRING)
                             : FrontendExpressionType.resolved(rightType),
@@ -1498,7 +1648,7 @@ class FrontendExpressionSemanticSupportTest {
         var right = identifier("right_arm");
         var conditional = new ConditionalExpression(condition, left, right, TINY);
         FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver resolver =
-                (expression, finalizeWindow, expectedType) -> {
+                (expression, _, _) -> {
                     if (expression == condition) {
                         return FrontendExpressionType.failed("synthetic condition failure");
                     }
@@ -1549,7 +1699,7 @@ class FrontendExpressionSemanticSupportTest {
         var right = identifier("right_arm");
         var conditional = new ConditionalExpression(condition, left, right, TINY);
         FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver resolver =
-                (expression, finalizeWindow, expectedType) -> {
+                (expression, _, expectedType) -> {
                     if (expression == condition) {
                         assertNull(expectedType, "condition must resolve in a pure control-flow context");
                         return FrontendExpressionType.resolved(GdIntType.INT);
@@ -1596,7 +1746,7 @@ class FrontendExpressionSemanticSupportTest {
         var right = identifier("right_arm");
         var conditional = new ConditionalExpression(condition, left, right, TINY);
         FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver resolver =
-                (expression, finalizeWindow, expectedType) -> {
+                (expression, _, _) -> {
                     if (expression == condition) {
                         return conditionType;
                     }
@@ -1617,7 +1767,6 @@ class FrontendExpressionSemanticSupportTest {
         var support = newBareSupport();
         var nestedResolver = resolvedVariantResolver();
         var typeRef = new TypeRef("String", TINY);
-        var literal = integerLiteral("1");
         var cases = List.of(
                 new RemainingExpressionCase(
                         new PatternBindingExpression("captured", TINY),
@@ -2265,7 +2414,7 @@ class FrontendExpressionSemanticSupportTest {
         var noParamSignal = new AwaitExpression(identifier("pinged"), TINY);
         var noParamResult = support.resolveAwaitExpressionType(
                 noParamSignal,
-                (expression, finalizeWindow) -> FrontendExpressionType.resolved(new GdSignalType()),
+                (_, _) -> FrontendExpressionType.resolved(new GdSignalType()),
                 _ -> null,
                 null,
                 false
@@ -2280,7 +2429,7 @@ class FrontendExpressionSemanticSupportTest {
         var oneParamSignal = new AwaitExpression(identifier("pinged"), TINY);
         var oneParamResult = support.resolveAwaitExpressionType(
                 oneParamSignal,
-                (expression, finalizeWindow) -> FrontendExpressionType.resolved(
+                (_, _) -> FrontendExpressionType.resolved(
                         new GdSignalType(List.of(GdIntType.INT))
                 ),
                 _ -> null,
@@ -2295,7 +2444,7 @@ class FrontendExpressionSemanticSupportTest {
         var multiParamSignal = new AwaitExpression(identifier("pinged"), TINY);
         var multiParamResult = support.resolveAwaitExpressionType(
                 multiParamSignal,
-                (expression, finalizeWindow) -> FrontendExpressionType.resolved(
+                (_, _) -> FrontendExpressionType.resolved(
                         new GdSignalType(List.of(GdIntType.INT, GdStringType.STRING))
                 ),
                 _ -> null,
@@ -2321,7 +2470,7 @@ class FrontendExpressionSemanticSupportTest {
         var dynamicAwait = new AwaitExpression(identifier("target"), TINY);
         var dynamicResult = support.resolveAwaitExpressionType(
                 dynamicAwait,
-                (expression, finalizeWindow) -> FrontendExpressionType.dynamic("runtime-dynamic operand"),
+                (_, _) -> FrontendExpressionType.dynamic("runtime-dynamic operand"),
                 _ -> null,
                 null,
                 false
@@ -2367,7 +2516,7 @@ class FrontendExpressionSemanticSupportTest {
 
         var result = support.resolveAwaitExpressionType(
                 new AwaitExpression(callOperand, TINY),
-                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdIntType.INT),
+                (_, _) -> FrontendExpressionType.resolved(GdIntType.INT),
                 expression -> expression == callOperand ? operandCall : null,
                 null,
                 false
@@ -2391,7 +2540,7 @@ class FrontendExpressionSemanticSupportTest {
         );
         var voidResult = support.resolveAwaitExpressionType(
                 new AwaitExpression(callOperand, TINY),
-                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdVoidType.VOID),
+                (_, _) -> FrontendExpressionType.resolved(GdVoidType.VOID),
                 expression -> expression == callOperand ? voidCall : null,
                 null,
                 false
@@ -2419,7 +2568,7 @@ class FrontendExpressionSemanticSupportTest {
 
         var result = support.resolveAwaitExpressionType(
                 new AwaitExpression(callOperand, TINY),
-                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdVariantType.VARIANT),
+                (_, _) -> FrontendExpressionType.resolved(GdVariantType.VARIANT),
                 expression -> expression == callOperand ? variantCall : null,
                 null,
                 false
@@ -2447,7 +2596,7 @@ class FrontendExpressionSemanticSupportTest {
         );
         var signalResult = support.resolveAwaitExpressionType(
                 new AwaitExpression(callOperand, TINY),
-                (expression, finalizeWindow) -> FrontendExpressionType.resolved(signalCall.returnType()),
+                (_, _) -> FrontendExpressionType.resolved(signalCall.returnType()),
                 expression -> expression == callOperand ? signalCall : null,
                 null,
                 false
@@ -2483,7 +2632,7 @@ class FrontendExpressionSemanticSupportTest {
         );
         var voidResult = support.resolveAwaitExpressionType(
                 new AwaitExpression(callOperand, TINY),
-                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdVoidType.VOID),
+                (_, _) -> FrontendExpressionType.resolved(GdVoidType.VOID),
                 expression -> expression == callOperand ? voidCall : null,
                 null,
                 false
@@ -2505,7 +2654,7 @@ class FrontendExpressionSemanticSupportTest {
 
         var plainValueResult = support.resolveAwaitExpressionType(
                 new AwaitExpression(identifier("counter"), TINY),
-                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdIntType.INT),
+                (_, _) -> FrontendExpressionType.resolved(GdIntType.INT),
                 _ -> null,
                 null,
                 false
@@ -2522,7 +2671,7 @@ class FrontendExpressionSemanticSupportTest {
 
         var boundaryResult = support.resolveAwaitExpressionType(
                 new AwaitExpression(identifier("pinged"), TINY),
-                (expression, finalizeWindow) -> FrontendExpressionType.resolved(new GdSignalType()),
+                (_, _) -> FrontendExpressionType.resolved(new GdSignalType()),
                 _ -> null,
                 // The lambda boundary accepts await; the property-initializer
                 // boundary stays fail-closed and anchors the classifier's reason pass-through.
@@ -2542,7 +2691,7 @@ class FrontendExpressionSemanticSupportTest {
         var dependencyIssue = FrontendExpressionType.blocked(GdIntType.INT, "operand still blocked");
         var result = support.resolveAwaitExpressionType(
                 new AwaitExpression(identifier("blocked_operand"), TINY),
-                (expression, finalizeWindow) -> dependencyIssue,
+                (_, _) -> dependencyIssue,
                 _ -> null,
                 null,
                 false
@@ -3026,84 +3175,60 @@ class FrontendExpressionSemanticSupportTest {
                             var as_variant = hard_int as Variant
                             var as_float = hard_int as float
                             var unknown = value as FutureEnemy
-                            var as_void = value as void
-                            var nested = value as Array[Array[int]]
                         """
         );
         var function = findFunction(analyzed.ast(), "probe");
         var casts = findNodes(function, CastExpression.class, _ -> true);
-        assertEquals(6, casts.size());
-
-        var asInt = casts.stream()
-                .filter(cast -> cast.targetType().sourceText().equals("int"))
-                .findFirst()
-                .orElseThrow();
-        var asVariant = casts.stream()
-                .filter(cast -> cast.targetType().sourceText().equals("Variant"))
-                .findFirst()
-                .orElseThrow();
-        var asFloat = casts.stream()
-                .filter(cast -> cast.targetType().sourceText().equals("float"))
-                .findFirst()
-                .orElseThrow();
-        var unknown = casts.stream()
-                .filter(cast -> cast.targetType().sourceText().equals("FutureEnemy"))
-                .findFirst()
-                .orElseThrow();
-        var asVoid = casts.stream()
-                .filter(cast -> cast.targetType().sourceText().equals("void"))
-                .findFirst()
-                .orElseThrow();
-        var nested = casts.stream()
-                .filter(cast -> cast.targetType().sourceText().equals("Array[Array[int]]"))
-                .findFirst()
-                .orElseThrow();
+        assertEquals(
+                List.of("int", "Variant", "float", "FutureEnemy"),
+                casts.stream().map(cast -> cast.targetType().sourceText()).toList()
+        );
+        var asInt = casts.getFirst();
+        var asVariant = casts.get(1);
+        var asFloat = casts.get(2);
+        var unknown = casts.getLast();
 
         var asIntType = analyzed.analysisData().expressionTypes().get(asInt);
         assertNotNull(asIntType);
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, asIntType.status());
-        assertEquals("int", asIntType.publishedType().getTypeName());
+        assertEquals(GdIntType.INT, asIntType.publishedType());
 
         var asVariantType = analyzed.analysisData().expressionTypes().get(asVariant);
         assertNotNull(asVariantType);
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, asVariantType.status());
-        assertEquals("Variant", asVariantType.publishedType().getTypeName());
+        assertEquals(GdVariantType.VARIANT, asVariantType.publishedType());
 
         var asFloatType = analyzed.analysisData().expressionTypes().get(asFloat);
         assertNotNull(asFloatType);
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, asFloatType.status());
-        assertEquals("float", asFloatType.publishedType().getTypeName());
+        assertEquals(GdFloatType.FLOAT, asFloatType.publishedType());
 
         var unknownType = analyzed.analysisData().expressionTypes().get(unknown);
         assertNotNull(unknownType);
         assertEquals(FrontendExpressionTypeStatus.FAILED, unknownType.status());
+        assertNull(unknownType.publishedType());
 
-        var voidType = analyzed.analysisData().expressionTypes().get(asVoid);
-        assertNotNull(voidType);
-        assertEquals(FrontendExpressionTypeStatus.FAILED, voidType.status());
-
-        var nestedType = analyzed.analysisData().expressionTypes().get(nested);
-        assertNotNull(nestedType);
-        assertEquals(FrontendExpressionTypeStatus.FAILED, nestedType.status());
-
-        var unsafeWarnings = analyzed.analysisData().diagnostics().asList().stream()
+        var diagnostics = analyzed.analysisData().diagnostics().asList();
+        assertEquals(
+                2, diagnostics.size(), () -> "Expected only the cast warning and unknown target error: " + diagnostics
+        );
+        var unsafeWarnings = diagnostics.stream()
                 .filter(diagnostic -> diagnostic.category().equals("sema.unsafe_cast"))
                 .toList();
-        assertEquals(1, unsafeWarnings.size(), () -> "Expected one unsafe_cast warning, got: " + unsafeWarnings);
-        assertEquals(FrontendDiagnosticSeverity.WARNING, unsafeWarnings.getFirst().severity());
-        assertTrue(unsafeWarnings.getFirst().message().contains("Variant"));
-        assertTrue(unsafeWarnings.getFirst().message().contains("int"));
+        assertEquals(1, unsafeWarnings.size());
+        var warning = unsafeWarnings.getFirst();
+        assertEquals(FrontendDiagnosticSeverity.WARNING, warning.severity());
+        assertEquals("Casting \"Variant\" to \"int\" is unsafe.", warning.message());
+        assertEquals(FrontendRange.fromAstRange(asInt.range()), warning.range());
 
-        // value as Variant must not warn; hard int as float must not warn.
-        assertTrue(unsafeWarnings.stream().noneMatch(d -> d.message().contains("float")));
-
-        var expressionErrors = analyzed.analysisData().diagnostics().asList().stream()
+        var expressionErrors = diagnostics.stream()
                 .filter(diagnostic -> diagnostic.category().equals("sema.expression_resolution"))
                 .toList();
-        assertEquals(3, expressionErrors.size(), () -> "Expected three resolution errors, got: " + expressionErrors);
-        assertTrue(expressionErrors.stream().anyMatch(d -> d.message().contains("FutureEnemy")));
-        assertTrue(expressionErrors.stream().anyMatch(d -> d.message().contains("void")));
-        assertTrue(expressionErrors.stream().anyMatch(d -> d.message().contains("Array[Array[int]]")));
+        assertEquals(1, expressionErrors.size());
+        var error = expressionErrors.getFirst();
+        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
+        assertEquals("Cast target type 'FutureEnemy' cannot be resolved in the current scope", error.message());
+        assertEquals(FrontendRange.fromAstRange(unknown.range()), error.range());
     }
 
     @Test
@@ -3362,14 +3487,14 @@ class FrontendExpressionSemanticSupportTest {
                 ),
                 List.of(GdIntType.INT, GdStringType.STRING)
         );
-        assertTrue(crossParameterAmbiguousSelection.selected() == null);
+        assertNull(crossParameterAmbiguousSelection.selected());
         assertTrue(crossParameterAmbiguousSelection.detailReason().contains("Ambiguous bare call overload"));
 
         var stringFamilyVariantAmbiguousSelection = support.selectCallableOverload(
                 List.of(directString, stringNameBoundary),
                 List.of(GdVariantType.VARIANT)
         );
-        assertTrue(stringFamilyVariantAmbiguousSelection.selected() == null);
+        assertNull(stringFamilyVariantAmbiguousSelection.selected());
         assertTrue(stringFamilyVariantAmbiguousSelection.detailReason().contains("Ambiguous bare call overload"));
 
         var variantAmbiguous = List.of(
@@ -3380,11 +3505,11 @@ class FrontendExpressionSemanticSupportTest {
                 variantAmbiguous,
                 List.of(GdVariantType.VARIANT)
         );
-        assertTrue(variantAmbiguousSelection.selected() == null);
+        assertNull(variantAmbiguousSelection.selected());
         assertTrue(variantAmbiguousSelection.detailReason().contains("Ambiguous bare call overload"));
 
         var emptySelection = support.selectCallableOverload(List.of(), List.of(GdIntType.INT));
-        assertTrue(emptySelection.selected() == null);
+        assertNull(emptySelection.selected());
         assertEquals("Bare call resolves to an empty overload set", emptySelection.detailReason());
     }
 
@@ -3435,7 +3560,7 @@ class FrontendExpressionSemanticSupportTest {
     private static @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver publishedExpressionResolver(
             @NotNull AnalyzedScript analyzed
     ) {
-        return (expression, finalizeWindow) -> {
+        return (expression, _) -> {
             var published = analyzed.analysisData().expressionTypes().get(expression);
             return Objects.requireNonNull(
                     published,
@@ -3445,7 +3570,7 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     private static @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver resolvedVariantResolver() {
-        return (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdVariantType.VARIANT);
+        return (_, _) -> FrontendExpressionType.resolved(GdVariantType.VARIANT);
     }
 
     private static @NotNull AnalyzedScript analyze(

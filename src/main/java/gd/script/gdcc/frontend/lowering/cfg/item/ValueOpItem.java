@@ -24,7 +24,7 @@ import java.util.List;
 public sealed interface ValueOpItem extends SequenceItem permits OpaqueExprValueItem, DirectSlotAliasValueItem,
         LocalDeclarationItem, AssignmentItem, CompoundAssignmentBinaryOpItem, MemberLoadItem, SignalLoadItem,
         CallableLoadItem, StandaloneCallableLoadItem, SubscriptLoadItem, LambdaConstructItem,
-        CallItem, CastItem, TypeTestItem, MergeValueItem, BoolConstantItem, IntConstantItem,
+        CallItem, CastItem, TypeTestItem, MergeValueItem, BoolConstantItem, IntConstantItem, ConstantValueItem,
         GetVariantTypeItem, AwaitItem, MatchEqualItem, VariantIsNilItem, MatchBindItem, MatchContainerMaterializeItem,
         MatchLengthCheckItem, MatchHasKeyItem, MatchElementFetchItem, ForLoopInitItem,
         ForLoopShouldContinueItem, ForLoopGetItem, ForLoopNextItem, ContainerLiteralItem {

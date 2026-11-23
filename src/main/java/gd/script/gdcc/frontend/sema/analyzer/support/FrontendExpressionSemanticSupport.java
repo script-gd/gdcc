@@ -24,10 +24,6 @@ import gd.script.gdcc.scope.resolver.ScopeTypeTextSupport;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdCallableType;
-import gd.script.gdcc.type.GdDictionaryType;
-import gd.script.gdcc.type.GdFloatType;
-import gd.script.gdcc.type.GdIntType;
-import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdStringType;
@@ -259,6 +255,14 @@ public final class FrontendExpressionSemanticSupport {
     public @NotNull ExpressionSemanticResult resolveLiteralExpressionType(
             @NotNull LiteralExpression literalExpression
     ) {
+        var lexeme = literalExpression.sourceText();
+        var kind = literalExpression.kind();
+        if (("integer".equals(kind) || ("number".equals(kind) && !lexeme.contains(".")))
+                && StringUtil.parseGdIntegerLexeme(lexeme) == null) {
+            return rootOutcome(FrontendExpressionType.failed(
+                    "Integer literal '" + lexeme + "' is malformed or overflows 64-bit signed int"
+            ));
+        }
         var literalType = headReceiverSupportSupplier.get().resolveLiteralType(literalExpression);
         if (literalType != null) {
             return propagated(FrontendExpressionType.resolved(literalType));
@@ -371,7 +375,6 @@ public final class FrontendExpressionSemanticSupport {
             return rootOutcome(
                     FrontendExpressionType.failed(detailReason),
                     failedBareSuperCall(
-                            superCallee,
                             methodName,
                             receiverType,
                             finalized.argumentTypes(),
@@ -405,7 +408,7 @@ public final class FrontendExpressionSemanticSupport {
             }
             return rootOutcome(
                     FrontendExpressionType.failed(detailReason),
-                    failedBareSuperCall(superCallee, methodName, receiverType, finalized.argumentTypes(), detailReason)
+                    failedBareSuperCall(methodName, receiverType, finalized.argumentTypes(), detailReason)
             );
         }
         var selectedParameterTypes = resolvedMethod.parameters().stream()
@@ -432,7 +435,6 @@ public final class FrontendExpressionSemanticSupport {
     }
 
     private @NotNull FrontendResolvedCall failedBareSuperCall(
-            @NotNull IdentifierExpression superCallee,
             @NotNull String methodName,
             @NotNull GdType receiverType,
             @NotNull List<GdType> argumentTypes,
@@ -456,7 +458,7 @@ public final class FrontendExpressionSemanticSupport {
             @NotNull List<GdType> argumentTypes,
             @NotNull String detailReason
     ) {
-        return failedBareSuperCall(superCallee, superCallee.name(), receiverType, argumentTypes, detailReason);
+        return failedBareSuperCall(superCallee.name(), receiverType, argumentTypes, detailReason);
     }
 
 
@@ -699,7 +701,7 @@ public final class FrontendExpressionSemanticSupport {
     ) {
         var baseType = nestedResolver.resolve(subscriptExpression.base(), finalizeWindow);
         var dependencyIssue = firstNonResolvedDependency(baseType);
-        if (dependencyIssue != null) {
+        if (dependencyIssue != null && !finalizeWindow) {
             return propagated(dependencyIssue);
         }
         var argumentResolution = resolveCallArgumentTypes(
@@ -707,6 +709,9 @@ public final class FrontendExpressionSemanticSupport {
                 nestedResolver,
                 finalizeWindow
         );
+        if (dependencyIssue != null) {
+            return propagated(dependencyIssue);
+        }
         if (argumentResolution.issue() != null) {
             return propagated(argumentResolution.issue());
         }
@@ -802,11 +807,15 @@ public final class FrontendExpressionSemanticSupport {
     ) {
         var leftOperandType = nestedResolver.resolve(binaryExpression.left(), finalizeWindow);
         var leftDependencyIssue = firstNonResolvedDependency(leftOperandType);
-        if (leftDependencyIssue != null) {
+        if (leftDependencyIssue != null && !finalizeWindow) {
             return propagated(leftDependencyIssue);
         }
 
+        // Final typing still publishes facts for independent operands after an upstream failure.
         var rightOperandType = nestedResolver.resolve(binaryExpression.right(), finalizeWindow);
+        if (leftDependencyIssue != null) {
+            return propagated(leftDependencyIssue);
+        }
         var rightDependencyIssue = firstNonResolvedDependency(rightOperandType);
         if (rightDependencyIssue != null) {
             return propagated(rightDependencyIssue);
@@ -961,11 +970,14 @@ public final class FrontendExpressionSemanticSupport {
 
         var leftArmType = nestedResolver.resolve(conditionalExpression.left(), finalizeWindow, expectedType);
         var leftIssue = firstNonResolvedDependency(leftArmType);
-        if (leftIssue != null) {
+        if (leftIssue != null && !finalizeWindow) {
             return propagated(leftIssue);
         }
 
         var rightArmType = nestedResolver.resolve(conditionalExpression.right(), finalizeWindow, expectedType);
+        if (leftIssue != null) {
+            return propagated(leftIssue);
+        }
         var rightIssue = firstNonResolvedDependency(rightArmType);
         if (rightIssue != null) {
             return propagated(rightIssue);
@@ -1632,6 +1644,7 @@ public final class FrontendExpressionSemanticSupport {
             @Nullable List<GdType> expectedParameterTypes
     ) {
         var argumentTypes = new ArrayList<GdType>(arguments.size());
+        FrontendExpressionType firstIssue = null;
         for (var i = 0; i < arguments.size(); i++) {
             var argument = arguments.get(i);
             var expected = expectedParameterTypes != null && i < expectedParameterTypes.size()
@@ -1647,11 +1660,18 @@ public final class FrontendExpressionSemanticSupport {
                         Objects.requireNonNull(argumentType.publishedType(), "publishedType must not be null")
                 );
                 case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> {
-                    return new CallArgumentResolution(List.of(), argumentType);
+                    if (!finalizeWindow) {
+                        return new CallArgumentResolution(List.of(), argumentType);
+                    }
+                    if (firstIssue == null) {
+                        firstIssue = argumentType;
+                    }
                 }
             }
         }
-        return new CallArgumentResolution(List.copyOf(argumentTypes), null);
+        return firstIssue == null
+                ? new CallArgumentResolution(List.copyOf(argumentTypes), null)
+                : new CallArgumentResolution(List.of(), firstIssue);
     }
 
     private @NotNull ExpressionSemanticResult resolveBareIdentifierCallWithLiteralContext(
@@ -1739,29 +1759,19 @@ public final class FrontendExpressionSemanticSupport {
             var selected = overloadSelection.selected();
             var blockedReturnType = selected != null ? selected.getReturnType() : null;
             var detailReason = "Binding '" + bareCallee.name() + "' is not accessible in the current context";
-            final List<GdType> publishedArgTypes;
-            if (selected != null) {
-                var finalized = resolveCallArgumentTypes(
-                        arguments,
-                        nestedResolver,
-                        finalizeWindow,
-                        fixedParameterTypes(selected)
-                );
-                if (finalized.issue() != null) {
-                    return propagated(finalized.issue());
-                }
-                publishedArgTypes = finalized.argumentTypes();
-            } else {
-                var finalized = resolveCallArgumentTypes(arguments, nestedResolver, finalizeWindow, null);
-                if (finalized.issue() != null) {
-                    return propagated(finalized.issue());
-                }
-                publishedArgTypes = finalized.argumentTypes();
+            var finalized = resolveCallArgumentTypes(
+                    arguments,
+                    nestedResolver,
+                    finalizeWindow,
+                    selected == null ? null : fixedParameterTypes(selected)
+            );
+            if (finalized.issue() != null) {
+                return propagated(finalized.issue());
             }
             return rootOutcome(
                     FrontendExpressionType.blocked(blockedReturnType, detailReason),
                     selected != null
-                            ? blockedBareCall(bareCallee, bareCallRoute, selected, publishedArgTypes, detailReason)
+                            ? blockedBareCall(bareCallee, bareCallRoute, selected, finalized.argumentTypes(), detailReason)
                             : null
             );
         }
@@ -2080,7 +2090,7 @@ public final class FrontendExpressionSemanticSupport {
         var parameters = List.copyOf(callable.getParameters());
         var fixedCount = parameters.size();
         var providedCount = preliminaryArgumentTypes.size();
-        if (providedCount < fixedCount && !canOmitTrailingParameters(parameters, providedCount)) {
+        if (providedCount < fixedCount && hasMissingRequiredTrailingParameter(parameters, providedCount)) {
             return false;
         }
         if (!callable.isVararg() && providedCount > fixedCount) {
@@ -2147,7 +2157,7 @@ public final class FrontendExpressionSemanticSupport {
         var parameters = List.copyOf(callable.getParameters());
         var fixedCount = parameters.size();
         var providedCount = argumentTypes.size();
-        if (providedCount < fixedCount && !canOmitTrailingParameters(parameters, providedCount)) {
+        if (providedCount < fixedCount && hasMissingRequiredTrailingParameter(parameters, providedCount)) {
             return false;
         }
         if (!callable.isVararg() && providedCount > fixedCount) {
@@ -2163,9 +2173,6 @@ public final class FrontendExpressionSemanticSupport {
                 return false;
             }
         }
-        if (!callable.isVararg()) {
-            return true;
-        }
         // GDScript vararg tails are packaged as Variant at the call boundary, so any already-typed
         // runtime value may flow into the tail without proving a strict `T -> Variant` conversion.
         return true;
@@ -2178,7 +2185,7 @@ public final class FrontendExpressionSemanticSupport {
         var parameters = List.copyOf(callable.getParameters());
         var fixedCount = parameters.size();
         var providedCount = argumentTypes.size();
-        if (providedCount < fixedCount && !canOmitTrailingParameters(parameters, providedCount)) {
+        if (providedCount < fixedCount && hasMissingRequiredTrailingParameter(parameters, providedCount)) {
             var missingParameterIndex = firstMissingRequiredParameter(parameters, providedCount);
             return "missing required parameter #" + (missingParameterIndex + 1) + " ('"
                     + parameters.get(missingParameterIndex).getName() + "')";
@@ -2237,16 +2244,16 @@ public final class FrontendExpressionSemanticSupport {
                 || publishedOperandType instanceof GdVariantType;
     }
 
-    private boolean canOmitTrailingParameters(
+    private boolean hasMissingRequiredTrailingParameter(
             @NotNull List<? extends ParameterDef> parameters,
             int providedCount
     ) {
         for (var index = providedCount; index < parameters.size(); index++) {
             if (parameters.get(index).getDefaultValueFunc() == null) {
-                return false;
+                return true;
             }
         }
-        return true;
+        return false;
     }
 
     private @Nullable GdType parameterTypeAt(@NotNull FunctionDef callable, int index) {

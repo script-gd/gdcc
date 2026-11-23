@@ -229,6 +229,9 @@ public final class FrontendExportAnnotationSupport {
                     // Shared lexeme semantics with enum evaluation and body literal lowering;
                     // the unary sign stays outside the helper and is applied here.
                     var parsedInt = StringUtil.parseGdIntegerLexeme(literal.sourceText());
+                    if (parsedInt == null && negative && StringUtil.isGdLongMinMagnitudeLexeme(literal.sourceText())) {
+                        yield Long.toString(Long.MIN_VALUE);
+                    }
                     yield parsedInt == null ? null : Long.toString(negative ? -parsedInt : parsedInt);
                 }
                 case "float" -> renderFloatLiteral(literal.sourceText(), negative);

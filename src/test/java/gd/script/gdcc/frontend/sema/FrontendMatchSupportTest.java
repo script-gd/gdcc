@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.DictEntry;
@@ -16,6 +17,8 @@ import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
+import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.constant.GdConstantValue;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -24,6 +27,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -33,6 +37,54 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// `topLevel`, dictionary keys never bind, and all six routes are lowering-ready.
 class FrontendMatchSupportTest {
     private static final Range RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
+    @Test
+    void matchPlanSkipsMarkedSectionsAndInventoriesOnlyValueBindings() {
+        var keptBinding = new PatternBindingExpression("kept", RANGE);
+        var dictionary = new DictionaryExpression(List.of(
+                new DictEntry(intLiteral("1"), null, RANGE),
+                new DictEntry(intLiteral("2"), keptBinding, RANGE)
+        ), true, RANGE);
+        var first = section(List.of(dictionary), null);
+        var skipped = section(List.of(new PatternBindingExpression("skipped", RANGE)), null);
+        var last = section(List.of(intLiteral("3")), null);
+        var statement = matchStatement(first, skipped, last);
+        var skippedRoots = new FrontendAstSideTable<Boolean>();
+        skippedRoots.put(skipped, true);
+
+        var plan = FrontendMatchSupport.buildPlan(statement, skippedRoots);
+        assertEquals(2, plan.sections().size());
+        assertSame(first, plan.sections().getFirst().section());
+        assertSame(last, plan.sections().getLast().section());
+        var bindings = plan.sections().getFirst().patterns().getFirst().bindings();
+        assertEquals(1, bindings.size());
+        assertSame(keptBinding, bindings.getFirst().declaration());
+        assertFalse(bindings.getFirst().topLevel());
+        assertSame(skipped, FrontendMatchSupport.buildPlan(statement).sections().get(1).section());
+    }
+
+    @Test
+    void dictionaryPatternKeysRequireResolvedFactsWithoutChangingValuePatterns() {
+        var data = FrontendAnalysisData.bootstrap();
+        var literal = intLiteral("1");
+        var sum = new BinaryExpression("+", literal, intLiteral("2"), RANGE);
+        assertTrue(FrontendMatchSupport.isConstantPatternOperand(data, literal));
+        assertFalse(FrontendMatchSupport.isConstantDictionaryPatternKey(data, literal));
+        assertNull(FrontendMatchSupport.resolvedDictionaryPatternKeyOrNull(data, literal));
+
+        data.constantFacts().put(literal, new Evaluation.Rejected("rejected key", literal));
+        assertFalse(FrontendMatchSupport.isConstantDictionaryPatternKey(data, literal));
+        assertTrue(FrontendMatchSupport.isConstantPatternOperand(data, literal));
+
+        var folded = new GdConstantValue.IntValue(3);
+        data.constantFacts().put(sum, new Evaluation.Resolved(folded));
+        assertSame(folded, FrontendMatchSupport.resolvedDictionaryPatternKeyOrNull(data, sum));
+        assertTrue(FrontendMatchSupport.isConstantDictionaryPatternKey(data, sum));
+        assertFalse(FrontendMatchSupport.isConstantPatternOperand(data, sum));
+        assertNull(FrontendMatchSupport.resolvedDictionaryPatternKeyOrNull(
+                data, new BinaryExpression("+", literal, intLiteral("2"), RANGE)
+        ));
+    }
 
     @Test
     void classifiesLiteralPatternFamilyAsLiteralRoute() {

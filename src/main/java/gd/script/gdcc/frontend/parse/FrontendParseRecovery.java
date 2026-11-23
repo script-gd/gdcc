@@ -14,15 +14,16 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /// Same-generation parser diagnostic and its optional recovery attribution.
 ///
-/// @param code stable parser diagnostic code, or `parse.lowering` if missing or blank
+/// @param code     stable parser diagnostic code, or `parse.lowering` if missing or blank
 /// @param severity mapped frontend diagnostic severity
-/// @param message parser diagnostic message
-/// @param range diagnostic byte and line-column range within the source unit
-/// @param owner surviving AST node from the same parse, or `null` for a standalone diagnostic
-/// @param facet damaged syntax slot, present exactly when `owner` is present
+/// @param message  parser diagnostic message
+/// @param range    diagnostic byte and line-column range within the source unit
+/// @param owner    surviving AST node from the same parse, or `null` for a standalone diagnostic
+/// @param facet    damaged syntax slot, present exactly when `owner` is present
 public record FrontendParseRecovery(
         @NotNull String code,
         @NotNull FrontendDiagnosticSeverity severity,
@@ -57,7 +58,22 @@ public record FrontendParseRecovery(
         return findActiveCoveringDiagnostic(
                 recovery,
                 analysisData,
-                activeDiagnostics,
+                activeDiagnostics::contains,
+                FrontendDiagnostic.error(recovery.code(), recovery.message(), sourcePath, recovery.range())
+        );
+    }
+
+    /// Checks the live manager. Callers must query a recovery group before reporting its fallback.
+    public static @Nullable FrontendDiagnostic findActiveCoveringDiagnostic(
+            @NotNull FrontendParseRecovery recovery,
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull DiagnosticManager diagnosticManager,
+            @Nullable String sourcePath
+    ) {
+        return findActiveCoveringDiagnostic(
+                recovery,
+                analysisData,
+                diagnosticManager::contains,
                 FrontendDiagnostic.error(recovery.code(), recovery.message(), sourcePath, recovery.range())
         );
     }
@@ -65,15 +81,33 @@ public record FrontendParseRecovery(
     private static @Nullable FrontendDiagnostic findActiveCoveringDiagnostic(
             @NotNull FrontendParseRecovery recovery,
             @NotNull FrontendAnalysisData analysisData,
-            @NotNull Set<FrontendDiagnostic> activeDiagnostics,
+            @NotNull Predicate<FrontendDiagnostic> isActive,
             @NotNull FrontendDiagnostic originalError
     ) {
-        if (activeDiagnostics.contains(originalError)) {
+        if (isActive.test(originalError)) {
             return originalError;
         }
-        var claimed = analysisData.claimedParseRecoveries().get(recovery);
+        return recovery.findActiveClaim(analysisData, isActive);
+    }
+
+    /// Records a covering error without replacing a claim still active in this manager.
+    public void claimCoveringDiagnostic(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull DiagnosticManager diagnosticManager,
+            @NotNull FrontendDiagnostic coveringDiagnostic
+    ) {
+        if (findActiveClaim(analysisData, diagnosticManager::contains) == null) {
+            analysisData.claimParseRecovery(this, coveringDiagnostic);
+        }
+    }
+
+    private @Nullable FrontendDiagnostic findActiveClaim(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Predicate<FrontendDiagnostic> isActive
+    ) {
+        var claimed = analysisData.claimedParseRecoveries().get(this);
         return claimed != null && claimed.severity() == FrontendDiagnosticSeverity.ERROR
-                && activeDiagnostics.contains(claimed) ? claimed : null;
+                && isActive.test(claimed) ? claimed : null;
     }
 
     /// Restores blocking parser diagnostics that have no active exact-match coverage.
@@ -98,6 +132,7 @@ public record FrontendParseRecovery(
         var previous = analysisData.diagnosticsOrNull();
         var priorInternalErrors = previous == null ? Map.<String, FrontendDiagnostic>of()
                 : parseInternalErrorsBySourcePath(previous.asList());
+        Predicate<FrontendDiagnostic> isActive = activeDiagnostics::contains;
         for (var unit : analysisData.effectiveSourceUnits()) {
             var sourcePath = FrontendDiagnostic.sourcePathText(unit.path());
             if (unit.parseFailed()) {
@@ -119,7 +154,7 @@ public record FrontendParseRecovery(
                     continue;
                 }
                 var originalError = recovery.toDiagnostic(sourcePath);
-                if (findActiveCoveringDiagnostic(recovery, analysisData, activeDiagnostics, originalError) == null) {
+                if (findActiveCoveringDiagnostic(recovery, analysisData, isActive, originalError) == null) {
                     // Replaying into a different manager must not replace the recorded claim.
                     diagnosticManager.report(originalError);
                     activeDiagnostics.add(originalError);

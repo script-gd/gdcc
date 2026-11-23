@@ -42,8 +42,11 @@ import gd.script.gdcc.lir.insn.ConstructContainerLiteralInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralFloatInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
+import gd.script.gdcc.lir.insn.LiteralNilInsn;
+import gd.script.gdcc.lir.insn.LiteralNodePathInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
+import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.ObjectCastInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
@@ -1734,6 +1737,11 @@ public final class FrontendBodyLoweringSession {
                     block.appendNonTerminatorInstruction(new LiteralFloatInsn(targetSlotId, floatValue.value()));
             case GdConstantValue.StringValue stringValue ->
                     block.appendNonTerminatorInstruction(new LiteralStringInsn(targetSlotId, stringValue.value()));
+            case GdConstantValue.NullValue _ -> block.appendNonTerminatorInstruction(new LiteralNilInsn(targetSlotId));
+            case GdConstantValue.StringNameValue stringNameValue ->
+                    block.appendNonTerminatorInstruction(new LiteralStringNameInsn(targetSlotId, stringNameValue.value()));
+            case GdConstantValue.NodePathValue nodePathValue ->
+                    block.appendNonTerminatorInstruction(new LiteralNodePathInsn(targetSlotId, nodePathValue.value()));
             case GdConstantValue.BuiltinValue builtinValue ->
                     materializeBuiltinConstantValue(block, builtinValue, targetSlotId);
         }
@@ -1802,12 +1810,9 @@ public final class FrontendBodyLoweringSession {
             );
         }
         return switch (extensionType) {
-            case VECTOR2 -> scalarParts(2);
-            case VECTOR3 -> scalarParts(3);
-            case VECTOR4 -> scalarParts(4);
-            case VECTOR2I -> scalarParts(2);
-            case VECTOR3I -> scalarParts(3);
-            case VECTOR4I -> scalarParts(4);
+            case VECTOR2, VECTOR2I -> scalarParts(2);
+            case VECTOR3, VECTOR3I -> scalarParts(3);
+            case VECTOR4, VECTOR4I, PLANE, QUATERNION, COLOR -> scalarParts(4);
             case RECT2 -> List.of(
                     new ConstValuePart(GdFloatVectorType.VECTOR2, 0, 2),
                     new ConstValuePart(GdFloatVectorType.VECTOR2, 2, 2)
@@ -1816,7 +1821,6 @@ public final class FrontendBodyLoweringSession {
                     new ConstValuePart(GdIntVectorType.VECTOR2I, 0, 2),
                     new ConstValuePart(GdIntVectorType.VECTOR2I, 2, 2)
             );
-            case PLANE, QUATERNION, COLOR -> scalarParts(4);
             case AABB -> List.of(
                     new ConstValuePart(GdFloatVectorType.VECTOR3, 0, 3),
                     new ConstValuePart(GdFloatVectorType.VECTOR3, 3, 3)

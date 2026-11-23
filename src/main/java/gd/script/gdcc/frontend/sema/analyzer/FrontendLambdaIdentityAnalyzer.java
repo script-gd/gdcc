@@ -18,6 +18,7 @@ import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendLambdaIdentity;
+import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 
 import java.nio.charset.StandardCharsets;
@@ -234,9 +235,7 @@ public final class FrontendLambdaIdentityAnalyzer {
             while (i < text.length()) {
                 var c = text.charAt(i);
                 if (c == '#') {
-                    while (i < text.length() && text.charAt(i) != '\n') {
-                        i++;
-                    }
+                    i = StringUtil.skipGdLineComment(text, i, text.length());
                     continue;
                 }
                 if (c == '"' || c == '\'') {

@@ -136,6 +136,9 @@ public class FrontendStatementResolver {
             @NotNull ElifClause elifClause,
             @NotNull ChildSuiteResolver childSuiteResolver
     ) {
+        if (context.analysisData().skippedSubtreeRoots().containsKey(elifClause)) {
+            return;
+        }
         resolveSupportedRoot(context, elifClause.condition());
         childSuiteResolver.resolveChildSuite(context, elifClause.body());
     }
@@ -188,8 +191,11 @@ public class FrontendStatementResolver {
             @NotNull MatchSection section,
             @NotNull ChildSuiteResolver childSuiteResolver
     ) {
+        if (context.analysisData().skippedSubtreeRoots().containsKey(section)) {
+            return;
+        }
         for (var pattern : section.patterns()) {
-            resolveMatchPattern(context, pattern);
+            resolveMatchPattern(context, section, pattern);
         }
         if (section.guard() != null) {
             runSupportedRoot(context, section.guard());
@@ -200,9 +206,12 @@ public class FrontendStatementResolver {
 
     /// Pattern-context dispatch: WILDCARD / BINDING / ARRAY / DICTIONARY stay off the ordinary
     /// expression pipeline; LITERAL / EXPRESSION leaves use `runSupportedRoot`. Nested array
-    /// elements and dictionary values recurse; dictionary keys are constant expressions and use
-    /// the ordinary pipeline.
-    private void resolveMatchPattern(@NotNull FrontendSuiteContext context, @NotNull Expression pattern) {
+    /// elements and present dictionary values recurse. Dictionary keys are typed before evaluation.
+    private void resolveMatchPattern(
+            @NotNull FrontendSuiteContext context,
+            @NotNull MatchSection section,
+            @NotNull Expression pattern
+    ) {
         var route = FrontendMatchSupport.classifyPatternRoute(pattern);
         switch (route) {
             case WILDCARD, BINDING -> {
@@ -210,14 +219,19 @@ public class FrontendStatementResolver {
             case ARRAY -> {
                 var array = (ArrayExpression) pattern;
                 for (var element : array.elements()) {
-                    resolveMatchPattern(context, element);
+                    resolveMatchPattern(context, section, element);
                 }
             }
             case DICTIONARY -> {
                 var dictionary = (DictionaryExpression) pattern;
                 for (var entry : dictionary.entries()) {
-                    runSupportedRoot(context, entry.key());
-                    resolveMatchPattern(context, entry.value());
+                    var key = entry.key();
+                    runSupportedRoot(context, key);
+                    ownerProcedures.runMatchDictionaryKeyConstResolution(context, section, key);
+                    var value = entry.value();
+                    if (value != null) {
+                        resolveMatchPattern(context, section, value);
+                    }
                 }
             }
             case LITERAL, EXPRESSION -> runSupportedRoot(context, pattern);
@@ -299,6 +313,13 @@ public class FrontendStatementResolver {
         default void runMatchPatternResolution(
                 @NotNull FrontendSuiteContext context,
                 @NotNull MatchStatement matchStatement
+        ) {
+        }
+
+        default void runMatchDictionaryKeyConstResolution(
+                @NotNull FrontendSuiteContext context,
+                @NotNull MatchSection section,
+                @NotNull Expression keyRoot
         ) {
         }
 

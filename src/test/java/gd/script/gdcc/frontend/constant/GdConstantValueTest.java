@@ -16,6 +16,7 @@ import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
 import gd.script.gdcc.type.GdPlaneType;
@@ -55,13 +56,31 @@ class GdConstantValueTest {
     @Test
     void scalarValuesCarryExactTypes() {
         assertAll(
-                () -> assertEquals(GdConstantValue.BoolValue.class, new BoolValue(true).getClass()),
+                () -> assertInstanceOf(BoolValue.class, new BoolValue(true)),
                 () -> assertSame(GdBoolType.BOOL, new BoolValue(false).type()),
                 () -> assertSame(GdIntType.INT, new IntValue(-1L).type()),
                 () -> assertSame(GdFloatType.FLOAT, new FloatValue(0.5).type()),
                 () -> assertSame(GdStringType.STRING, new StringValue("abc").type()),
                 () -> assertEquals("abc", new StringValue("abc").value()),
                 () -> assertThrows(NullPointerException.class, () -> new StringValue(null))
+        );
+    }
+
+    @Test
+    void matchLiteralValuesCarryExactTypesWithoutWideningConstDeclarations() {
+        var nil = new GdConstantValue.NullValue();
+        var name = new GdConstantValue.StringNameValue("name'");
+        var path = new GdConstantValue.NodePathValue("Node/Child");
+
+        assertAll(
+                () -> assertSame(GdNilType.NIL, nil.type()),
+                () -> assertSame(GdStringNameType.STRING_NAME, name.type()),
+                () -> assertSame(GdNodePathType.NODE_PATH, path.type()),
+                () -> assertEquals("name'", name.value()),
+                () -> assertEquals("Node/Child", path.value()),
+                () -> assertFalse(GdConstantValue.isSupportedConstantType(GdNilType.NIL)),
+                () -> assertFalse(GdConstantValue.isSupportedConstantType(GdStringNameType.STRING_NAME)),
+                () -> assertFalse(GdConstantValue.isSupportedConstantType(GdNodePathType.NODE_PATH))
         );
     }
 
@@ -250,7 +269,7 @@ class GdConstantValueTest {
         var z = assertInstanceOf(FloatValue.class, value.components().get(2));
 
         assertAll(
-                () -> assertEquals((double) (float) 0.1, x.value()),
+                () -> assertEquals((float) 0.1, x.value()),
                 () -> assertTrue(x.value() != 0.1,
                         "the stored leaf must already be the narrowed value, not the raw double"),
                 () -> assertEquals(Double.doubleToRawLongBits(-0.0),
@@ -277,7 +296,7 @@ class GdConstantValueTest {
         );
         for (var i = 0; i < 12; i++) {
             var leaf = assertInstanceOf(FloatValue.class, value.components().get(i));
-            assertEquals((double) (float) (i + 1), leaf.value(), "leaf[" + i + "]");
+            assertEquals((float) (i + 1), leaf.value(), "leaf[" + i + "]");
         }
     }
 

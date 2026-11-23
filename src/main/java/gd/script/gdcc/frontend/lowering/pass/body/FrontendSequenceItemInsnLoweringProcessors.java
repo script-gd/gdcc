@@ -10,6 +10,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.AwaitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ConstantValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ContainerLiteralItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
@@ -156,6 +157,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 new FrontendLocalDeclarationInsnLoweringProcessor(),
                 new FrontendBoolConstantInsnLoweringProcessor(),
                 new FrontendIntConstantInsnLoweringProcessor(),
+                new FrontendConstantValueInsnLoweringProcessor(),
                 new FrontendGetVariantTypeInsnLoweringProcessor(),
                 new FrontendMatchEqualInsnLoweringProcessor(),
                 new FrontendVariantIsNilInsnLoweringProcessor(),
@@ -337,6 +339,29 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
                     node.value()
             ));
+            return block;
+        }
+    }
+
+    private static final class FrontendConstantValueInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<ConstantValueItem, Void> {
+        @Override
+        public @NotNull Class<ConstantValueItem> nodeType() {
+            return ConstantValueItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull ConstantValueItem node,
+                @Nullable Void context
+        ) {
+            session.materializeConstantValue(
+                    block,
+                    node.value(),
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId())
+            );
             return block;
         }
     }

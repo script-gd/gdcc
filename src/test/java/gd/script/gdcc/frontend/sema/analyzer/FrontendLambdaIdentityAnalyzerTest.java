@@ -20,8 +20,6 @@ import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -38,13 +36,13 @@ class FrontendLambdaIdentityAnalyzerTest {
         var plans = analyze("""
                 class_name LambdaOrdinalPreOrder
                 extends Node
-
+                
                 func first():
                     var a = func():
                         return 1
                     var b = func():
                         return 2
-
+                
                 func second():
                     var c = func():
                         return 3
@@ -63,7 +61,7 @@ class FrontendLambdaIdentityAnalyzerTest {
         var plans = analyze("""
                 class_name LambdaOrdinalNested
                 extends Node
-
+                
                 func ping():
                     var outer = func():
                         var inner = func():
@@ -83,7 +81,7 @@ class FrontendLambdaIdentityAnalyzerTest {
         var plans = analyze("""
                 class_name LambdaOrdinalInit
                 extends Node
-
+                
                 func _init():
                     var cb = func():
                         pass
@@ -100,7 +98,7 @@ class FrontendLambdaIdentityAnalyzerTest {
         var before = analyze("""
                 class_name LambdaOrdinalInsert
                 extends Node
-
+                
                 func ping():
                     var cb = func():
                         return 1
@@ -108,7 +106,7 @@ class FrontendLambdaIdentityAnalyzerTest {
         var after = analyze("""
                 class_name LambdaOrdinalInsert
                 extends Node
-
+                
                 func ping():
                     var inserted = func():
                         return 0
@@ -127,7 +125,7 @@ class FrontendLambdaIdentityAnalyzerTest {
         var before = analyze("""
                 class_name LambdaOrdinalStable
                 extends Node
-
+                
                 func ping():
                     var cb = func():
                         return 1
@@ -135,7 +133,7 @@ class FrontendLambdaIdentityAnalyzerTest {
         var after = analyze("""
                 class_name LambdaOrdinalStable
                 extends Node
-
+                
                 func ping():
                     var noise := 1
                     print(noise)
@@ -155,7 +153,7 @@ class FrontendLambdaIdentityAnalyzerTest {
                 extends Node
                 signal sig_a
                 signal sig_b
-
+                
                 func arm():
                     sig_a.connect(func():
                         pass)
@@ -172,7 +170,7 @@ class FrontendLambdaIdentityAnalyzerTest {
         var plans = analyze("""
                 class_name LambdaContextGetNode
                 extends Node
-
+                
                 func arm():
                     $Timer.timeout.connect(func():
                         pass)
@@ -186,10 +184,10 @@ class FrontendLambdaIdentityAnalyzerTest {
         var plans = analyze("""
                 class_name LambdaContextPlainCall
                 extends Node
-
+                
                 func helper(x, cb):
                     pass
-
+                
                 func arm():
                     helper(1, func():
                         pass)
@@ -203,9 +201,9 @@ class FrontendLambdaIdentityAnalyzerTest {
         var plans = analyze("""
                 class_name LambdaContextAssignExpr
                 extends Node
-
+                
                 var cb
-
+                
                 func arm():
                     cb = func():
                         pass
@@ -222,7 +220,7 @@ class FrontendLambdaIdentityAnalyzerTest {
         var plans = analyze("""
                 class_name LambdaContextVarDecl
                 extends Node
-
+                
                 func arm():
                     var cb = func():
                         pass
@@ -241,7 +239,7 @@ class FrontendLambdaIdentityAnalyzerTest {
         var plans = analyze("""
                 class_name LambdaContextAwaitOperand
                 extends Node
-
+                
                 func arm():
                     await (func():
                         pass)
@@ -257,10 +255,10 @@ class FrontendLambdaIdentityAnalyzerTest {
         var plans = analyze("""
                 class_name LambdaContextAwaitCall
                 extends Node
-
+                
                 func helper(cb):
                     pass
-
+                
                 func arm():
                     await helper(func():
                         pass)
@@ -274,7 +272,7 @@ class FrontendLambdaIdentityAnalyzerTest {
         var plans = analyze("""
                 class_name LambdaContextReturn
                 extends Node
-
+                
                 func make():
                     var f = func():
                         return func():
@@ -293,7 +291,7 @@ class FrontendLambdaIdentityAnalyzerTest {
         var plans = analyze("""
                 class_name LambdaContextArray
                 extends Node
-
+                
                 func arm():
                     var a = [1, func():
                         pass]
@@ -311,7 +309,7 @@ class FrontendLambdaIdentityAnalyzerTest {
                 class_name LambdaContextNormalized
                 extends Node
                 signal sig_a
-
+                
                 func arm():
                     self.sig_a.connect(func():
                         pass)
@@ -320,7 +318,7 @@ class FrontendLambdaIdentityAnalyzerTest {
                 class_name LambdaContextNormalized
                 extends Node
                 signal sig_a
-
+                
                 func arm():
                     # pick the handler below
                     self . sig_a . connect(
@@ -331,6 +329,32 @@ class FrontendLambdaIdentityAnalyzerTest {
         assertEquals(1, compact.size());
         assertEquals(1, spaced.size());
         assertEquals(compact.getFirst().callSiteContext(), spaced.getFirst().callSiteContext());
+    }
+
+    @Test
+    void callSiteDescriptorsIgnoreCodeCommentsButPreserveHashInsideStrings() throws Exception {
+        var source = """
+                class_name LambdaContextTrivia
+                extends Node
+                
+                func arm():
+                    get_node("#in string").ready.connect(func():
+                        pass)
+                    get_node(
+                        "#in string" # ignored # and =
+                    ).ready.connect(func():
+                        pass)
+                    get_node("#different").ready.connect(func():
+                        pass)
+                """;
+        for (var lineEnding : List.of("\n", "\r\n")) {
+            var plans = analyze(source.replace("\n", lineEnding));
+            assertEquals(3, plans.size());
+            var context = plans.getFirst().callSiteContext();
+            assertEquals("call(base=get_node(\"#in string\").ready, method=connect, arg=0)", context);
+            assertEquals(context, plans.get(1).callSiteContext());
+            assertNotEquals(context, plans.getLast().callSiteContext());
+        }
     }
 
     // ----- swap disambiguation (the fixed blind spot) -----
@@ -345,7 +369,7 @@ class FrontendLambdaIdentityAnalyzerTest {
                 extends Node
                 signal sig_a
                 signal sig_b
-
+                
                 func arm():
                     sig_a.connect(func(value: int):
                         pass)
@@ -357,7 +381,7 @@ class FrontendLambdaIdentityAnalyzerTest {
                 extends Node
                 signal sig_a
                 signal sig_b
-
+                
                 func arm():
                     sig_b.connect(func(value: int):
                         pass)
@@ -383,7 +407,7 @@ class FrontendLambdaIdentityAnalyzerTest {
                 class_name LambdaContextSameForm
                 extends Node
                 signal sig_a
-
+                
                 func arm():
                     sig_a.connect(func(value: int):
                         pass)
@@ -394,15 +418,15 @@ class FrontendLambdaIdentityAnalyzerTest {
                 class_name LambdaContextSameForm
                 extends Node
                 signal sig_a
-
+                
                 func arm():
                     sig_a.connect(func(value: int):
                         pass)
                     sig_a.connect(func(value: int):
                         pass)
                 """);
-        assertEquals(v1.get(0).sourceIdentityKey(), v2.get(0).sourceIdentityKey());
-        assertEquals(v1.get(0).callSiteContext(), v2.get(0).callSiteContext());
+        assertEquals(v1.getFirst().sourceIdentityKey(), v2.getFirst().sourceIdentityKey());
+        assertEquals(v1.getFirst().callSiteContext(), v2.getFirst().callSiteContext());
     }
 
     @Test
@@ -414,7 +438,7 @@ class FrontendLambdaIdentityAnalyzerTest {
                 class_name LambdaContextExtract
                 extends Node
                 signal sig_a
-
+                
                 func arm():
                     sig_a.connect(func():
                         pass)
@@ -423,7 +447,7 @@ class FrontendLambdaIdentityAnalyzerTest {
                 class_name LambdaContextExtract
                 extends Node
                 signal sig_a
-
+                
                 func arm():
                     var cb = func():
                         pass
@@ -445,7 +469,7 @@ class FrontendLambdaIdentityAnalyzerTest {
                 class_name LambdaContextBodyIndependent
                 extends Node
                 signal sig_a
-
+                
                 func arm():
                     sig_a.connect(func():
                         return 1)
@@ -454,7 +478,7 @@ class FrontendLambdaIdentityAnalyzerTest {
                 class_name LambdaContextBodyIndependent
                 extends Node
                 signal sig_a
-
+                
                 func arm():
                     sig_a.connect(func():
                         print("totally different body")
@@ -473,10 +497,10 @@ class FrontendLambdaIdentityAnalyzerTest {
         var result = analyzeRaw("""
                 class_name LambdaDomainPropertyInit
                 extends Node
-
+                
                 var cb = func():
                     return 1
-
+                
                 func ping():
                     var local = func():
                         return 2
@@ -494,7 +518,7 @@ class FrontendLambdaIdentityAnalyzerTest {
         var result = analyzeRaw("""
                 class_name LambdaDomainParamDefault
                 extends Node
-
+                
                 func ping(cb = func():
                     return 0):
                     var local = func():
@@ -509,12 +533,12 @@ class FrontendLambdaIdentityAnalyzerTest {
         var plans = analyze("""
                 class_name LambdaDomainOuter
                 extends Node
-
+                
                 class Inner:
                     func go():
                         var inner_cb = func():
                             return 1
-
+                
                 func ping():
                     var outer_cb = func():
                         return 2
@@ -536,7 +560,7 @@ class FrontendLambdaIdentityAnalyzerTest {
                 class_name LambdaCoverage
                 extends Node
                 signal sig
-
+                
                 func ping():
                     sig.connect(func():
                         pass)
@@ -550,7 +574,7 @@ class FrontendLambdaIdentityAnalyzerTest {
     }
 
     @Test
-    void identityRecordRejectsBadValues() throws Exception {
+    void identityRecordRejectsBadValues() {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new FrontendLambdaIdentity(-1, "return")

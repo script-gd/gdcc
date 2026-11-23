@@ -109,13 +109,20 @@ public final class FrontendContainerLiteralSemanticSupport {
 
         var elementExpected = resultType.getValueType();
         var elementTypes = new ArrayList<FrontendExpressionType>(arrayExpression.elements().size());
+        FrontendExpressionType firstIssue = null;
         for (var element : arrayExpression.elements()) {
             var elementType = nestedResolver.resolve(element, finalizeWindow, elementExpected);
             var dependencyIssue = firstNonResolvedDependency(elementType);
-            if (dependencyIssue != null) {
-                return propagated(dependencyIssue);
+            if (dependencyIssue != null && firstIssue == null) {
+                if (!finalizeWindow) {
+                    return propagated(dependencyIssue);
+                }
+                firstIssue = dependencyIssue;
             }
             elementTypes.add(elementType);
+        }
+        if (firstIssue != null) {
+            return propagated(firstIssue);
         }
 
         var operands = buildArrayOperands(classRegistry, elementTypes, resultType);
@@ -167,19 +174,30 @@ public final class FrontendContainerLiteralSemanticSupport {
         var valueExpected = resultType.getValueType();
         var keyTypes = new ArrayList<FrontendExpressionType>(dictionaryExpression.entries().size());
         var valueTypes = new ArrayList<FrontendExpressionType>(dictionaryExpression.entries().size());
+        FrontendExpressionType firstIssue = null;
         for (var entry : dictionaryExpression.entries()) {
             var keyType = nestedResolver.resolve(entry.key(), finalizeWindow, keyExpected);
             var keyIssue = firstNonResolvedDependency(keyType);
-            if (keyIssue != null) {
-                return propagated(keyIssue);
+            if (keyIssue != null && firstIssue == null) {
+                if (!finalizeWindow) {
+                    return propagated(keyIssue);
+                }
+                firstIssue = keyIssue;
             }
-            var valueType = nestedResolver.resolve(entry.value(), finalizeWindow, valueExpected);
+            var value = Objects.requireNonNull(entry.value(), "Dictionary literal entry must have a value");
+            var valueType = nestedResolver.resolve(value, finalizeWindow, valueExpected);
             var valueIssue = firstNonResolvedDependency(valueType);
-            if (valueIssue != null) {
-                return propagated(valueIssue);
+            if (valueIssue != null && firstIssue == null) {
+                if (!finalizeWindow) {
+                    return propagated(valueIssue);
+                }
+                firstIssue = valueIssue;
             }
             keyTypes.add(keyType);
             valueTypes.add(valueType);
+        }
+        if (firstIssue != null) {
+            return propagated(firstIssue);
         }
 
         var operands = buildDictionaryOperands(classRegistry, keyTypes, valueTypes, resultType);

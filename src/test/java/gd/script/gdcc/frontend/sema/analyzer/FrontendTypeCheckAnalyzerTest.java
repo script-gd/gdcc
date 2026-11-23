@@ -6,10 +6,15 @@ import java.util.function.Predicate;
 
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+
 import static org.junit.jupiter.api.Assertions.*;
+
 import org.junit.jupiter.api.Test;
 
 import dev.superice.gdparser.frontend.ast.*;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
+import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.constant.GdConstantValue;
 import gd.script.gdcc.frontend.diagnostic.*;
 import gd.script.gdcc.frontend.parse.*;
 import gd.script.gdcc.frontend.sema.*;
@@ -18,6 +23,257 @@ import gd.script.gdcc.scope.*;
 import gd.script.gdcc.type.*;
 
 class FrontendTypeCheckAnalyzerTest {
+    @Test
+    void checksInitializerReturnsWithAndWithoutLiveParserCoverage() throws Exception {
+        var sourcePath = Path.of("tmp", "initializer_returns.gd");
+        var parseManager = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(sourcePath, """
+                class_name InitializerReturns
+                extends RefCounted
+                
+                func _init():
+                    var callback = func() -> int:
+                        return 4
+                    return 1
+                
+                static func _static_init():
+                    return 2
+                
+                func rejects_void_value() -> void:
+                    return 3
+                
+                func accepts_weak_value():
+                    return 5
+                """, parseManager);
+        var constructor = findNode(unit.ast(), ConstructorDeclaration.class, _ -> true);
+        var constructorReturn = assertInstanceOf(ReturnStatement.class, constructor.body().statements().getLast());
+        var staticInitializer = findFunction(unit.ast(), "_static_init");
+        assertNull(staticInitializer.returnType());
+        var staticReturn = assertInstanceOf(ReturnStatement.class, staticInitializer.body().statements().getFirst());
+        var ordinaryReturn = assertInstanceOf(
+                ReturnStatement.class, findFunction(unit.ast(), "rejects_void_value").body().statements().getFirst()
+        );
+        var original = parseManager.snapshot().asList();
+        assertEquals(2, original.size());
+        assertEquals(2, unit.parseRecoveries().size());
+        for (var i = 0; i < original.size(); i++) {
+            var diagnostic = original.get(i);
+            var recovery = unit.parseRecoveries().get(i);
+            assertEquals(DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN, diagnostic.category());
+            assertEquals("Constructor cannot return a value.", diagnostic.message());
+            assertEquals("statement.control", recovery.facet());
+            assertSame(i == 0 ? constructorReturn : staticReturn, recovery.owner());
+        }
+
+        var withParser = new FrontendSemanticAnalyzer().analyze(
+                FrontendModule.singleUnit("test_module", unit),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()), parseManager
+        );
+        var ordinaryError = withParser.diagnostics().getLast();
+        assertEquals("sema.type_check", ordinaryError.category());
+        assertEquals(FrontendRange.fromAstRange(ordinaryReturn.range()), ordinaryError.range());
+        assertEquals(List.of(original.getFirst(), original.getLast(), ordinaryError), withParser.diagnostics().asList());
+        assertEquals(original.getFirst(), withParser.claimedParseRecoveries().get(unit.parseRecoveries().getFirst()));
+        assertEquals(original.getLast(), withParser.claimedParseRecoveries().get(unit.parseRecoveries().getLast()));
+
+        var freshRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var withFreshManager = new FrontendSemanticAnalyzer().analyze(
+                FrontendModule.singleUnit("test_module", unit),
+                freshRegistry, new DiagnosticManager()
+        );
+        var fallback = withFreshManager.diagnostics().asList();
+        assertEquals(3, fallback.size());
+        assertTrue(fallback.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && diagnostic.category().equals("sema.type_check")
+                        && diagnostic.message().contains("does not accept 'return expr'")
+        ));
+        assertEquals(FrontendRange.fromAstRange(constructorReturn.range()), fallback.getFirst().range());
+        assertEquals(FrontendRange.fromAstRange(staticReturn.range()), fallback.get(1).range());
+        assertEquals(ordinaryError, fallback.getLast());
+        assertEquals(fallback.getFirst(), withFreshManager.claimedParseRecoveries().get(unit.parseRecoveries().getFirst()));
+        assertEquals(fallback.get(1), withFreshManager.claimedParseRecoveries().get(unit.parseRecoveries().getLast()));
+
+        var recheck = new DiagnosticManager();
+        recheck.reportAll(fallback.subList(0, 2));
+        new FrontendTypeCheckAnalyzer().analyze(freshRegistry, withFreshManager, recheck);
+        assertEquals(fallback, recheck.snapshot().asList());
+        assertEquals(fallback.getFirst(), withFreshManager.claimedParseRecoveries().get(unit.parseRecoveries().getFirst()));
+        assertEquals(fallback.get(1), withFreshManager.claimedParseRecoveries().get(unit.parseRecoveries().getLast()));
+
+        var withoutRecoveries = new FrontendSourceUnit(sourcePath, unit.source(), unit.ast());
+        var withHandBuiltFacts = new FrontendSemanticAnalyzer().analyze(
+                FrontendModule.singleUnit("test_module", withoutRecoveries),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()), new DiagnosticManager()
+        );
+        assertEquals(fallback, withHandBuiltFacts.diagnostics().asList());
+        assertTrue(withHandBuiltFacts.claimedParseRecoveries().isEmpty());
+    }
+
+    @Test
+    void initializerReturnKeepsLiveSemanticClaimAcrossTypeCheckAndCompileManagers() throws Exception {
+        var parserDiagnostics = new DiagnosticManager();
+        var input = prepareInitializerReturnClaimInput(parserDiagnostics);
+        var analysisData = input.analysisData();
+        var managerA = input.diagnosticManager();
+        var semantic = managerA.snapshot().getFirst();
+        var parser = parserDiagnostics.snapshot().getFirst();
+        var recovery = input.unit().parseRecoveries().getFirst();
+        assertEquals(List.of(semantic), managerA.snapshot().asList());
+        assertEquals("sema.type_check", semantic.category());
+        assertEquals(semantic, analysisData.claimedParseRecoveries().get(recovery));
+        assertEquals(DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN, parser.category());
+
+        var managerB = new DiagnosticManager();
+        managerB.reportAll(List.of(parser, semantic));
+        new FrontendTypeCheckAnalyzer().analyze(input.classRegistry(), analysisData, managerB);
+        assertEquals(List.of(parser, semantic), managerB.snapshot().asList());
+        assertEquals(semantic, analysisData.claimedParseRecoveries().get(recovery));
+
+        new FrontendCompileCheckAnalyzer().analyze(analysisData, managerA);
+        assertEquals(List.of(semantic), managerA.snapshot().asList());
+    }
+
+    @Test
+    void initializerReturnReplacesInactiveSemanticClaimWithLiveParserError() throws Exception {
+        var parserDiagnostics = new DiagnosticManager();
+        var input = prepareInitializerReturnClaimInput(parserDiagnostics);
+        var recovery = input.unit().parseRecoveries().getFirst();
+        var semantic = input.diagnosticManager().snapshot().getFirst();
+        assertEquals("sema.type_check", semantic.category());
+        assertEquals(semantic, input.analysisData().claimedParseRecoveries().get(recovery));
+
+        var parser = parserDiagnostics.snapshot().getFirst();
+        var warning = FrontendDiagnostic.warning(
+                semantic.category(), semantic.message(), semantic.sourcePath(), semantic.range()
+        );
+        var newManager = new DiagnosticManager();
+        newManager.reportAll(List.of(parser, warning));
+        new FrontendTypeCheckAnalyzer().analyze(input.classRegistry(), input.analysisData(), newManager);
+
+        assertEquals(List.of(parser, warning), newManager.snapshot().asList());
+        assertEquals(parser, input.analysisData().claimedParseRecoveries().get(recovery));
+    }
+
+    @Test
+    void initializerReturnsKeepDistinctRangesWithMixedDiagnosticCoverage() throws Exception {
+        var path = Path.of("tmp", "initializer_claim_ranges.gd");
+        var parserManager = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(path, """
+                class_name InitializerClaimRanges
+                extends RefCounted
+                
+                func _init():
+                    if true:
+                        return 1
+                    return 2
+                
+                static func _static_init():
+                    if true:
+                        return 3
+                    return
+                """, parserManager);
+        var sourcePath = FrontendDiagnostic.sourcePathText(path);
+        var parserCategory = DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN;
+        var parserMessage = "Constructor cannot return a value.";
+        var parsedErrors = List.of(
+                FrontendDiagnostic.error(parserCategory, parserMessage, sourcePath,
+                        new FrontendRange(89, 95, new FrontendPoint(6, 9), new FrontendPoint(6, 15))),
+                FrontendDiagnostic.error(parserCategory, parserMessage, sourcePath,
+                        new FrontendRange(102, 108, new FrontendPoint(7, 5), new FrontendPoint(7, 11))),
+                FrontendDiagnostic.error(parserCategory, parserMessage, sourcePath,
+                        new FrontendRange(161, 167, new FrontendPoint(11, 9), new FrontendPoint(11, 15)))
+        );
+        assertEquals(parsedErrors, parserManager.snapshot().asList());
+        assertEquals(parsedErrors.size(), unit.parseRecoveries().size());
+
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var fresh = new DiagnosticManager();
+        var data = new FrontendSemanticAnalyzer().analyze(
+                FrontendModule.singleUnit("test_module", unit), classRegistry, fresh
+        );
+        var noValueReturn = "Callable on class 'InitializerClaimRanges' returns 'void' and does not accept 'return expr'";
+        var semanticErrors = List.of(
+                FrontendDiagnostic.error("sema.type_check", noValueReturn, sourcePath,
+                        new FrontendRange(89, 97, new FrontendPoint(6, 9), new FrontendPoint(6, 17))),
+                FrontendDiagnostic.error("sema.type_check", noValueReturn, sourcePath,
+                        new FrontendRange(102, 110, new FrontendPoint(7, 5), new FrontendPoint(7, 13))),
+                FrontendDiagnostic.error("sema.type_check",
+                        "Callable on class 'InitializerClaimRanges' is an initializer and does not accept 'return expr'",
+                        sourcePath, new FrontendRange(161, 169, new FrontendPoint(11, 9), new FrontendPoint(11, 17)))
+        );
+        assertEquals(semanticErrors, fresh.snapshot().asList());
+
+        var mixed = new DiagnosticManager();
+        mixed.reportAll(List.of(parsedErrors.getFirst(), semanticErrors.get(1)));
+        new FrontendTypeCheckAnalyzer().analyze(classRegistry, data, mixed);
+
+        var expected = List.of(parsedErrors.getFirst(), semanticErrors.get(1), semanticErrors.getLast());
+        assertEquals(expected, mixed.snapshot().asList());
+        for (var i = 0; i < expected.size(); i++) {
+            assertEquals(expected.get(i), data.claimedParseRecoveries().get(unit.parseRecoveries().get(i)));
+        }
+    }
+
+    private static PreparedTypeCheckInput prepareInitializerReturnClaimInput(DiagnosticManager parserDiagnostics)
+            throws Exception {
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "initializer_claim.gd"), """
+                class_name InitializerClaim
+                extends RefCounted
+                
+                func _init():
+                    return 1
+                """, parserDiagnostics);
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var manager = new DiagnosticManager();
+        var data = new FrontendSemanticAnalyzer().analyze(
+                FrontendModule.singleUnit("test_module", unit), classRegistry, manager
+        );
+        assertEquals(1, parserDiagnostics.snapshot().size());
+        assertEquals(1, unit.parseRecoveries().size());
+        return new PreparedTypeCheckInput(unit, data, manager, classRegistry);
+    }
+
+    @Test
+    void checksStableDictionaryKeysUsingOnlyResolvedConstantFacts() throws Exception {
+        var input = prepareTypeCheckInput("dictionary_key_facts.gd", """
+                class_name DictionaryKeyFacts
+                extends RefCounted
+                
+                func probe(value) -> int:
+                    match value:
+                        {1 + 2, "rejected": _, "unstable": _}:
+                            return 0
+                        {"skipped"}:
+                            return "wrong"
+                        {"missing"}:
+                            return 0
+                    return 0
+                """);
+        var data = input.analysisData();
+        var probe = findFunction(input.unit().ast(), "probe");
+        var match = assertInstanceOf(MatchStatement.class, probe.body().statements().getFirst());
+        var dictionary = assertInstanceOf(DictionaryExpression.class, match.sections().getFirst().patterns().getFirst());
+        var folded = dictionary.entries().getFirst().key();
+        var rejected = dictionary.entries().get(1).key();
+        var unstable = dictionary.entries().getLast().key();
+        var missing = assertInstanceOf(DictionaryExpression.class, match.sections().getLast().patterns().getFirst())
+                .entries().getFirst().key();
+        data.constantFacts().put(folded, new Evaluation.Resolved(new GdConstantValue.IntValue(3)));
+        data.constantFacts().put(rejected, new Evaluation.Rejected("rejected dictionary key", rejected));
+        data.expressionTypes().put(unstable, FrontendExpressionType.failed("upstream diagnostic"));
+        data.skippedSubtreeRoots().put(match.sections().get(1), true);
+
+        new FrontendTypeCheckAnalyzer().analyze(input.classRegistry(), data, input.diagnosticManager());
+
+        var path = FrontendDiagnostic.sourcePathText(input.unit().path());
+        var message = "Expression in dictionary pattern key must be a constant.";
+        assertEquals(List.of(
+                FrontendDiagnostic.error("sema.type_check", message, path, FrontendRange.fromAstRange(rejected.range())),
+                FrontendDiagnostic.error("sema.type_check", message, path, FrontendRange.fromAstRange(missing.range()))
+        ), diagnosticsByCategory(input.diagnosticManager().snapshot(), "sema.type_check"));
+    }
+
     @Test
     void analyzeRejectsMissingModuleSkeletonBoundary() throws Exception {
         var analyzer = new FrontendTypeCheckAnalyzer();
@@ -1228,7 +1484,7 @@ class FrontendTypeCheckAnalyzerTest {
                 func skips_deferred() -> int:
                     return 1 + 2
                 
-                func _init():
+                func rejects_void_value() -> void:
                     return 1
                 """);
 
@@ -2257,6 +2513,7 @@ class FrontendTypeCheckAnalyzerTest {
                 
                 func ping():
                     var bad: Array[String] = [1]
+                    var badValue: Dictionary[String, String] = {"x": 1234}
                     var dup: Dictionary = {"x": 1, "x": 2}
                     var ok: Array[int] = [1, 2]
                 """);
@@ -2287,6 +2544,17 @@ class FrontendTypeCheckAnalyzerTest {
         assertTrue(typeCheckDiagnostics.stream().noneMatch(d -> d.message().contains("ok")));
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var badValueInit = assertInstanceOf(
+                DictionaryExpression.class, findVariable(pingFunction.body().statements(), "badValue").value()
+        );
+        assertNotNull(badValueInit);
+        var rejectedValue = assertInstanceOf(LiteralExpression.class, badValueInit.entries().getFirst().value());
+        var valueErrors = typeCheckDiagnostics.stream()
+                .filter(d -> d.message().contains("Cannot have a value of type \"int\" in a dictionary"))
+                .toList();
+        assertEquals(1, valueErrors.size());
+        assertEquals(FrontendRange.fromAstRange(rejectedValue.range()), valueErrors.getFirst().range());
+
         var badInit = findVariable(pingFunction.body().statements(), "bad").value();
         var badPlan = preparedInput.analysisData().containerLiteralPlans().get(badInit);
         assertNotNull(badPlan);

@@ -311,6 +311,11 @@ public final class FrontendBodyLoweringSupport {
                     CfgValueMaterializationKind.TEMP_SLOT,
                     null
             );
+            case ConstantValueItem constant -> new CfgValueMaterialization(
+                    constant.value().type(),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
             case MatchEqualItem _, VariantIsNilItem _ -> new CfgValueMaterialization(
                     GdBoolType.BOOL,
                     CfgValueMaterializationKind.TEMP_SLOT,

@@ -213,9 +213,44 @@ public final class FrontendConstantEvaluator {
                 return new Evaluation.Resolved(
                         new GdConstantValue.BoolValue("true".equals(literal.kind())));
             }
+            case "null", "string_name", "node_path" -> {
+                return decodeMatchLiteral(literal, env);
+            }
             default -> {
                 return rejectedLiteral(literal, env);
             }
+        }
+    }
+
+    /// Validation and evaluation share the policy gate and decoder so a malformed literal
+    /// also rejects in a branch that will not be computed.
+    private static @NotNull Evaluation decodeMatchLiteral(
+            @NotNull LiteralExpression literal,
+            @NotNull EvaluationEnvironment env
+    ) {
+        var capability = switch (literal.kind()) {
+            case "null" -> EvaluationPolicy.Capability.NULL_LITERAL;
+            case "string_name" -> EvaluationPolicy.Capability.STRING_NAME_LITERAL;
+            case "node_path" -> EvaluationPolicy.Capability.NODE_PATH_LITERAL;
+            default -> throw new IllegalStateException("Unexpected match literal kind: " + literal.kind());
+        };
+        if (!env.permits(capability)) {
+            return rejectedLiteral(literal, env);
+        }
+
+        try {
+            GdConstantValue value = switch (capability) {
+                case NULL_LITERAL -> new GdConstantValue.NullValue();
+                case STRING_NAME_LITERAL ->
+                        new GdConstantValue.StringNameValue(StringUtil.decodeGdStringLexeme(literal.sourceText()));
+                case NODE_PATH_LITERAL ->
+                        new GdConstantValue.NodePathValue(StringUtil.decodeNodePathLexeme(literal.sourceText()));
+                default -> throw new IllegalStateException("Unexpected match literal capability: " + capability);
+            };
+            return new Evaluation.Resolved(value);
+        } catch (IllegalArgumentException ex) {
+            return new Evaluation.Rejected("literal '" + literal.sourceText() + "' is malformed: " + ex.getMessage(),
+                    literal);
         }
     }
 
@@ -232,7 +267,7 @@ public final class FrontendConstantEvaluator {
                 && "integer".equals(operandLiteral.kind())
                 && env.permits(EvaluationPolicy.Capability.INT_ARITHMETIC)
                 && env.permits(EvaluationPolicy.Capability.LONG_MIN_LITERAL)
-                && isMinValueMagnitudeLexeme(operandLiteral.sourceText())) {
+                && StringUtil.isGdLongMinMagnitudeLexeme(operandLiteral.sourceText())) {
             return new Evaluation.Resolved(new GdConstantValue.IntValue(Long.MIN_VALUE));
         }
         var operandEvaluation = evaluateExpression(unary.operand(), env);
@@ -349,12 +384,12 @@ public final class FrontendConstantEvaluator {
             return rejected;
         }
         var conditionValue = ((Evaluation.Resolved) conditionEvaluation).value();
-        if (!(conditionValue instanceof GdConstantValue.BoolValue conditionBool)) {
+        if (!(conditionValue instanceof GdConstantValue.BoolValue(var condition))) {
             throw new IllegalStateException(
                     "bool-admitted condition evaluated to '" + conditionValue.type().getTypeName() + "'");
         }
         return evaluateExpression(
-                conditionBool.value() ? conditional.left() : conditional.right(), env);
+                condition ? conditional.left() : conditional.right(), env);
     }
 
     /// Attribute chains resolve through values and namespace tokens: property steps descend
@@ -369,8 +404,8 @@ public final class FrontendConstantEvaluator {
         }
         var receiver = evalChainOperand(attribute.base(), env);
         for (var step : attribute.steps()) {
-            if (receiver instanceof Checked.Failed<GdConstantValue> failed) {
-                return failed.rejection();
+            if (receiver instanceof Checked.Failed<GdConstantValue>(var rejection)) {
+                return rejection;
             }
             receiver = applyEvaluatedStep(receiver, step, env);
         }
@@ -412,23 +447,20 @@ public final class FrontendConstantEvaluator {
     ) {
         return switch (step) {
             case AttributePropertyStep property -> {
-                if (receiver instanceof Checked.Namespace<GdConstantValue> namespace) {
-                    yield switch (env.lookup().resolveMember(namespace.identity(), property.name())) {
+                if (receiver instanceof Checked.Namespace<GdConstantValue>(var identity)) {
+                    yield switch (env.lookup().resolveMember(identity, property.name())) {
                         case LookupContext.LookupResult.ResolvedConstant constant ->
-                                new Checked.Payload<GdConstantValue>(constant.value());
+                                new Checked.Payload<>(constant.value());
                         case LookupContext.LookupResult.ResolvedNamespace nested ->
-                                new Checked.Namespace<GdConstantValue>(nested.namespaceIdentity());
-                        case LookupContext.LookupResult.NonConstant nonConstant ->
-                                new Checked.Failed<GdConstantValue>(
-                                        new Evaluation.Rejected(nonConstant.reason(), property));
-                        case LookupContext.LookupResult.Blocked blocked ->
-                                new Checked.Failed<GdConstantValue>(
-                                        new Evaluation.Rejected(blocked.reason(), property));
-                        case LookupContext.LookupResult.Unknown _ ->
-                                new Checked.Failed<GdConstantValue>(new Evaluation.Rejected(
-                                        "unknown member '" + property.name() + "' in constant expression",
-                                        property
-                                ));
+                                new Checked.Namespace<>(nested.namespaceIdentity());
+                        case LookupContext.LookupResult.NonConstant nonConstant -> new Checked.Failed<>(
+                                new Evaluation.Rejected(nonConstant.reason(), property));
+                        case LookupContext.LookupResult.Blocked blocked -> new Checked.Failed<>(
+                                new Evaluation.Rejected(blocked.reason(), property));
+                        case LookupContext.LookupResult.Unknown _ -> new Checked.Failed<>(new Evaluation.Rejected(
+                                "unknown member '" + property.name() + "' in constant expression",
+                                property
+                        ));
                     };
                 }
                 // A property step on a value is a member projection: the read-only
@@ -440,20 +472,19 @@ public final class FrontendConstantEvaluator {
                         property
                 );
                 if (denied != null) {
-                    yield new Checked.Failed<GdConstantValue>(denied);
+                    yield new Checked.Failed<>(denied);
                 }
                 var receiverValue = ((Checked.Payload<GdConstantValue>) receiver).payload();
                 yield switch (FrontendConstMemberProjectionSupport.project(
                         receiverValue, property.name())) {
-                    case ConstCallResult.Resolved resolved ->
-                            new Checked.Payload<GdConstantValue>(resolved.value());
-                    case ConstCallResult.Rejected rejected -> new Checked.Failed<GdConstantValue>(
+                    case ConstCallResult.Resolved resolved -> new Checked.Payload<>(resolved.value());
+                    case ConstCallResult.Rejected rejected -> new Checked.Failed<>(
                             new Evaluation.Rejected(rejected.reason(), property));
                 };
             }
             case AttributeCallStep call -> applyCallStep(receiver, call, env);
             case AttributeSubscriptStep _, MissingAttributeStep _, UnknownAttributeStep _ ->
-                    new Checked.Failed<GdConstantValue>(new Evaluation.Rejected(
+                    new Checked.Failed<>(new Evaluation.Rejected(
                             "attribute step '" + step.getClass().getSimpleName()
                                     + "' is not supported in constant expressions",
                             step
@@ -494,8 +525,8 @@ public final class FrontendConstantEvaluator {
         }
         var argumentTypes = arguments.stream().map(GdConstantValue::type).toList();
         var selection = resolveCallStep(receiverValue.type(), call.name(), argumentTypes, call, env);
-        if (selection instanceof CallStepSelection.Failed failed) {
-            return new Checked.Failed<>(failed.rejection());
+        if (selection instanceof CallStepSelection.Failed(var rejection)) {
+            return new Checked.Failed<>(rejection);
         }
         var registered = (CallStepSelection.Registered) selection;
         var normalizedArguments = new ArrayList<GdConstantValue>(arguments.size());
@@ -516,9 +547,8 @@ public final class FrontendConstantEvaluator {
         var callResult = registered.entry().evaluator().evaluate(
                 receiverValue, List.copyOf(normalizedArguments));
         return switch (callResult) {
-            case ConstCallResult.Rejected rejected ->
-                    new Checked.Failed<GdConstantValue>(
-                            new Evaluation.Rejected(rejected.reason(), call));
+            case ConstCallResult.Rejected rejected -> new Checked.Failed<>(
+                    new Evaluation.Rejected(rejected.reason(), call));
             case ConstCallResult.Resolved resolved -> {
                 // A wrong-typed handler result is a programmer invariant violation, not
                 // a source error — it surfaces as a guard, never disguised as `Rejected`.
@@ -529,7 +559,7 @@ public final class FrontendConstantEvaluator {
                                     + " returned '" + resolved.value().type().getTypeName()
                                     + "', expected '" + registered.entry().returnType().getTypeName() + "'");
                 }
-                yield new Checked.Payload<GdConstantValue>(resolved.value());
+                yield new Checked.Payload<>(resolved.value());
             }
         };
     }
@@ -681,6 +711,12 @@ public final class FrontendConstantEvaluator {
                 }
                 return new Checked.Payload<>(GdBoolType.BOOL);
             }
+            case "null", "string_name", "node_path" -> {
+                return switch (decodeMatchLiteral(literal, env)) {
+                    case Evaluation.Resolved resolved -> new Checked.Payload<>(resolved.value().type());
+                    case Evaluation.Rejected rejected -> new Checked.Failed<>(rejected);
+                };
+            }
             default -> {
                 return new Checked.Failed<>(rejectedLiteral(literal, env));
             }
@@ -692,10 +728,8 @@ public final class FrontendConstantEvaluator {
             @NotNull EvaluationEnvironment env
     ) {
         return switch (resolveConstantName(identifier.name(), identifier, env)) {
-            case Checked.Payload<GdConstantValue> payload ->
-                    new Checked.Payload<GdType>(payload.payload().type());
-            case Checked.Namespace<GdConstantValue> namespace ->
-                    new Checked.Namespace<GdType>(namespace.identity());
+            case Checked.Payload<GdConstantValue> payload -> new Checked.Payload<>(payload.payload().type());
+            case Checked.Namespace<GdConstantValue> namespace -> new Checked.Namespace<>(namespace.identity());
             case Checked.Failed<GdConstantValue> failed -> new Checked.Failed<>(failed.rejection());
         };
     }
@@ -709,14 +743,14 @@ public final class FrontendConstantEvaluator {
                 && "integer".equals(operandLiteral.kind())
                 && env.permits(EvaluationPolicy.Capability.INT_ARITHMETIC)
                 && env.permits(EvaluationPolicy.Capability.LONG_MIN_LITERAL)
-                && isMinValueMagnitudeLexeme(operandLiteral.sourceText())) {
+                && StringUtil.isGdLongMinMagnitudeLexeme(operandLiteral.sourceText())) {
             return new Checked.Payload<>(GdIntType.INT);
         }
         var operand = checkExpression(unary.operand(), env);
         if (operand instanceof Checked.Failed<GdType> failed) {
             return failed;
         }
-        if (!(operand instanceof Checked.Payload<GdType> payload)) {
+        if (!(operand instanceof Checked.Payload<GdType>(var operandType))) {
             return new Checked.Failed<>(new Evaluation.Rejected(
                     "unary operand must be a constant value", unary));
         }
@@ -728,7 +762,7 @@ public final class FrontendConstantEvaluator {
                     unary
             ));
         }
-        return requireUnaryOperandType(operator, payload.payload(), unary, env);
+        return requireUnaryOperandType(operator, operandType, unary, env);
     }
 
     private static @NotNull Checked<GdType> checkBinary(
@@ -761,10 +795,10 @@ public final class FrontendConstantEvaluator {
             if (rightCheck instanceof Checked.Failed<GdType> failed) {
                 return failed;
             }
-            if (!(leftCheck instanceof Checked.Payload<GdType> leftTyped)
-                    || !(leftTyped.payload() instanceof GdBoolType)
-                    || !(rightCheck instanceof Checked.Payload<GdType> rightTyped)
-                    || !(rightTyped.payload() instanceof GdBoolType)) {
+            if (!(leftCheck instanceof Checked.Payload<GdType>(var leftType))
+                    || !(leftType instanceof GdBoolType)
+                    || !(rightCheck instanceof Checked.Payload<GdType>(var rightType))
+                    || !(rightType instanceof GdBoolType)) {
                 return new Checked.Failed<>(new Evaluation.Rejected(
                         "operands of '" + binary.operator() + "' must be 'bool'", binary));
             }
@@ -778,12 +812,12 @@ public final class FrontendConstantEvaluator {
         if (rightCheck instanceof Checked.Failed<GdType> failed) {
             return failed;
         }
-        if (!(leftCheck instanceof Checked.Payload<GdType> leftTyped)
-                || !(rightCheck instanceof Checked.Payload<GdType> rightTyped)) {
+        if (!(leftCheck instanceof Checked.Payload<GdType>(var leftType))
+                || !(rightCheck instanceof Checked.Payload<GdType>(var rightType))) {
             return new Checked.Failed<>(new Evaluation.Rejected(
                     "binary operands must be constant values", binary));
         }
-        return requireBinaryOperandTypes(operator, leftTyped.payload(), rightTyped.payload(), binary, env);
+        return requireBinaryOperandTypes(operator, leftType, rightType, binary, env);
     }
 
     private static @NotNull Checked<GdType> checkConditional(
@@ -797,8 +831,8 @@ public final class FrontendConstantEvaluator {
         if (conditionCheck instanceof Checked.Failed<GdType> failed) {
             return failed;
         }
-        if (!(conditionCheck instanceof Checked.Payload<GdType> conditionTyped)
-                || !(conditionTyped.payload() instanceof GdBoolType)) {
+        if (!(conditionCheck instanceof Checked.Payload<GdType>(var conditionType))
+                || !(conditionType instanceof GdBoolType)) {
             return new Checked.Failed<>(new Evaluation.Rejected(
                     "conditional expression condition must be 'bool'", conditional));
         }
@@ -811,15 +845,15 @@ public final class FrontendConstantEvaluator {
             return failed;
         }
         if (!(leftCheck instanceof Checked.Payload<GdType> leftTyped)
-                || !(rightCheck instanceof Checked.Payload<GdType> rightTyped)) {
+                || !(rightCheck instanceof Checked.Payload<GdType>(var rightType))) {
             return new Checked.Failed<>(new Evaluation.Rejected(
                     "conditional expression branches must be constant values", conditional));
         }
-        if (!FrontendConstCallSelectionSupport.sameExactType(leftTyped.payload(), rightTyped.payload())) {
+        if (!FrontendConstCallSelectionSupport.sameExactType(leftTyped.payload(), rightType)) {
             return new Checked.Failed<>(new Evaluation.Rejected(
                     "conditional expression branches must have the same exact type, got '"
                             + leftTyped.payload().getTypeName() + "' and '"
-                            + rightTyped.payload().getTypeName() + "'",
+                            + rightType.getTypeName() + "'",
                     conditional
             ));
         }
@@ -863,23 +897,20 @@ public final class FrontendConstantEvaluator {
     ) {
         return switch (step) {
             case AttributePropertyStep property -> {
-                if (receiver instanceof Checked.Namespace<GdType> namespace) {
-                    yield switch (env.lookup().resolveMember(namespace.identity(), property.name())) {
+                if (receiver instanceof Checked.Namespace<GdType>(var identity)) {
+                    yield switch (env.lookup().resolveMember(identity, property.name())) {
                         case LookupContext.LookupResult.ResolvedConstant constant ->
-                                new Checked.Payload<GdType>(constant.value().type());
+                                new Checked.Payload<>(constant.value().type());
                         case LookupContext.LookupResult.ResolvedNamespace nested ->
-                                new Checked.Namespace<GdType>(nested.namespaceIdentity());
-                        case LookupContext.LookupResult.NonConstant nonConstant ->
-                                new Checked.Failed<GdType>(
-                                        new Evaluation.Rejected(nonConstant.reason(), property));
-                        case LookupContext.LookupResult.Blocked blocked ->
-                                new Checked.Failed<GdType>(
-                                        new Evaluation.Rejected(blocked.reason(), property));
-                        case LookupContext.LookupResult.Unknown _ ->
-                                new Checked.Failed<GdType>(new Evaluation.Rejected(
-                                        "unknown member '" + property.name() + "' in constant expression",
-                                        property
-                                ));
+                                new Checked.Namespace<>(nested.namespaceIdentity());
+                        case LookupContext.LookupResult.NonConstant nonConstant -> new Checked.Failed<>(
+                                new Evaluation.Rejected(nonConstant.reason(), property));
+                        case LookupContext.LookupResult.Blocked blocked -> new Checked.Failed<>(
+                                new Evaluation.Rejected(blocked.reason(), property));
+                        case LookupContext.LookupResult.Unknown _ -> new Checked.Failed<>(new Evaluation.Rejected(
+                                "unknown member '" + property.name() + "' in constant expression",
+                                property
+                        ));
                     };
                 }
                 var denied = requireCapability(
@@ -889,22 +920,22 @@ public final class FrontendConstantEvaluator {
                         property
                 );
                 if (denied != null) {
-                    yield new Checked.Failed<GdType>(denied);
+                    yield new Checked.Failed<>(denied);
                 }
                 var receiverType = ((Checked.Payload<GdType>) receiver).payload();
                 var projectedType = FrontendConstMemberProjectionSupport.projectedType(
                         receiverType, property.name());
                 yield projectedType != null
-                        ? new Checked.Payload<GdType>(projectedType)
+                        ? new Checked.Payload<>(projectedType)
                         : new Checked.Failed<>(new Evaluation.Rejected(
-                                "member '" + property.name() + "' on type '"
-                                        + receiverType.getTypeName()
-                                        + "' is not a supported constant member",
-                                property));
+                        "member '" + property.name() + "' on type '"
+                        + receiverType.getTypeName()
+                        + "' is not a supported constant member",
+                        property));
             }
             case AttributeCallStep call -> {
                 if (receiver instanceof Checked.Namespace<GdType>) {
-                    yield new Checked.Failed<GdType>(new Evaluation.Rejected(
+                    yield new Checked.Failed<>(new Evaluation.Rejected(
                             "member calls on constant namespaces are not supported", call));
                 }
                 var denied = requireCapability(
@@ -914,7 +945,7 @@ public final class FrontendConstantEvaluator {
                         call
                 );
                 if (denied != null) {
-                    yield new Checked.Failed<GdType>(denied);
+                    yield new Checked.Failed<>(denied);
                 }
                 var receiverType = ((Checked.Payload<GdType>) receiver).payload();
                 var argumentTypes = new ArrayList<GdType>(call.arguments().size());
@@ -923,21 +954,21 @@ public final class FrontendConstantEvaluator {
                     if (argumentCheck instanceof Checked.Failed<GdType> failed) {
                         yield failed;
                     }
-                    if (!(argumentCheck instanceof Checked.Payload<GdType> payload)) {
-                        yield new Checked.Failed<GdType>(new Evaluation.Rejected(
+                    if (!(argumentCheck instanceof Checked.Payload<GdType>(var argumentType))) {
+                        yield new Checked.Failed<>(new Evaluation.Rejected(
                                 "call arguments must be constant values", call));
                     }
-                    argumentTypes.add(payload.payload());
+                    argumentTypes.add(argumentType);
                 }
                 var selection = resolveCallStep(receiverType, call.name(), argumentTypes, call, env);
-                if (selection instanceof CallStepSelection.Failed failed) {
-                    yield new Checked.Failed<GdType>(failed.rejection());
+                if (selection instanceof CallStepSelection.Failed(var rejection)) {
+                    yield new Checked.Failed<>(rejection);
                 }
                 var registered = (CallStepSelection.Registered) selection;
-                yield new Checked.Payload<GdType>(registered.entry().returnType());
+                yield new Checked.Payload<>(registered.entry().returnType());
             }
             case AttributeSubscriptStep _, MissingAttributeStep _, UnknownAttributeStep _ ->
-                    new Checked.Failed<GdType>(new Evaluation.Rejected(
+                    new Checked.Failed<>(new Evaluation.Rejected(
                             "attribute step '" + step.getClass().getSimpleName()
                                     + "' is not supported in constant expressions",
                             step
@@ -958,11 +989,11 @@ public final class FrontendConstantEvaluator {
         if (callee instanceof Checked.Failed<GdType> failed) {
             return failed;
         }
-        if (!(callee instanceof Checked.Namespace<GdType> namespace)) {
+        if (!(callee instanceof Checked.Namespace<GdType>(var identity))) {
             return new Checked.Failed<>(new Evaluation.Rejected(
                     "the callee resolves to a constant value, not a type constructor", call));
         }
-        if (!(namespace.identity() instanceof GdType targetType)) {
+        if (!(identity instanceof GdType targetType)) {
             return new Checked.Failed<>(new Evaluation.Rejected(
                     "the callee denotes a namespace that is not a builtin type", call));
         }
@@ -972,16 +1003,15 @@ public final class FrontendConstantEvaluator {
             if (argumentCheck instanceof Checked.Failed<GdType> failed) {
                 return failed;
             }
-            if (!(argumentCheck instanceof Checked.Payload<GdType> payload)) {
+            if (!(argumentCheck instanceof Checked.Payload<GdType>(var argumentType))) {
                 return new Checked.Failed<>(new Evaluation.Rejected(
                         "call arguments must be constant values", call));
             }
-            argumentTypes.add(payload.payload());
+            argumentTypes.add(argumentType);
         }
         return switch (FrontendConstConstructorSupport.selectConstructor(
                 env.lookup().classRegistry(), targetType, argumentTypes)) {
-            case FrontendConstConstructorSupport.Selection.Selected _ ->
-                    new Checked.Payload<>(targetType);
+            case FrontendConstConstructorSupport.Selection.Selected _ -> new Checked.Payload<>(targetType);
             case FrontendConstConstructorSupport.Selection.Rejected rejected ->
                     new Checked.Failed<>(new Evaluation.Rejected(rejected.reason(), call));
         };
@@ -997,17 +1027,15 @@ public final class FrontendConstantEvaluator {
             @NotNull EvaluationEnvironment env
     ) {
         return switch (env.lookup().resolve(name)) {
-            case LookupContext.LookupResult.ResolvedConstant constant ->
-                    new Checked.Payload<>(constant.value());
+            case LookupContext.LookupResult.ResolvedConstant constant -> new Checked.Payload<>(constant.value());
             case LookupContext.LookupResult.ResolvedNamespace namespace ->
                     new Checked.Namespace<>(namespace.namespaceIdentity());
             case LookupContext.LookupResult.NonConstant nonConstant ->
                     new Checked.Failed<>(new Evaluation.Rejected(nonConstant.reason(), anchor));
             case LookupContext.LookupResult.Blocked blocked ->
                     new Checked.Failed<>(new Evaluation.Rejected(blocked.reason(), anchor));
-            case LookupContext.LookupResult.Unknown _ ->
-                    new Checked.Failed<>(new Evaluation.Rejected(
-                            "unknown identifier '" + name + "' in " + expressionSuffix(env), anchor));
+            case LookupContext.LookupResult.Unknown _ -> new Checked.Failed<>(new Evaluation.Rejected(
+                    "unknown identifier '" + name + "' in " + expressionSuffix(env), anchor));
         };
     }
 
@@ -1056,20 +1084,20 @@ public final class FrontendConstantEvaluator {
         if (FrontendConstCallSelectionSupport.sameExactType(argument.type(), declaredType)) {
             return argument;
         }
-        if (argument instanceof GdConstantValue.IntValue intValue
+        if (argument instanceof GdConstantValue.IntValue(var value)
                 && declaredType instanceof GdFloatType) {
-            return new GdConstantValue.FloatValue(intValue.value());
+            return new GdConstantValue.FloatValue(value);
         }
-        if (argument instanceof GdConstantValue.BuiltinValue builtinValue
-                && builtinValue.type() instanceof GdIntVectorType sourceVector
+        if (argument instanceof GdConstantValue.BuiltinValue(var sourceType, var components)
+                && sourceType instanceof GdIntVectorType sourceVector
                 && declaredType instanceof GdFloatVectorType targetVector
                 && sourceVector.getDimension() == targetVector.getDimension()) {
-            var leaves = new ArrayList<GdConstantValue>(builtinValue.components().size());
-            for (var leaf : builtinValue.components()) {
-                if (!(leaf instanceof GdConstantValue.IntValue intLeaf)) {
+            var leaves = new ArrayList<GdConstantValue>(components.size());
+            for (var leaf : components) {
+                if (!(leaf instanceof GdConstantValue.IntValue(var value))) {
                     return null;
                 }
-                leaves.add(new GdConstantValue.FloatValue(intLeaf.value()));
+                leaves.add(new GdConstantValue.FloatValue(value));
             }
             return new GdConstantValue.BuiltinValue(declaredType, leaves);
         }
@@ -1127,7 +1155,7 @@ public final class FrontendConstantEvaluator {
                         ? new Checked.Payload<>(GdIntType.INT)
                         : new Checked.Failed<>(new Evaluation.Rejected(
                         "unary operator '~' requires an 'int' operand, got '"
-                                + operandType.getTypeName() + "'", unary));
+                        + operandType.getTypeName() + "'", unary));
             }
             case NOT -> {
                 var denied = requireCapability(
@@ -1139,7 +1167,7 @@ public final class FrontendConstantEvaluator {
                         ? new Checked.Payload<>(GdBoolType.BOOL)
                         : new Checked.Failed<>(new Evaluation.Rejected(
                         "unary operator '" + unary.operator() + "' requires a 'bool' operand, got '"
-                                + operandType.getTypeName() + "'", unary));
+                        + operandType.getTypeName() + "'", unary));
             }
             default -> {
                 return new Checked.Failed<>(new Evaluation.Rejected(
@@ -1165,8 +1193,8 @@ public final class FrontendConstantEvaluator {
         if (FrontendBuiltinOperatorSupport.isMixedIntFloatScalarPair(leftType, rightType)) {
             return new Checked.Failed<>(unsupportedPair(description, leftType, rightType, binary, env));
         }
-        if (leftType instanceof GdIntType && rightType instanceof GdIntType) {
-            return switch (operator) {
+        return switch (leftType) {
+            case GdIntType _ when rightType instanceof GdIntType -> switch (operator) {
                 case ADD, SUBTRACT, MULTIPLY, DIVIDE, MODULE, SHIFT_LEFT, SHIFT_RIGHT,
                      BIT_AND, BIT_OR, BIT_XOR -> admit(env, EvaluationPolicy.Capability.INT_ARITHMETIC,
                         description, GdIntType.INT, binary);
@@ -1177,47 +1205,41 @@ public final class FrontendConstantEvaluator {
                                 description, GdBoolType.BOOL, binary);
                 default -> new Checked.Failed<>(unsupportedPair(description, leftType, rightType, binary, env));
             };
-        }
-        if (leftType instanceof GdFloatType && rightType instanceof GdFloatType) {
-            return switch (operator) {
-                case ADD, SUBTRACT, MULTIPLY, DIVIDE, POWER ->
-                        admit(env, EvaluationPolicy.Capability.FLOAT_ARITHMETIC,
-                                description, GdFloatType.FLOAT, binary);
+            case GdFloatType _ when rightType instanceof GdFloatType -> switch (operator) {
+                case ADD, SUBTRACT, MULTIPLY, DIVIDE, POWER -> admit(env, EvaluationPolicy.Capability.FLOAT_ARITHMETIC,
+                        description, GdFloatType.FLOAT, binary);
                 case EQUAL, NOT_EQUAL, LESS, LESS_EQUAL, GREATER, GREATER_EQUAL ->
                         admit(env, EvaluationPolicy.Capability.COMPARISON,
                                 description, GdBoolType.BOOL, binary);
                 default -> new Checked.Failed<>(unsupportedPair(description, leftType, rightType, binary, env));
             };
-        }
-        if (leftType instanceof GdBoolType && rightType instanceof GdBoolType) {
-            return switch (operator) {
-                case EQUAL, NOT_EQUAL, AND, OR ->
-                        admit(env, EvaluationPolicy.Capability.BOOL_OPERATORS,
-                                description, GdBoolType.BOOL, binary);
+            case GdBoolType _ when rightType instanceof GdBoolType -> switch (operator) {
+                case EQUAL, NOT_EQUAL, AND, OR -> admit(env, EvaluationPolicy.Capability.BOOL_OPERATORS,
+                        description, GdBoolType.BOOL, binary);
                 default -> new Checked.Failed<>(unsupportedPair(description, leftType, rightType, binary, env));
             };
-        }
-        if (leftType instanceof GdStringType && rightType instanceof GdStringType) {
-            return switch (operator) {
+            case GdStringType _ when rightType instanceof GdStringType -> switch (operator) {
                 case ADD -> admit(env, EvaluationPolicy.Capability.STRING_OPERATORS,
                         description, GdStringType.STRING, binary);
                 case EQUAL, NOT_EQUAL -> admit(env, EvaluationPolicy.Capability.STRING_OPERATORS,
                         description, GdBoolType.BOOL, binary);
                 default -> new Checked.Failed<>(unsupportedPair(description, leftType, rightType, binary, env));
             };
-        }
-        // Controlled-builtin pairs belong to the geometry operator surface: same-type component
-        // arithmetic (`%` for `*i`), component IEEE `==`/`!=`, and the directional scalar
-        // pairs — deliberately narrower than the full metadata operator tables.
-        if (isBuiltinConstantType(leftType) || isBuiltinConstantType(rightType)) {
-            var denied = requireCapability(
-                    env, EvaluationPolicy.Capability.BUILTIN_OPERATORS, description, binary);
-            if (denied != null) {
-                return new Checked.Failed<>(denied);
+            default -> {
+                // Controlled-builtin pairs belong to the geometry operator surface: same-type component
+                // arithmetic (`%` for `*i`), component IEEE `==`/`!=`, and the directional scalar
+                // pairs — deliberately narrower than the full metadata operator tables.
+                if (isBuiltinConstantType(leftType) || isBuiltinConstantType(rightType)) {
+                    var denied = requireCapability(
+                            env, EvaluationPolicy.Capability.BUILTIN_OPERATORS, description, binary);
+                    if (denied != null) {
+                        yield new Checked.Failed<>(denied);
+                    }
+                    yield requireBuiltinBinaryOperandTypes(operator, leftType, rightType, binary, env);
+                }
+                yield new Checked.Failed<>(unsupportedPair(description, leftType, rightType, binary, env));
             }
-            return requireBuiltinBinaryOperandTypes(operator, leftType, rightType, binary, env);
-        }
-        return new Checked.Failed<>(unsupportedPair(description, leftType, rightType, binary, env));
+        };
     }
 
     private static @NotNull Checked<GdType> admit(
@@ -1323,39 +1345,34 @@ public final class FrontendConstantEvaluator {
             @NotNull UnaryExpression unary,
             @NotNull EvaluationEnvironment env
     ) {
-        if (operand instanceof GdConstantValue.IntValue intValue) {
-            return switch (operator) {
+        return switch (operand) {
+            case GdConstantValue.IntValue(var value) -> switch (operator) {
                 // Java long semantics are the int64 wrap rule for unary minus and bitwise not.
-                case NEGATE -> new Evaluation.Resolved(new GdConstantValue.IntValue(-intValue.value()));
+                case NEGATE -> new Evaluation.Resolved(new GdConstantValue.IntValue(-value));
                 case POSITIVE -> new Evaluation.Resolved(operand);
-                case BIT_NOT -> new Evaluation.Resolved(new GdConstantValue.IntValue(~intValue.value()));
+                case BIT_NOT -> new Evaluation.Resolved(new GdConstantValue.IntValue(~value));
                 default -> throw new IllegalStateException(
                         "admitted unary operator '" + operator + "' is not computable on int");
             };
-        }
-        if (operand instanceof GdConstantValue.FloatValue floatValue) {
-            return switch (operator) {
-                case NEGATE -> new Evaluation.Resolved(new GdConstantValue.FloatValue(-floatValue.value()));
+            case GdConstantValue.FloatValue(var value) -> switch (operator) {
+                case NEGATE -> new Evaluation.Resolved(new GdConstantValue.FloatValue(-value));
                 case POSITIVE -> new Evaluation.Resolved(operand);
                 default -> throw new IllegalStateException(
                         "admitted unary operator '" + operator + "' is not computable on float");
             };
-        }
-        if (operand instanceof GdConstantValue.BoolValue boolValue && operator == GodotOperator.NOT) {
-            return new Evaluation.Resolved(new GdConstantValue.BoolValue(!boolValue.value()));
-        }
-        if (operand instanceof GdConstantValue.BuiltinValue builtin) {
-            return switch (operator) {
+            case GdConstantValue.BoolValue(var value) when operator == GodotOperator.NOT ->
+                    new Evaluation.Resolved(new GdConstantValue.BoolValue(!value));
+            case GdConstantValue.BuiltinValue builtin -> switch (operator) {
                 case POSITIVE -> new Evaluation.Resolved(operand);
                 case NEGATE -> negateBuiltinLeaves(builtin, unary, env);
                 default -> throw new IllegalStateException(
                         "admitted unary operator '" + operator + "' is not computable on '"
                                 + builtin.type().getTypeName() + "'");
             };
-        }
-        throw new IllegalStateException(
-                "admitted unary operator '" + operator + "' is not computable on '"
-                        + operand.type().getTypeName() + "'");
+            default -> throw new IllegalStateException(
+                    "admitted unary operator '" + operator + "' is not computable on '"
+                            + operand.type().getTypeName() + "'");
+        };
     }
 
     /// Per-leaf negation for builtin values; `*i`/`Rect2i` components stay fail-closed on the
@@ -1397,11 +1414,9 @@ public final class FrontendConstantEvaluator {
             @NotNull BinaryExpression binary,
             @NotNull EvaluationEnvironment env
     ) {
-        if (leftValue instanceof GdConstantValue.IntValue leftInt
-                && rightValue instanceof GdConstantValue.IntValue rightInt) {
-            var left = leftInt.value();
-            var right = rightInt.value();
-            return switch (operator) {
+        return switch (leftValue) {
+            case GdConstantValue.IntValue(var left)
+                    when rightValue instanceof GdConstantValue.IntValue(var right) -> switch (operator) {
                 case ADD -> resolvedInt(left + right);
                 case SUBTRACT -> resolvedInt(left - right);
                 case MULTIPLY -> resolvedInt(left * right);
@@ -1451,12 +1466,8 @@ public final class FrontendConstantEvaluator {
                 default -> throw new IllegalStateException(
                         "admitted binary operator '" + operator + "' is not computable on int pair");
             };
-        }
-        if (leftValue instanceof GdConstantValue.FloatValue leftFloat
-                && rightValue instanceof GdConstantValue.FloatValue rightFloat) {
-            var left = leftFloat.value();
-            var right = rightFloat.value();
-            return switch (operator) {
+            case GdConstantValue.FloatValue(var left)
+                    when rightValue instanceof GdConstantValue.FloatValue(var right) -> switch (operator) {
                 case ADD -> resolvedFloat(left + right);
                 case SUBTRACT -> resolvedFloat(left - right);
                 case MULTIPLY -> resolvedFloat(left * right);
@@ -1477,35 +1488,32 @@ public final class FrontendConstantEvaluator {
                 default -> throw new IllegalStateException(
                         "admitted binary operator '" + operator + "' is not computable on float pair");
             };
-        }
-        if (leftValue instanceof GdConstantValue.BoolValue leftBool
-                && rightValue instanceof GdConstantValue.BoolValue rightBool) {
-            return switch (operator) {
-                case EQUAL -> resolvedBool(leftBool.value() == rightBool.value());
-                case NOT_EQUAL -> resolvedBool(leftBool.value() != rightBool.value());
+            case GdConstantValue.BoolValue(var left)
+                    when rightValue instanceof GdConstantValue.BoolValue(var right) -> switch (operator) {
+                case EQUAL -> resolvedBool(left == right);
+                case NOT_EQUAL -> resolvedBool(left != right);
                 default -> throw new IllegalStateException(
                         "admitted binary operator '" + operator + "' is not computable on bool pair");
             };
-        }
-        if (leftValue instanceof GdConstantValue.StringValue leftString
-                && rightValue instanceof GdConstantValue.StringValue rightString) {
-            return switch (operator) {
+            case GdConstantValue.StringValue(var left)
+                    when rightValue instanceof GdConstantValue.StringValue(var right) -> switch (operator) {
                 case ADD -> new Evaluation.Resolved(
-                        new GdConstantValue.StringValue(leftString.value() + rightString.value()));
-                case EQUAL -> resolvedBool(leftString.value().equals(rightString.value()));
-                case NOT_EQUAL -> resolvedBool(!leftString.value().equals(rightString.value()));
+                        new GdConstantValue.StringValue(left + right));
+                case EQUAL, NOT_EQUAL -> resolvedBool((operator == GodotOperator.EQUAL) == left.equals(right));
                 default -> throw new IllegalStateException(
                         "admitted binary operator '" + operator + "' is not computable on String pair");
             };
-        }
-        if (leftValue instanceof GdConstantValue.BuiltinValue
-                || rightValue instanceof GdConstantValue.BuiltinValue) {
-            return computeBuiltinBinary(
-                    operator, leftValue, rightValue, resultType, binary, env);
-        }
-        throw new IllegalStateException(
-                "admitted operand pair '" + leftValue.type().getTypeName() + "' and '"
-                        + rightValue.type().getTypeName() + "' has no computation rule");
+            default -> {
+                if (leftValue instanceof GdConstantValue.BuiltinValue
+                        || rightValue instanceof GdConstantValue.BuiltinValue) {
+                    yield computeBuiltinBinary(
+                            operator, leftValue, rightValue, resultType, binary, env);
+                }
+                throw new IllegalStateException(
+                        "admitted operand pair '" + leftValue.type().getTypeName() + "' and '"
+                                + rightValue.type().getTypeName() + "' has no computation rule");
+            }
+        };
     }
 
     /// Geometry value computation for admitted builtin pairs: component IEEE `==`/`!=`,
@@ -1526,7 +1534,7 @@ public final class FrontendConstantEvaluator {
                 // comparison happens per leaf with primitive `==`.
                 var equal = builtinLeavesEqual(
                         leftBuiltin.components(), rightBuiltin.components());
-                return resolvedBool(operator == GodotOperator.EQUAL ? equal : !equal);
+                return resolvedBool((operator == GodotOperator.EQUAL) == equal);
             }
             return computeBuiltinPairArithmetic(
                     operator, leftBuiltin, rightBuiltin, binary, env);
@@ -1541,12 +1549,12 @@ public final class FrontendConstantEvaluator {
     ) {
         for (var index = 0; index < leftLeaves.size(); index++) {
             var same = switch (leftLeaves.get(index)) {
-                case GdConstantValue.FloatValue leftLeaf ->
-                        rightLeaves.get(index) instanceof GdConstantValue.FloatValue rightLeaf
-                                && leftLeaf.value() == rightLeaf.value();
-                case GdConstantValue.IntValue leftLeaf ->
-                        rightLeaves.get(index) instanceof GdConstantValue.IntValue rightLeaf
-                                && leftLeaf.value() == rightLeaf.value();
+                case GdConstantValue.FloatValue(var left) ->
+                        rightLeaves.get(index) instanceof GdConstantValue.FloatValue(var right)
+                                && left == right;
+                case GdConstantValue.IntValue(var left) ->
+                        rightLeaves.get(index) instanceof GdConstantValue.IntValue(var right)
+                                && left == right;
                 default -> false;
             };
             if (!same) {
@@ -1666,8 +1674,8 @@ public final class FrontendConstantEvaluator {
                 result.add(new GdConstantValue.IntValue(computed));
             }
         } else {
-            var scalarValue = scalar instanceof GdConstantValue.FloatValue floatScalar
-                    ? floatScalar.value()
+            var scalarValue = scalar instanceof GdConstantValue.FloatValue(var value)
+                    ? value
                     : (double) ((GdConstantValue.IntValue) scalar).value();
             if (operator == GodotOperator.DIVIDE && scalarValue == 0.0) {
                 return new Evaluation.Rejected(
@@ -1715,16 +1723,6 @@ public final class FrontendConstantEvaluator {
             }
         }
         return result;
-    }
-
-    /// Detects the `Long.MIN_VALUE` magnitude edge in any radix the integer-lexeme grammar
-    /// admits. The unsigned parse shares the ordinary lexeme validation — prefix, radix
-    /// digits, and between-two-digits underscores — and accepts exactly 2^63; every other
-    /// malformed or overflowing lexeme stays a normal literal rejection so nothing else
-    /// widens silently.
-    private static boolean isMinValueMagnitudeLexeme(@NotNull String lexeme) {
-        var magnitude = StringUtil.parseGdUnsignedIntegerLexeme(lexeme);
-        return magnitude != null && magnitude == Long.MIN_VALUE;
     }
 
     private static @Nullable GodotOperator parseUnaryOperator(@NotNull String lexeme) {
@@ -1826,7 +1824,7 @@ public final class FrontendConstantEvaluator {
                 env.policy().domain() == EvaluationPolicy.EvaluationDomain.ENUM
                         ? description + " is not supported in enum constants"
                         : description + " is not supported for operand types '" + leftType.getTypeName()
-                        + "' and '" + rightType.getTypeName() + "'",
+                          + "' and '" + rightType.getTypeName() + "'",
                 binary
         );
     }
@@ -1850,8 +1848,7 @@ public final class FrontendConstantEvaluator {
             @NotNull Node anchor
     ) {
         return switch (checked) {
-            case Checked.Payload<GdConstantValue> payload ->
-                    new Evaluation.Resolved(payload.payload());
+            case Checked.Payload<GdConstantValue> payload -> new Evaluation.Resolved(payload.payload());
             case Checked.Failed<GdConstantValue> failed -> failed.rejection();
             case Checked.Namespace<GdConstantValue> _ -> new Evaluation.Rejected(
                     "the name denotes a constant namespace, not a value", anchor);

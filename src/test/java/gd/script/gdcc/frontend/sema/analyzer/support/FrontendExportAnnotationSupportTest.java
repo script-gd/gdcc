@@ -6,15 +6,20 @@ import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.Point;
+import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendGdAnnotation;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendAnnotationCollector;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Unit-level anchoring of the export argument contract: hint_string encoding precision
 /// (numeric rendering, string forms, escapes) and every malformed shape. Pipeline-level
@@ -65,6 +70,31 @@ class FrontendExportAnnotationSupportTest {
                         "0,15"
                 )
         );
+    }
+
+    @Test
+    void evaluateAcceptsSignedLongMinimumFromSourceButRejectsIntOverflow() {
+        assertSupported(parseRangeAnnotation("-9223372036854775808"), "export_range", "-9223372036854775808,0");
+        assertSupported(parseRangeAnnotation("-0x8000000000000000"), "export_range", "-9223372036854775808,0");
+        var error = "@export_range argument 1 must be a number literal";
+        assertMalformed(parseRangeAnnotation("9223372036854775808"), error);
+        assertMalformed(parseRangeAnnotation("+9223372036854775808"), error);
+        assertMalformed(parseRangeAnnotation("-9223372036854775809"), error);
+    }
+
+    private static FrontendGdAnnotation parseRangeAnnotation(String minimum) {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("range_limit.gd"), """
+                extends RefCounted
+                @export_range(%s, 0)
+                var value: int = 0
+                """.formatted(minimum), diagnostics);
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        return new FrontendAnnotationCollector().collect(unit).entrySet().stream()
+                .flatMap(entry -> entry.getValue().stream())
+                .filter(annotation -> annotation.name().equals("export_range"))
+                .findFirst()
+                .orElseThrow();
     }
 
     @Test

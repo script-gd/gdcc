@@ -19,6 +19,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopNextItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopShouldContinueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.GetVariantTypeItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.IntConstantItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ConstantValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MatchBindItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MatchContainerMaterializeItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MatchElementFetchItem;
@@ -969,8 +970,8 @@ public final class FrontendCfgGraphBuilder {
     /// Builds one DICTIONARY destructuring test chain:
     /// `[typeof gate] -> materialize -> length gate -> per-entry has(key) -> fetch + value test`.
     ///
-    /// Entry keys are constants (type-check owns the Godot rule); a `_` value pattern degenerates
-    /// to the has-check alone and skips the fetch entirely.
+    /// Entry keys are folded constants. Key-only entries and `_` value patterns check for the key
+    /// without fetching its value.
     private @NotNull String buildMatchDictionaryPatternTest(
             @NotNull DictionaryExpression pattern,
             @NotNull String subjectValueId,
@@ -1106,48 +1107,51 @@ public final class FrontendCfgGraphBuilder {
     }
 
     /// Publishes one dictionary entry's `has(key)` gate, and behind its true edge the value fetch
-    /// plus the value pattern's recursive test. The key constant is materialized once in the gate
-    /// sequence and reused by the fetch.
+    /// plus the value pattern's recursive test when needed. The key constant is materialized once
+    /// in the gate sequence and reused by the fetch.
     private @NotNull String buildMatchDictionaryEntryTest(
             @NotNull DictEntry entry,
             @NotNull String containerValueId,
             @NotNull String trueTargetId,
             @NotNull String falseTargetId
     ) {
-        // The §5.6-4 key-constant rule is owned by type-check; a non-constant key reaching CFG
-        // means the analyzer pipeline broke, so fail fast instead of lowering a runtime key read.
-        if (!FrontendMatchSupport.isConstantPatternOperand(requireAnalysisData(), entry.key())) {
+        var key = entry.key();
+        var keyConstant = FrontendMatchSupport.resolvedDictionaryPatternKeyOrNull(requireAnalysisData(), key);
+        if (keyConstant == null) {
             throw new IllegalStateException(
-                    "dictionary pattern key is not a published constant at " + entry.key().range()
+                    "dictionary pattern key is not a published constant at " + key.range()
             );
         }
         var gateCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
-        var keyBuild = buildValue(gateCursor, entry.key(), null);
-        var hasBuild = emitMatchHasKey(keyBuild.cursor(), entry.key(), containerValueId, keyBuild.resultValueId());
+        var keyValueId = nextValueId();
+        gateCursor.currentSequence().items().add(new ConstantValueItem(key, keyConstant, keyValueId));
+        var hasBuild = emitMatchHasKey(gateCursor, key, containerValueId, keyValueId);
         var valuePattern = entry.value();
-        var valueRoute = FrontendMatchSupport.classifyPatternRoute(valuePattern);
         var valueTestEntryId = trueTargetId;
-        if (valueRoute != FrontendMatchPatternRoute.WILDCARD) {
-            var fetchCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
-            var fetch = emitMatchElementFetch(fetchCursor, valuePattern, containerValueId, keyBuild.resultValueId());
-            var subTestEntryId = buildNestedMatchPatternTest(
-                    valuePattern,
-                    valueRoute,
-                    fetch.resultValueId(),
-                    trueTargetId,
-                    falseTargetId
-            );
-            publishSequenceNode(
-                    fetch.cursor().currentSequence().id(),
-                    fetch.cursor().currentSequence().items(),
-                    subTestEntryId
-            );
-            valueTestEntryId = fetchCursor.entryId();
+        if (valuePattern != null) {
+            var valueRoute = FrontendMatchSupport.classifyPatternRoute(valuePattern);
+            if (valueRoute != FrontendMatchPatternRoute.WILDCARD) {
+                var fetchCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+                var fetch = emitMatchElementFetch(fetchCursor, valuePattern, containerValueId, keyValueId);
+                var subTestEntryId = buildNestedMatchPatternTest(
+                        valuePattern,
+                        valueRoute,
+                        fetch.resultValueId(),
+                        trueTargetId,
+                        falseTargetId
+                );
+                publishSequenceNode(
+                        fetch.cursor().currentSequence().id(),
+                        fetch.cursor().currentSequence().items(),
+                        subTestEntryId
+                );
+                valueTestEntryId = fetchCursor.entryId();
+            }
         }
         publishConditionBranch(
                 gateCursor.entryId(),
                 hasBuild.cursor().currentSequence(),
-                entry.key(),
+                key,
                 hasBuild.resultValueId(),
                 valueTestEntryId,
                 falseTargetId
@@ -1308,7 +1312,7 @@ public final class FrontendCfgGraphBuilder {
         var workingCursor = patternValueBuild.cursor();
         if (subjectFamily != null && patternFamily != null
                 && !FrontendMatchSupport.familiesCompatibleForMatch(subjectFamily, patternFamily)) {
-            var falseBuild = emitBoolConstant(workingCursor, pattern, false);
+            var falseBuild = emitFalseConstant(workingCursor, pattern);
             return publishConditionBranch(
                     cursor.entryId(),
                     falseBuild.cursor().currentSequence(),
@@ -1733,13 +1737,12 @@ public final class FrontendCfgGraphBuilder {
         return emitGetVariantType(cursor, anchor, subjectValueId);
     }
 
-    private @NotNull ValueBuild emitBoolConstant(
+    private @NotNull ValueBuild emitFalseConstant(
             @NotNull BuildCursor cursor,
-            @NotNull Node anchor,
-            boolean value
+            @NotNull Node anchor
     ) {
         var resultValueId = nextValueId();
-        cursor.currentSequence().items().add(new BoolConstantItem(anchor, value, resultValueId));
+        cursor.currentSequence().items().add(new BoolConstantItem(anchor, false, resultValueId));
         return new ValueBuild(cursor, anchor, resultValueId, null, null);
     }
 
@@ -1748,7 +1751,16 @@ public final class FrontendCfgGraphBuilder {
             @NotNull Node anchor,
             long value
     ) {
-        var resultValueId = nextValueId();
+        return emitIntConstant(cursor, anchor, value, null);
+    }
+
+    private @NotNull ValueBuild emitIntConstant(
+            @NotNull BuildCursor cursor,
+            @NotNull Node anchor,
+            long value,
+            @Nullable String preferredResultValueId
+    ) {
+        var resultValueId = chooseResultValueId(preferredResultValueId);
         cursor.currentSequence().items().add(new IntConstantItem(anchor, value, resultValueId));
         return new ValueBuild(cursor, anchor, resultValueId, null, null);
     }
@@ -2079,6 +2091,9 @@ public final class FrontendCfgGraphBuilder {
                     preferredResultValueId
             );
             case UnaryExpression unaryExpression -> {
+                if (StringUtil.isGdLongMinUnary(unaryExpression)) {
+                    yield emitIntConstant(cursor, unaryExpression, Long.MIN_VALUE, preferredResultValueId);
+                }
                 var operandBuild = buildValue(cursor, unaryExpression.operand(), null);
                 yield emitOpaqueValue(
                         operandBuild.cursor(),
@@ -2677,7 +2692,8 @@ public final class FrontendCfgGraphBuilder {
             var keyBuild = buildValue(currentCursor, entry.key(), null);
             currentCursor = keyBuild.cursor();
             operandValueIds.add(keyBuild.resultValueId());
-            var valueBuild = buildValue(currentCursor, entry.value(), null);
+            var value = Objects.requireNonNull(entry.value(), "Dictionary literal entry must have a value");
+            var valueBuild = buildValue(currentCursor, value, null);
             currentCursor = valueBuild.cursor();
             operandValueIds.add(valueBuild.resultValueId());
         }
@@ -4191,8 +4207,8 @@ public final class FrontendCfgGraphBuilder {
                 && (!FrontendCallMutabilitySupport.mayMutateReceiver(publishedCall)
                 || (receiverType != null
                 && !FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(
-                        receiverType,
-                        FrontendWritableTypeWritebackSupport.WritebackRouteProvenance.STATIC_PROPERTY)))) {
+                receiverType,
+                FrontendWritableTypeWritebackSupport.WritebackRouteProvenance.STATIC_PROPERTY)))) {
             return routePayload.reverseCommitSteps();
         }
         return appendPromotedLeaf(routePayload);

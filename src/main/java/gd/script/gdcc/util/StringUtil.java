@@ -244,6 +244,70 @@ public final class StringUtil {
         return text.lines().toList();
     }
 
+    /// Tests the four ASCII characters used for GDScript whitespace. This works on both
+    /// UTF-16 code units and UTF-8 bytes; callers decide whether a CR must be followed by LF.
+    public static boolean isGdWhitespaceChar(int value) {
+        return value == ' ' || value == '\t' || value == '\n' || value == '\r';
+    }
+
+    /// Skips space, tab, LF, and complete CRLF pairs in `[start, end)`. Stops at a lone CR;
+    /// line continuations and comments are not whitespace for this scan.
+    public static int skipGdWhitespace(@NotNull String text, int start, int end) {
+        Objects.checkFromToIndex(start, end, text.length());
+        var scan = start;
+        while (scan < end) {
+            var value = text.charAt(scan);
+            if (!isGdWhitespaceChar(value) || (value == '\r' && !isCrLfAt(text, scan, end))) {
+                break;
+            }
+            scan += value == '\r' ? 2 : 1;
+        }
+        return scan;
+    }
+
+    /// Starting in code, skips GDScript whitespace, backslash-LF/CRLF continuations and
+    /// `#` comments in `[start, end)`. Returns the first other offset, or `end`.
+    public static int skipGdTrivia(@NotNull String text, int start, int end) {
+        var scan = start;
+        while (true) {
+            scan = skipGdWhitespace(text, scan, end);
+            if (scan == end) {
+                return end;
+            }
+            switch (text.charAt(scan)) {
+                case '#' -> scan = skipGdLineComment(text, scan, end);
+                case '\\' -> {
+                    var lineBreak = scan + 1;
+                    if (lineBreak == end) {
+                        return scan;
+                    }
+                    var next = text.charAt(lineBreak);
+                    if (next == '\n') {
+                        scan = lineBreak + 1;
+                    } else if (next == '\r' && isCrLfAt(text, lineBreak, end)) {
+                        scan = lineBreak + 2;
+                    } else {
+                        return scan;
+                    }
+                }
+                default -> {
+                    return scan;
+                }
+            }
+        }
+    }
+
+    /// Given a `#` already identified in code at `start`, returns the first LF in
+    /// `[start, end)`, or `end` if the comment has no LF in that range. Does not consume LF.
+    public static int skipGdLineComment(@NotNull String text, int start, int end) {
+        var lineFeed = text.indexOf('\n', start, end);
+        return lineFeed < 0 ? end : lineFeed;
+    }
+
+    private static boolean isCrLfAt(@NotNull String text, int carriageReturn, int end) {
+        return carriageReturn + 1 < end && text.charAt(carriageReturn + 1) == '\n';
+    }
+
     /// Parses a GDScript integer literal lexeme into its 64-bit value.
     ///
     /// Accepted shape: optional `0x`/`0b`/`0o` radix prefix (either case) plus ASCII digits with `_`

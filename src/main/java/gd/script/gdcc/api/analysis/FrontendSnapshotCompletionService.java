@@ -14,6 +14,7 @@ import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueEnumerator;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
+import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.gdextension.ExtensionGlobalEnum;
 import gd.script.gdcc.scope.ClassDef;
@@ -29,6 +30,7 @@ import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -246,17 +248,13 @@ public final class FrontendSnapshotCompletionService {
         return List.of();
     }
 
-    /// Largest index <= `end` such that all bytes in `[index, end)` are ASCII whitespace.
+    /// Scans backward over ASCII whitespace, including standalone CR bytes.
     private static int skipWhitespaceBack(byte[] sourceBytes, int lowerBound, int end) {
         var scan = end;
-        while (scan > lowerBound && isAsciiWhitespace(sourceBytes[scan - 1])) {
+        while (scan > lowerBound && StringUtil.isGdWhitespaceChar(sourceBytes[scan - 1])) {
             scan--;
         }
         return scan;
-    }
-
-    private static boolean isAsciiWhitespace(byte value) {
-        return value == ' ' || value == '\t' || value == '\n' || value == '\r';
     }
 
     /// The deepest-fact walk for one candidate receiver end: `null` when no node ends exactly
@@ -565,10 +563,7 @@ public final class FrontendSnapshotCompletionService {
                 putConstantCandidate(out, constant.name(), shadowedNames);
             }
             for (var classEnum : engineClass.enums()) {
-                putEnumGroupCandidate(out, classEnum.name(), shadowedNames);
-                for (var value : classEnum.values()) {
-                    putEnumValueCandidate(out, value.name(), shadowedNames);
-                }
+                putMetadataEnumCandidates(out, classEnum.name(), classEnum.values(), shadowedNames);
             }
         }
         if (classDef instanceof ExtensionBuiltinClass builtinClass) {
@@ -576,10 +571,7 @@ public final class FrontendSnapshotCompletionService {
                 putConstantCandidate(out, constant.name(), shadowedNames);
             }
             for (var classEnum : builtinClass.enums()) {
-                putEnumGroupCandidate(out, classEnum.name(), shadowedNames);
-                for (var value : classEnum.values()) {
-                    putEnumValueCandidate(out, value.name(), shadowedNames);
-                }
+                putMetadataEnumCandidates(out, classEnum.name(), classEnum.values(), shadowedNames);
             }
         }
     }
@@ -594,13 +586,15 @@ public final class FrontendSnapshotCompletionService {
         }
     }
 
-    private static void putEnumGroupCandidate(
+    private static void putMetadataEnumCandidates(
             @NotNull Map<String, CompletionCandidate> out,
             @NotNull String name,
+            @NotNull List<ExtensionEnumValue> values,
             @NotNull Set<String> shadowedNames
     ) {
-        if (!shadowedNames.contains(name)) {
-            putIfAbsent(out, "V:" + name, new CompletionCandidate(name, CompletionCandidateKind.VALUE, null, null));
+        putConstantCandidate(out, name, shadowedNames);
+        for (var value : values) {
+            putEnumValueCandidate(out, value.name(), shadowedNames);
         }
     }
 

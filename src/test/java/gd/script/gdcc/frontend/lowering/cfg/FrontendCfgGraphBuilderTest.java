@@ -1,6 +1,8 @@
 package gd.script.gdcc.frontend.lowering.cfg;
 
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.AwaitItem;
@@ -10,6 +12,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
+import gd.script.gdcc.frontend.lowering.cfg.item.IntConstantItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallableLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
@@ -28,10 +31,13 @@ import gd.script.gdcc.frontend.lowering.cfg.region.FrontendForRegion;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendIfRegion;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendWhileRegion;
 import gd.script.gdcc.frontend.parse.FrontendModule;
+import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
+import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
@@ -39,6 +45,7 @@ import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
@@ -46,10 +53,13 @@ import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
+import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.BreakStatement;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.CommentStatement;
 import dev.superice.gdparser.frontend.ast.ConditionalExpression;
+import dev.superice.gdparser.frontend.ast.ContinueStatement;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
@@ -62,6 +72,8 @@ import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
+import dev.superice.gdparser.frontend.ast.SourceFile;
+import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
@@ -75,6 +87,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -89,6 +102,48 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendCfgGraphBuilderTest {
     private static final Range SYNTHETIC_RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
+    @Test
+    void buildExecutableBodyEmitsMinimumIntegerWithoutMaterializingItsMagnitude() {
+        var module = parseModule(
+                "cfg_builder_minimum_integer.gd",
+                """
+                        class_name CfgBuilderMinimumInteger
+                        extends RefCounted
+                        
+                        func ping() -> int:
+                            var minimum = -9223372036854775808
+                            return -0x8000000000000000
+                        """,
+                Map.of("CfgBuilderMinimumInteger", "RuntimeCfgBuilderMinimumInteger")
+        );
+        var block = requireFunctionDeclaration(module.units().getFirst().ast(), "ping").body();
+        var local = assertInstanceOf(VariableDeclaration.class, block.statements().getFirst());
+        var initializer = assertInstanceOf(UnaryExpression.class, local.value());
+        var returned = assertInstanceOf(
+                UnaryExpression.class, assertInstanceOf(ReturnStatement.class, block.statements().getLast()).value()
+        );
+        // The CFG consumes the signed expressions, not their out-of-range magnitude children.
+        var analysisData = FrontendAnalysisData.bootstrap();
+        analysisData.expressionTypes().put(initializer, FrontendExpressionType.resolved(GdIntType.INT));
+        analysisData.expressionTypes().put(returned, FrontendExpressionType.resolved(GdIntType.INT));
+        analysisData.slotTypes().put(local, GdVariantType.VARIANT);
+        var graph = new FrontendCfgGraphBuilder().buildExecutableBody(block, analysisData).graph();
+        var items = collectAllValueOpItems(graph);
+        var constants = items.stream().filter(IntConstantItem.class::isInstance).map(IntConstantItem.class::cast).toList();
+        var declaration = requireSingleSequenceItem(graph, LocalDeclarationItem.class);
+        var returnStop = requireSingleStopNode(graph);
+        assertAll(
+                () -> assertEquals(2, constants.size()),
+                () -> assertSame(initializer, constants.getFirst().anchor()),
+                () -> assertSame(returned, constants.getLast().anchor()),
+                () -> assertEquals(List.of(Long.MIN_VALUE, Long.MIN_VALUE), constants.stream().map(IntConstantItem::value).toList()),
+                () -> assertEquals("minimum_0", constants.getFirst().resultValueId()),
+                () -> assertEquals(constants.getFirst().resultValueId(), declaration.initializerValueIdOrNull()),
+                () -> assertEquals(constants.getLast().resultValueId(), returnStop.returnValueIdOrNull()),
+                () -> assertFalse(items.stream().anyMatch(OpaqueExprValueItem.class::isInstance))
+        );
+    }
 
     @Test
     void buildExecutableBodyPublishesCastItemWithOperandFirst() throws Exception {
@@ -135,29 +190,7 @@ class FrontendCfgGraphBuilderTest {
 
     @Test
     void buildExecutableBodyFailsFastForBreakWithoutLoopFrame() throws Exception {
-        var analyzed = analyzeFunction(
-                "cfg_builder_break_without_loop.gd",
-                """
-                        class_name CfgBuilderBreakWithoutLoop
-                        extends RefCounted
-                        
-                        func ping() -> void:
-                            break
-                        """,
-                "ping",
-                Map.of("CfgBuilderBreakWithoutLoop", "RuntimeCfgBuilderBreakWithoutLoop")
-        );
-
-        var rootBlock = analyzed.function().body();
-        var exception = assertThrows(
-                IllegalStateException.class,
-                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
-        );
-
-        assertAll(
-                () -> assertTrue(analyzed.diagnostics().hasErrors()),
-                () -> assertTrue(exception.getMessage().contains("loop frame"), exception.getMessage())
-        );
+        assertFailsFastWithoutLoopFrame("break", BreakStatement::new);
     }
 
     @Test
@@ -809,9 +842,9 @@ class FrontendCfgGraphBuilderTest {
                 """
                         class_name CfgBuilderStaticPackedCall
                         extends RefCounted
-
+                        
                         static var bytes: PackedByteArray
-
+                        
                         func ping() -> void:
                             bytes.append(1)
                         """,
@@ -1115,10 +1148,10 @@ class FrontendCfgGraphBuilderTest {
                 """
                         class_name CfgBuilderIdentifierReceiverNestedCallWriteback
                         extends RefCounted
-
+                        
                         func helper(value: int) -> int:
                             return value + 1
-
+                        
                         func ping(seed: int) -> PackedInt32Array:
                             var values := PackedInt32Array()
                             values.push_back(helper(seed))
@@ -1926,7 +1959,7 @@ class FrontendCfgGraphBuilderTest {
                 """
                         class_name CfgBuilderCaptureReceiverAlias
                         extends RefCounted
-
+                        
                         func ping(values: PackedInt32Array, seed: int) -> void:
                             values.push_back(seed)
                         """,
@@ -1943,7 +1976,7 @@ class FrontendCfgGraphBuilderTest {
         var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
         analyzed.analysisData().symbolBindings().compute(
                 receiver,
-                (k, originalBinding) -> new FrontendBinding(
+                (_, originalBinding) -> new FrontendBinding(
                         "values",
                         FrontendBindingKind.CAPTURE,
                         originalBinding == null ? receiver : originalBinding.declarationSite()
@@ -1999,7 +2032,7 @@ class FrontendCfgGraphBuilderTest {
         var target = assertInstanceOf(IdentifierExpression.class, assignmentExpression.left());
         analyzed.analysisData().symbolBindings().compute(
                 target,
-                (k, originalBinding) -> new FrontendBinding(
+                (_, originalBinding) -> new FrontendBinding(
                         "self",
                         FrontendBindingKind.SELF,
                         originalBinding == null ? target : originalBinding.declarationSite()
@@ -2049,7 +2082,7 @@ class FrontendCfgGraphBuilderTest {
         var target = assertInstanceOf(IdentifierExpression.class, assignmentExpression.left());
         analyzed.analysisData().symbolBindings().compute(
                 target,
-                (k, originalBinding) -> new FrontendBinding(
+                (_, originalBinding) -> new FrontendBinding(
                         "value",
                         FrontendBindingKind.CONSTANT,
                         originalBinding == null ? target : originalBinding.declarationSite()
@@ -2095,7 +2128,7 @@ class FrontendCfgGraphBuilderTest {
         var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
         analyzed.analysisData().symbolBindings().compute(
                 receiver,
-                (k, originalBinding) -> new FrontendBinding(
+                (_, originalBinding) -> new FrontendBinding(
                         "self",
                         FrontendBindingKind.SELF,
                         originalBinding == null ? receiver : originalBinding.declarationSite()
@@ -2714,7 +2747,7 @@ class FrontendCfgGraphBuilderTest {
         var rootBlock = analyzed.function().body();
         var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
         var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
-        var staticStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().get(0));
+        var staticStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
         var staticAssignment = assertInstanceOf(AssignmentExpression.class, staticStatement.expression());
         var staticTarget = assertInstanceOf(AttributeExpression.class, staticAssignment.left());
         var staticStep = assertInstanceOf(AttributeSubscriptStep.class, staticTarget.steps().getLast());
@@ -3211,7 +3244,7 @@ class FrontendCfgGraphBuilderTest {
         var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
         var containerLoad = assertInstanceOf(MemberLoadItem.class, entryNode.items().get(0));
         var keyItem = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().get(1));
-        var assignmentItem = assertInstanceOf(AssignmentItem.class, entryNode.items().get(entryNode.items().size() - 1));
+        var assignmentItem = assertInstanceOf(AssignmentItem.class, entryNode.items().getLast());
         var payload = assignmentItem.writableRoutePayload();
         var commitStep = assertInstanceOf(
                 FrontendWritableRoutePayload.StepDescriptor.class,
@@ -3271,7 +3304,7 @@ class FrontendCfgGraphBuilderTest {
 
         var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
         var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
-        var containerLoad = assertInstanceOf(MemberLoadItem.class, entryNode.items().get(0));
+        var containerLoad = assertInstanceOf(MemberLoadItem.class, entryNode.items().getFirst());
         var currentValueReads = entryNode.items().stream()
                 .filter(SubscriptLoadItem.class::isInstance)
                 .map(SubscriptLoadItem.class::cast)
@@ -3283,7 +3316,7 @@ class FrontendCfgGraphBuilderTest {
                 .orElseThrow(() -> new AssertionError("missing CompoundAssignmentBinaryOpItem"));
         var assignmentItem = assertInstanceOf(
                 AssignmentItem.class,
-                entryNode.items().get(entryNode.items().size() - 1)
+                entryNode.items().getLast()
         );
 
         assertAll(
@@ -3330,7 +3363,7 @@ class FrontendCfgGraphBuilderTest {
 
         var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
         var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
-        var assignmentItem = assertInstanceOf(AssignmentItem.class, entryNode.items().get(entryNode.items().size() - 1));
+        var assignmentItem = assertInstanceOf(AssignmentItem.class, entryNode.items().getLast());
         var payload = assignmentItem.writableRoutePayload();
 
         assertAll(
@@ -4688,31 +4721,48 @@ class FrontendCfgGraphBuilderTest {
 
     @Test
     void buildExecutableBodyFailsFastForContinueWithoutLoopFrame() throws Exception {
-        var analyzed = analyzeFunction(
-                "cfg_builder_continue_without_loop.gd",
+        assertFailsFastWithoutLoopFrame("continue", ContinueStatement::new);
+    }
+
+    private static void assertFailsFastWithoutLoopFrame(
+            @NotNull String keyword,
+            @NotNull Function<Range, Statement> createJump
+    ) throws Exception {
+        var unit = parseModule(
+                "cfg_builder_" + keyword + "_without_loop.gd",
                 """
-                        class_name CfgBuilderContinueWithoutLoop
-                        extends RefCounted
-                        
                         func ping() -> void:
-                            continue
+                            pass
                         """,
-                "ping",
-                Map.of("CfgBuilderContinueWithoutLoop", "RuntimeCfgBuilderContinueWithoutLoop")
+                Map.of()
+        ).units().getFirst();
+        var template = requireFunctionDeclaration(unit.ast(), "ping");
+        var jump = createJump.apply(template.body().statements().getFirst().range());
+        var rootBlock = new Block(List.of(jump), template.body().range());
+        // Inject the invalid jump after parsing so semantic analysis publishes the scope for this exact block.
+        var function = new FunctionDeclaration(
+                template.name(), template.parameters(), template.returnType(), template.isStatic(), rootBlock, template.range()
         );
+        var ast = new SourceFile(List.of(function), unit.ast().range());
+        var diagnostics = new DiagnosticManager();
+        var analysisData = new FrontendSemanticAnalyzer().analyzeForCompile(
+                FrontendModule.singleUnit("test_module", new FrontendSourceUnit(unit.path(), unit.source(), ast)),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        assertInstanceOf(BlockScope.class, analysisData.scopesByAst().get(rootBlock));
+        assertEquals(List.of(FrontendDiagnostic.error(
+                "sema.loop_control_flow",
+                "`%s` statement must be enclosed by `while` or `for` within the current callable boundary".formatted(keyword),
+                FrontendDiagnostic.sourcePathText(unit.path()),
+                FrontendRange.fromAstRange(jump.range())
+        )), diagnostics.snapshot().asList());
 
         var exception = assertThrows(
                 IllegalStateException.class,
-                () -> new FrontendCfgGraphBuilder().buildExecutableBody(
-                        analyzed.function().body(),
-                        analyzed.analysisData()
-                )
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analysisData)
         );
-
-        assertAll(
-                () -> assertTrue(analyzed.diagnostics().hasErrors()),
-                () -> assertTrue(exception.getMessage().contains("loop frame"), exception.getMessage())
-        );
+        assertEquals("Loop control statement requires an active loop frame", exception.getMessage());
     }
 
     private static @NotNull FrontendCfgGraph.BranchNode requireReachableBranch(

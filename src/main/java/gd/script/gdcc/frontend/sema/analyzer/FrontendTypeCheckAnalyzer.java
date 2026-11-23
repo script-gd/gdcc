@@ -1,7 +1,10 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
+import gd.script.gdcc.frontend.parse.FrontendParseRecovery;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.scope.ClassScope;
@@ -65,10 +68,12 @@ import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.TypeRef;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -313,7 +318,7 @@ public class FrontendTypeCheckAnalyzer {
             reportBareReturnNotAllowed(access, returnStatement, returnSlot);
             return;
         }
-        if (returnSlot instanceof GdVoidType) {
+        if (returnSlot instanceof GdVoidType || access.context().currentInitializer()) {
             reportValuedReturnNotAllowed(access, returnStatement);
             return;
         }
@@ -504,7 +509,9 @@ public class FrontendTypeCheckAnalyzer {
             var entry = dictionaryExpression.entries().get(operand.sourceIndex());
             return switch (operand.role()) {
                 case DICTIONARY_KEY -> entry.key();
-                case DICTIONARY_VALUE -> entry.value();
+                case DICTIONARY_VALUE -> Objects.requireNonNull(
+                        entry.value(), "A dictionary value operand requires a literal value expression"
+                );
                 case ARRAY_ELEMENT -> throw new IllegalStateException(
                         "ARRAY_ELEMENT role cannot appear on a dictionary literal plan"
                 );
@@ -747,6 +754,7 @@ public class FrontendTypeCheckAnalyzer {
     protected record TypeCheckVisitContext(
             @Nullable ClassDef currentClass,
             @Nullable GdType currentCallableReturnSlot,
+            boolean currentInitializer,
             @NotNull ResolveRestriction currentRestriction,
             boolean currentStaticContext,
             int executableBodyDepth,
@@ -791,9 +799,8 @@ public class FrontendTypeCheckAnalyzer {
         };
     }
 
-    /// Match shape checks owned by `sema.type_check`. Body traversal is always performed by the
-    /// visitor regardless of route readiness; this helper only validates bind/multi-pattern mutex
-    /// and dictionary-key constantness.
+    /// Match shape checks owned by `sema.type_check`. Surviving bodies are visited regardless of
+    /// route readiness; this helper checks only binding placement and dictionary-key constantness.
     protected void visitMatchStatement(
             @NotNull TypeCheckAccess access,
             @NotNull MatchStatement matchStatement
@@ -804,6 +811,9 @@ public class FrontendTypeCheckAnalyzer {
         visitNestedCastExpressions(access, matchStatement.value());
         for (var sectionPlan : plan.sections()) {
             var section = sectionPlan.section();
+            if (access.analysisData().skippedSubtreeRoots().containsKey(section)) {
+                continue;
+            }
             if (section.guard() != null) {
                 visitConditionExpression(access, section.guard(), section);
             }
@@ -849,11 +859,14 @@ public class FrontendTypeCheckAnalyzer {
                 for (var entry : dictionary.entries()) {
                     visitNestedCastExpressions(access, entry.key());
                     visitDictionaryPatternKey(access, entry.key());
-                    visitMatchPattern(access, new FrontendMatchPatternPlan(
-                            entry.value(),
-                            FrontendMatchSupport.classifyPatternRoute(entry.value()),
-                            FrontendMatchSupport.collectPatternBindings(entry.value(), false)
-                    ));
+                    var value = entry.value();
+                    if (value != null) {
+                        visitMatchPattern(access, new FrontendMatchPatternPlan(
+                                value,
+                                FrontendMatchSupport.classifyPatternRoute(value),
+                                FrontendMatchSupport.collectPatternBindings(value, false)
+                        ));
+                    }
                 }
             }
         }
@@ -895,7 +908,7 @@ public class FrontendTypeCheckAnalyzer {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull Expression key
     ) {
-        return FrontendMatchSupport.isConstantPatternOperand(analysisData, key);
+        return FrontendMatchSupport.isConstantDictionaryPatternKey(analysisData, key);
     }
 
     private static @NotNull FrontendMatchPlan requirePublishedMatchPlan(
@@ -1042,12 +1055,52 @@ public class FrontendTypeCheckAnalyzer {
     ) {
         Objects.requireNonNull(access, "access must not be null");
         Objects.requireNonNull(returnStatement, "returnStatement must not be null");
-        access.diagnosticManager().error(
+        var analysisData = access.analysisData();
+        var diagnosticManager = access.diagnosticManager();
+        var sourcePath = FrontendDiagnostic.sourcePathText(access.sourcePath());
+        var recoveries = access.context().currentInitializer()
+                ? analysisData.parseRecoveriesByOwner().getOrDefault(returnStatement, List.of()).stream()
+                  .filter(FrontendTypeCheckAnalyzer::isInitializerReturnRecovery)
+                  .toList()
+                : List.<FrontendParseRecovery>of();
+        if (!recoveries.isEmpty()) {
+            var coveringDiagnostics = new ArrayList<FrontendDiagnostic>(recoveries.size());
+            for (var recovery : recoveries) {
+                var cover = FrontendParseRecovery.findActiveCoveringDiagnostic(
+                        recovery, analysisData, diagnosticManager, sourcePath
+                );
+                if (cover == null) {
+                    break;
+                }
+                coveringDiagnostics.add(cover);
+            }
+            if (coveringDiagnostics.size() == recoveries.size()) {
+                for (var i = 0; i < recoveries.size(); i++) {
+                    recoveries.get(i).claimCoveringDiagnostic(analysisData, diagnosticManager, coveringDiagnostics.get(i));
+                }
+                return;
+            }
+        }
+        var detail = access.context().currentCallableReturnSlot() instanceof GdVoidType
+                ? " returns 'void' and does not accept 'return expr'"
+                : " is an initializer and does not accept 'return expr'";
+        var error = FrontendDiagnostic.error(
                 TYPE_CHECK_CATEGORY,
-                describeCallableOwner(access) + " returns 'void' and does not accept 'return expr'",
-                access.sourcePath(),
+                describeCallableOwner(access) + detail,
+                sourcePath,
                 FrontendRange.fromAstRange(returnStatement.range())
         );
+        diagnosticManager.report(error);
+        for (var recovery : recoveries) {
+            analysisData.claimParseRecovery(recovery, error);
+        }
+    }
+
+    private static boolean isInitializerReturnRecovery(@NotNull FrontendParseRecovery recovery) {
+        return recovery.severity() == FrontendDiagnosticSeverity.ERROR
+                && DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN.equals(recovery.code())
+                && "statement.control".equals(recovery.facet())
+                && "Constructor cannot return a value.".equals(recovery.message());
     }
 
     private static void reportReturnTypeMismatch(
@@ -1137,13 +1190,10 @@ public class FrontendTypeCheckAnalyzer {
     private static @NotNull String describeCallableOwner(@NotNull TypeCheckAccess access) {
         Objects.requireNonNull(access, "access must not be null");
         var currentClass = access.context().currentClass();
-        var currentReturnSlot = Objects.requireNonNull(
+        Objects.requireNonNull(
                 access.context().currentCallableReturnSlot(),
                 "currentCallableReturnSlot must not be null while describing callable owner"
         );
-        if (currentReturnSlot instanceof GdVoidType) {
-            return currentClass == null ? "Callable" : "Callable on class '" + currentClass.getName() + "'";
-        }
         return currentClass == null
                 ? "Callable"
                 : "Callable on class '" + currentClass.getName() + "'";
@@ -1159,6 +1209,7 @@ public class FrontendTypeCheckAnalyzer {
         private int supportedExecutableBlockDepth;
         private @Nullable ClassDef currentClass;
         private @Nullable GdType currentCallableReturnSlot;
+        private boolean currentInitializer;
         private @NotNull ResolveRestriction currentRestriction = ResolveRestriction.unrestricted();
         private boolean currentStaticContext;
         private @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext currentPropertyInitializerContext;
@@ -1444,6 +1495,9 @@ public class FrontendTypeCheckAnalyzer {
             visitMatchStatement(callbackAccess(), matchStatement);
             scanNestedLambdaBodies(matchStatement.value());
             for (var section : matchStatement.sections()) {
+                if (analysisData.skippedSubtreeRoots().containsKey(section)) {
+                    continue;
+                }
                 for (var pattern : section.patterns()) {
                     scanNestedLambdaBodies(pattern);
                 }
@@ -1509,10 +1563,14 @@ public class FrontendTypeCheckAnalyzer {
             var previousRestriction = currentRestriction;
             var previousStaticContext = currentStaticContext;
             var previousCallableReturnSlot = currentCallableReturnSlot;
+            var previousInitializer = currentInitializer;
             var previousPropertyInitializerContext = currentPropertyInitializerContext;
             currentRestriction = Objects.requireNonNull(restriction, "restriction must not be null");
             currentStaticContext = staticContext;
             currentCallableReturnSlot = Objects.requireNonNull(returnSlot, "returnSlot must not be null");
+            currentInitializer = callableOwner instanceof ConstructorDeclaration
+                    || (callableOwner instanceof FunctionDeclaration function
+                    && ("_init".equals(function.name()) || "_static_init".equals(function.name())));
             currentPropertyInitializerContext = null;
             try {
                 // Accepted parameter defaults are checked with the callable context already set;
@@ -1524,6 +1582,7 @@ public class FrontendTypeCheckAnalyzer {
                 walkSupportedExecutableBlock(body);
             } finally {
                 currentPropertyInitializerContext = previousPropertyInitializerContext;
+                currentInitializer = previousInitializer;
                 currentCallableReturnSlot = previousCallableReturnSlot;
                 currentStaticContext = previousStaticContext;
                 currentRestriction = previousRestriction;
@@ -1621,6 +1680,7 @@ public class FrontendTypeCheckAnalyzer {
             return new TypeCheckVisitContext(
                     currentClass,
                     currentCallableReturnSlot,
+                    currentInitializer,
                     currentRestriction,
                     currentStaticContext,
                     supportedExecutableBlockDepth,

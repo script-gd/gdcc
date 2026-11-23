@@ -7,14 +7,18 @@ import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ConditionalExpression;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.MissingAttributeStep;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
+import dev.superice.gdparser.frontend.gdscript.GdScriptParserFacade;
 import gd.script.gdcc.frontend.constant.ConstCallResult;
 import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.frontend.constant.GdConstantValue;
@@ -37,6 +41,7 @@ import java.util.function.Consumer;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -424,7 +429,7 @@ class FrontendConstantEvaluatorTest {
                                 GdFloatVectorType.VECTOR2, "length",
                                 ConstCallableKey.InvocationKind.INSTANCE_METHOD, List.of()),
                         GdFloatType.FLOAT,
-                        (receiver, args) -> {
+                        (receiver, _) -> {
                             var components = ((GdConstantValue.BuiltinValue) receiver).components();
                             var x = ((GdConstantValue.FloatValue) components.get(0)).value();
                             var y = ((GdConstantValue.FloatValue) components.get(1)).value();
@@ -438,7 +443,7 @@ class FrontendConstantEvaluatorTest {
                                 ConstCallableKey.InvocationKind.INSTANCE_METHOD,
                                 List.of(GdFloatVectorType.VECTOR2, GdFloatType.FLOAT)),
                         GdFloatVectorType.VECTOR2,
-                        (receiver, args) -> new ConstCallResult.Resolved(receiver)
+                        (receiver, _) -> new ConstCallResult.Resolved(receiver)
                 )
         );
         var vector = GdConstantValue.BuiltinValue.ofFloats(GdFloatVectorType.VECTOR2, 3.0, 4.0);
@@ -467,9 +472,9 @@ class FrontendConstantEvaluatorTest {
                         ConstCallableKey.InvocationKind.INSTANCE_METHOD,
                         List.of(GdFloatVectorType.VECTOR2, GdFloatType.FLOAT)),
                 GdFloatVectorType.VECTOR2,
-                (receiver, args) -> {
+                (_, args) -> {
                     captured.set(args);
-                    return new ConstCallResult.Resolved(args.get(0));
+                    return new ConstCallResult.Resolved(args.getFirst());
                 }
         ));
         var context = context(
@@ -508,7 +513,7 @@ class FrontendConstantEvaluatorTest {
                         GdStringType.STRING, "contains",
                         ConstCallableKey.InvocationKind.INSTANCE_METHOD, List.of(GdStringType.STRING)),
                 GdBoolType.BOOL,
-                (receiver, args) -> new ConstCallResult.Resolved(new GdConstantValue.BoolValue(false))
+                (_, _) -> new ConstCallResult.Resolved(new GdConstantValue.BoolValue(false))
         ));
         var context = context(
                 Map.of(
@@ -583,7 +588,7 @@ class FrontendConstantEvaluatorTest {
                         GdStringType.STRING, "contains",
                         ConstCallableKey.InvocationKind.INSTANCE_METHOD, List.of(GdStringType.STRING)),
                 GdBoolType.BOOL,
-                (receiver, args) -> {
+                (_, _) -> {
                     invocations.incrementAndGet();
                     return new ConstCallResult.Resolved(new GdConstantValue.BoolValue(true));
                 }
@@ -614,7 +619,7 @@ class FrontendConstantEvaluatorTest {
                         GdStringType.STRING, "contains",
                         ConstCallableKey.InvocationKind.INSTANCE_METHOD, List.of(GdStringType.STRING)),
                 GdBoolType.BOOL,
-                (receiver, args) -> {
+                (_, _) -> {
                     invocations.incrementAndGet();
                     return new ConstCallResult.Resolved(new GdConstantValue.BoolValue(true));
                 }
@@ -643,14 +648,14 @@ class FrontendConstantEvaluatorTest {
                         GdStringType.STRING, "contains",
                         ConstCallableKey.InvocationKind.INSTANCE_METHOD, List.of(GdStringType.STRING)),
                 GdBoolType.BOOL,
-                (receiver, args) -> new ConstCallResult.Resolved(new GdConstantValue.IntValue(1))
+                (_, _) -> new ConstCallResult.Resolved(new GdConstantValue.IntValue(1))
         ));
         var domainRegistry = callableRegistry(builder -> builder.register(
                 new ConstCallableKey(
                         GdStringType.STRING, "contains",
                         ConstCallableKey.InvocationKind.INSTANCE_METHOD, List.of(GdStringType.STRING)),
                 GdBoolType.BOOL,
-                (receiver, args) -> new ConstCallResult.Rejected("needle not found")
+                (_, _) -> new ConstCallResult.Rejected("needle not found")
         ));
         var wrongTypeContext = context(
                 Map.of("S", constOf(new GdConstantValue.StringValue("abc"))),
@@ -708,6 +713,103 @@ class FrontendConstantEvaluatorTest {
                 () -> assertRejected(evaluate(lit("string_name", "&\"s\"")), "not a supported constant value"),
                 () -> assertRejected(evaluate(binary("in", intLit(1), intLit(2))), "not supported"),
                 () -> assertRejected(evaluate(binary("not in", intLit(1), intLit(2))), "not supported")
+        );
+    }
+
+    @Test
+    void matchPolicyFoldsParsedLiteralConditionalAndArithmeticKeys() {
+        var parsed = new GdScriptParserFacade().parse("""
+                func probe(value):
+                    match value:
+                        {1 + 2, null: _, &'a\\'b': _, ^'''Node/Child''': _,
+                            (&"left" if true else &"right"): _, -0x8000000000000000: _, ..}:
+                            pass
+                """);
+        assertTrue(parsed.diagnostics().isEmpty(), () -> parsed.diagnostics().toString());
+        var function = assertInstanceOf(FunctionDeclaration.class, parsed.ast().statements().getFirst());
+        var match = assertInstanceOf(MatchStatement.class, function.body().statements().getFirst());
+        var pattern = assertInstanceOf(DictionaryExpression.class, match.sections().getFirst().patterns().getFirst());
+        var policy = EvaluationPolicy.matchConstant();
+        var values = pattern.entries().stream()
+                .map(entry -> assertInstanceOf(Evaluation.Resolved.class, evaluate(entry.key(), policy)).value())
+                .toList();
+
+        assertEquals(List.of(
+                new GdConstantValue.IntValue(3L),
+                new GdConstantValue.NullValue(),
+                new GdConstantValue.StringNameValue("a'b"),
+                new GdConstantValue.NodePathValue("Node/Child"),
+                new GdConstantValue.StringNameValue("left"),
+                new GdConstantValue.IntValue(Long.MIN_VALUE)
+        ), values);
+        assertRejected(evaluate(lit("integer", "9223372036854775808"), policy), "overflows");
+    }
+
+    @Test
+    void matchLiteralCapabilitiesAreIndependentAndLeaveExistingPoliciesUnchanged() {
+        var literals = Map.of(
+                EvaluationPolicy.Capability.NULL_LITERAL, lit("null", "null"),
+                EvaluationPolicy.Capability.STRING_NAME_LITERAL, lit("string_name", "&'name'"),
+                EvaluationPolicy.Capability.NODE_PATH_LITERAL, lit("node_path", "^'Node/Child'")
+        );
+        var general = EvaluationPolicy.general();
+        var match = EvaluationPolicy.matchConstant();
+        var enumPrePass = EvaluationPolicy.enumPrePass();
+        for (var capability : EvaluationPolicy.Capability.values()) {
+            assertEquals(general.permits(capability) || literals.containsKey(capability), match.permits(capability));
+            assertEquals(capability == EvaluationPolicy.Capability.INT_ARITHMETIC, enumPrePass.permits(capability));
+        }
+        for (var entry : literals.entrySet()) {
+            var literal = entry.getValue();
+            var text = "literal '" + literal.sourceText() + "'";
+            assertEquals(new Evaluation.Rejected(text + " is not a supported constant value", literal),
+                    evaluate(literal, general));
+            assertEquals(new Evaluation.Rejected(text + " is not an int constant", literal),
+                    evaluate(literal, enumPrePass));
+            var singleCapability = new EvaluationPolicy.CapabilitySet(
+                    Set.of(entry.getKey()), EvaluationPolicy.EvaluationDomain.GENERAL);
+            assertInstanceOf(Evaluation.Resolved.class, evaluate(literal, singleCapability));
+            for (var other : literals.values()) {
+                if (other != literal) {
+                    assertRejected(evaluate(other, singleCapability), "not a supported constant value");
+                }
+            }
+        }
+    }
+
+    @Test
+    void matchPolicyRejectsMalformedQuotedLiteralsEvenInDeadBranches() {
+        var policy = EvaluationPolicy.matchConstant();
+        var badName = lit("string_name", "&'bad\\q'");
+        var badPath = lit("node_path", "^'Node' + 'Child'");
+        var badNameInDeadBranch = ternary(lit("true", "true"), lit("string_name", "&'valid'"), badName);
+        var name = assertInstanceOf(Evaluation.Rejected.class, evaluate(badNameInDeadBranch, policy));
+        var path = assertInstanceOf(Evaluation.Rejected.class, evaluate(badPath, policy));
+        assertSame(badName, name.offendingNode());
+        assertSame(badPath, path.offendingNode());
+        assertTrue(name.reason().contains("Invalid escape in literal: \\q"), name.reason());
+        assertTrue(path.reason().contains("Invalid GDScript node path lexeme: "), path.reason());
+    }
+
+    @Test
+    void matchPolicyDoesNotAdmitSpecialLiteralOperatorsOrConstructors() {
+        var policy = EvaluationPolicy.matchConstant();
+        var name = lit("string_name", "&'name'");
+        var path = lit("node_path", "^'Node'");
+        var namespaces = context(
+                Map.of("StringName", typeName(GdStringNameType.STRING_NAME),
+                        "NodePath", typeName(GdNodePathType.NODE_PATH)),
+                Map.of(), FrontendConstCallableRegistry.empty(), null);
+        assertAll(
+                () -> assertRejected(evaluate(unary("-", name), policy), "unary operator"),
+                () -> assertRejected(evaluate(binary("+", path, path), policy), "binary operator"),
+                () -> assertRejected(evaluate(binary("==", lit("null", "null"), lit("null", "null")), policy),
+                        "binary operator"),
+                () -> assertRejected(evaluate(ternary(lit("true", "true"), name, path), policy), "same exact type"),
+                () -> assertRejected(evaluate(call(identifier("StringName"), strLit("name")), namespaces, policy),
+                        "constant-constructible"),
+                () -> assertRejected(evaluate(call(identifier("NodePath"), strLit("Node")), namespaces, policy),
+                        "constant-constructible")
         );
     }
 
@@ -1194,7 +1296,7 @@ class FrontendConstantEvaluatorTest {
                 // Color component arithmetic shares the vector rules.
                 () -> assertResolvedFloatLeaves(GdColorType.COLOR, new double[]{0.25, 0.25, 0.25, 1},
                         evaluate(binary("*", identifier("C"), call(
-                                identifier("Color"), floatLit("0.5"), floatLit("0.5"), floatLit("0.5"), intLit(1))),
+                                        identifier("Color"), floatLit("0.5"), floatLit("0.5"), floatLit("0.5"), intLit(1))),
                                 context))
         );
     }
@@ -1932,7 +2034,7 @@ class FrontendConstantEvaluatorTest {
                 assertTrue(Double.isNaN(leaf.value()), "component " + index + " should be NaN");
             } else {
                 assertEquals(
-                        Double.doubleToRawLongBits((double) (float) expected[index]),
+                        Double.doubleToRawLongBits((float) expected[index]),
                         Double.doubleToRawLongBits(leaf.value()),
                         "component " + index + " of '" + type.getTypeName() + "'");
             }

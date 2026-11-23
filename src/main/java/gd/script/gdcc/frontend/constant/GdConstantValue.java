@@ -3,6 +3,9 @@ package gd.script.gdcc.frontend.constant;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdNodePathType;
+import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
@@ -12,7 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-/// Frozen compile-time `const` payload — the single source of truth for evaluated constants
+/// Frozen compile-time payload — the single source of truth for evaluated constants
 /// across frontend evaluation and use-site materialization.
 ///
 /// Payloads are pure immutable Java data: never AST nodes, Scope objects, C strings, engine
@@ -23,9 +26,9 @@ public sealed interface GdConstantValue {
     /// The exact GDScript type this frozen value carries; `BuiltinValue` returns its own `GdType`.
     @NotNull GdType type();
 
-    /// Whether `type` belongs to the exact-type set a constant value can carry: the four scalars
+    /// Whether `type` is admitted for ordinary `const` declarations: the four scalars
     /// (`bool`/`int`/`float`/`String`) plus the controlled builtin types `BuiltinValue` admits.
-    /// `Variant`, `Nil`, `Object`, containers, and every other type are not constant-capable.
+    /// Match dictionary keys can carry additional literal types without expanding this set.
     static boolean isSupportedConstantType(@NotNull GdType type) {
         var extensionType = type.getGdExtensionType();
         if (extensionType == null) {
@@ -75,6 +78,42 @@ public sealed interface GdConstantValue {
         }
     }
 
+    /// Frozen `null` payload for a dictionary pattern key.
+    record NullValue() implements GdConstantValue {
+        @Override
+        public @NotNull GdType type() {
+            return GdNilType.NIL;
+        }
+    }
+
+    /// Frozen `StringName` payload for a dictionary pattern key.
+    ///
+    /// @param value decoded name without the source literal delimiters
+    record StringNameValue(@NotNull String value) implements GdConstantValue {
+        public StringNameValue {
+            Objects.requireNonNull(value, "value must not be null");
+        }
+
+        @Override
+        public @NotNull GdType type() {
+            return GdStringNameType.STRING_NAME;
+        }
+    }
+
+    /// Frozen `NodePath` payload for a dictionary pattern key.
+    ///
+    /// @param value decoded path without the source literal delimiters
+    record NodePathValue(@NotNull String value) implements GdConstantValue {
+        public NodePathValue {
+            Objects.requireNonNull(value, "value must not be null");
+        }
+
+        @Override
+        public @NotNull GdType type() {
+            return GdNodePathType.NODE_PATH;
+        }
+    }
+
     /// Frozen controlled-builtin payload stored as flattened scalar leaves.
     ///
     /// The canonical flat component layout (order and count) is fixed: `Rect2` keeps
@@ -116,7 +155,7 @@ public sealed interface GdConstantValue {
             for (var leaf : leaves) {
                 normalized.add(switch (spec.leafKind()) {
                     case FLOAT -> {
-                        if (!(leaf instanceof FloatValue floatLeaf)) {
+                        if (!(leaf instanceof FloatValue(var value))) {
                             throw new IllegalArgumentException(
                                     "BuiltinValue '" + type.getTypeName()
                                             + "' requires float scalar leaves, but got "
@@ -125,7 +164,7 @@ public sealed interface GdConstantValue {
                         }
                         // Geometry float leaves store the value already narrowed to float32 and
                         // widened back to double — the canonical normalized leaf form.
-                        yield new FloatValue((double) (float) floatLeaf.value());
+                        yield new FloatValue((float) value);
                     }
                     case INT -> {
                         if (!(leaf instanceof IntValue intLeaf)) {
@@ -210,20 +249,14 @@ public sealed interface GdConstantValue {
                 return switch (extensionType) {
                     case VECTOR2 -> new ComponentSpec(2, LeafKind.FLOAT);
                     case VECTOR3 -> new ComponentSpec(3, LeafKind.FLOAT);
-                    case VECTOR4 -> new ComponentSpec(4, LeafKind.FLOAT);
-                    case RECT2 -> new ComponentSpec(4, LeafKind.FLOAT);
-                    case PLANE -> new ComponentSpec(4, LeafKind.FLOAT);
-                    case QUATERNION -> new ComponentSpec(4, LeafKind.FLOAT);
-                    case AABB -> new ComponentSpec(6, LeafKind.FLOAT);
+                    case VECTOR4, RECT2, PLANE, QUATERNION, COLOR -> new ComponentSpec(4, LeafKind.FLOAT);
+                    case AABB, TRANSFORM2D -> new ComponentSpec(6, LeafKind.FLOAT);
                     case BASIS -> new ComponentSpec(9, LeafKind.FLOAT);
-                    case TRANSFORM2D -> new ComponentSpec(6, LeafKind.FLOAT);
                     case TRANSFORM3D -> new ComponentSpec(12, LeafKind.FLOAT);
                     case PROJECTION -> new ComponentSpec(16, LeafKind.FLOAT);
-                    case COLOR -> new ComponentSpec(4, LeafKind.FLOAT);
                     case VECTOR2I -> new ComponentSpec(2, LeafKind.INT);
                     case VECTOR3I -> new ComponentSpec(3, LeafKind.INT);
-                    case VECTOR4I -> new ComponentSpec(4, LeafKind.INT);
-                    case RECT2I -> new ComponentSpec(4, LeafKind.INT);
+                    case VECTOR4I, RECT2I -> new ComponentSpec(4, LeafKind.INT);
                     default -> null;
                 };
             }

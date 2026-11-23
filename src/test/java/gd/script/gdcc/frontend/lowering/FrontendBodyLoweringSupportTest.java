@@ -1,11 +1,13 @@
 package gd.script.gdcc.frontend.lowering;
 
+import gd.script.gdcc.frontend.constant.GdConstantValue;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraphBuilder;
 import gd.script.gdcc.frontend.lowering.cfg.item.AwaitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ConstantValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ContainerLiteralItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
@@ -29,7 +31,10 @@ import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.type.GdccCoroStateType;
@@ -68,6 +73,52 @@ class FrontendBodyLoweringSupportTest {
 
     private static IdentifierExpression identifier(String name) {
         return new IdentifierExpression(name, SYNTHETIC_RANGE);
+    }
+
+    @Test
+    void collectCfgValueMaterializationsUsesFoldedConstantTypesWithoutExpressionFacts() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var anchor = identifier("key");
+        var constants = List.of(
+                new ConstantValueItem(anchor, new GdConstantValue.IntValue(3), "v0"),
+                new ConstantValueItem(anchor, new GdConstantValue.NullValue(), "v1"),
+                new ConstantValueItem(anchor, new GdConstantValue.StringNameValue("name"), "v2"),
+                new ConstantValueItem(anchor, new GdConstantValue.NodePathValue("Node/Child"), "v3")
+        );
+        var graph = new FrontendCfgGraph(
+                "seq_0",
+                Map.of(
+                        "seq_0", new FrontendCfgGraph.SequenceNode("seq_0", List.copyOf(constants), "stop_1"),
+                        "stop_1", new FrontendCfgGraph.StopNode("stop_1", FrontendCfgGraph.StopKind.RETURN, "v3")
+                )
+        );
+        var materializations = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                graph, analysisData, new ClassRegistry(ExtensionApiLoader.loadDefault())
+        );
+        var types = List.of(GdIntType.INT, GdNilType.NIL, GdStringNameType.STRING_NAME, GdNodePathType.NODE_PATH);
+        assertEquals(types.size(), materializations.size());
+        for (var index = 0; index < constants.size(); index++) {
+            var item = constants.get(index);
+            assertEquals(List.of(), item.operandValueIds());
+            assertEquals(item.resultValueId(), item.resultValueIdOrNull());
+            assertEquals(
+                    new FrontendBodyLoweringSupport.CfgValueMaterialization(
+                            types.get(index), FrontendBodyLoweringSupport.CfgValueMaterializationKind.TEMP_SLOT, null
+                    ),
+                    materializations.get(item.resultValueId())
+            );
+        }
+    }
+
+    @Test
+    void constantValueItemRejectsMissingPayloadAndBlankResultId() {
+        var anchor = identifier("key");
+        var constant = new GdConstantValue.IntValue(3);
+        assertAll(
+                () -> assertThrows(NullPointerException.class, () -> new ConstantValueItem(null, constant, "v0")),
+                () -> assertThrows(NullPointerException.class, () -> new ConstantValueItem(anchor, null, "v0")),
+                () -> assertThrows(IllegalArgumentException.class, () -> new ConstantValueItem(anchor, constant, " "))
+        );
     }
 
     @Test
@@ -701,7 +752,6 @@ class FrontendBodyLoweringSupportTest {
     void collectCfgValueMaterializationsRejectsNonExpressionMergeAnchorOrMissingFact() throws Exception {
         // Anchor must be a lowering expression with a RESOLVED or DYNAMIC published fact; non-expression
         // anchors and anchors without a lowering-ready fact must fail-fast with an actionable message.
-        var diagnostics = new DiagnosticManager();
         var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = FrontendAnalysisData.bootstrap();
         var flagForNonExpression = identifier("flag_ne");
@@ -793,7 +843,7 @@ class FrontendBodyLoweringSupportTest {
     }
 
     @Test
-    void collectCfgValueMaterializationsRejectsAwaitItemWithoutPublishedType() throws Exception {
+    void collectCfgValueMaterializationsRejectsAwaitItemWithoutPublishedType() {
         // Missing published facts are invariant violations (plan negative path): lowering must
         // fail fast instead of re-deriving the await classification.
         var analysisData = FrontendAnalysisData.bootstrap();

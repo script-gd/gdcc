@@ -1,6 +1,5 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
-import java.nio.file.Path;
 import java.util.*;
 import java.util.function.Predicate;
 
@@ -10,6 +9,8 @@ import dev.superice.gdparser.frontend.ast.*;
 import gd.script.gdcc.frontend.diagnostic.*;
 import gd.script.gdcc.frontend.lowering.ForLoweringContractRegistry;
 import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.parse.FrontendParseRecovery;
+import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.*;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
@@ -66,12 +67,14 @@ public class FrontendCompileCheckAnalyzer {
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
 
         var moduleSkeleton = analysisData.moduleSkeleton();
-        // Keep the stable boundary precondition even though dedup reads the live manager below.
-        analysisData.diagnostics();
-        // Freeze the live manager at compile-gate entry. This captures the latest interface/body
-        // upstream diagnostics even if a caller has not yet copied that manager state back into
-        // `FrontendAnalysisData`, while still preventing diagnostics emitted by this gate from
-        // suppressing later checks in the same run.
+        var priorDiagnostics = analysisData.diagnostics();
+        // Reconcile the live and prior managers before freezing the upstream view. New compile
+        // blockers are not added to this index, so they cannot hide later checks in this run.
+        var publishedDiagnosticIndex = new HashSet<>(diagnosticManager.snapshot().asList());
+        replayUpstreamCompileBlocks(analysisData, priorDiagnostics, diagnosticManager, publishedDiagnosticIndex);
+        FrontendParseRecovery.ensureUncoveredParseDiagnosticsReported(
+                analysisData, diagnosticManager, publishedDiagnosticIndex
+        );
         var publishedDiagnostics = diagnosticManager.snapshot();
         var scopesByAst = analysisData.scopesByAst();
 
@@ -84,24 +87,78 @@ public class FrontendCompileCheckAnalyzer {
             }
         }
 
+        var constructorBlockAnchors = collectConstructorBlockAnchors(analysisData.resolvedCalls());
         for (var sourceClassRelation : moduleSkeleton.sourceClassRelations()) {
             new AstWalkerCompileCheckVisitor(
-                    sourceClassRelation.unit().path(),
+                    sourceClassRelation.unit(),
+                    analysisData,
                     publishedDiagnostics,
-                    scopesByAst,
-                    analysisData.symbolBindings(),
-                    analysisData.expressionTypes(),
-                    analysisData.resolvedMembers(),
-                    analysisData.resolvedCalls(),
-                    analysisData.slotTypes(),
-                    analysisData.forIterationPlans(),
-                    analysisData.matchPlans(),
-                    analysisData.lambdaPlans(),
-                    analysisData.constantFacts(),
-                    analysisData.coroutineFunctions(),
+                    publishedDiagnosticIndex,
                     diagnosticManager
-            ).walk(sourceClassRelation.unit().ast());
+            ).walk(sourceClassRelation.unit().ast(), constructorBlockAnchors);
         }
+    }
+
+    /// Validate the method-call table once and identify the dedicated blockers that can sit
+    /// outside the ordinary compile surface, such as rejected parameter-default calls.
+    private static @NotNull Set<Node> collectConstructorBlockAnchors(
+            @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls
+    ) {
+        var anchors = Collections.newSetFromMap(new IdentityHashMap<Node, Boolean>());
+        for (var entry : resolvedCalls.entrySet()) {
+            var anchor = entry.getKey();
+            var hasArguments = switch (anchor) {
+                case AttributeCallStep step -> !step.arguments().isEmpty();
+                case CallExpression call -> !call.arguments().isEmpty();
+                default -> throw new IllegalStateException(
+                        "resolvedCalls must be keyed by attribute call steps or CallExpression"
+                );
+            };
+            var call = entry.getValue();
+            if (hasArguments && call.callKind() == FrontendCallResolutionKind.CONSTRUCTOR
+                    && call.ownerKind() == ScopeOwnerKind.GDCC) {
+                anchors.add(anchor);
+            }
+        }
+        return anchors;
+    }
+
+    private static void replayUpstreamCompileBlocks(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull DiagnosticSnapshot priorDiagnostics,
+            @NotNull DiagnosticManager diagnosticManager,
+            @NotNull Set<FrontendDiagnostic> activeDiagnostics
+    ) {
+        var claims = analysisData.claimedParseRecoveries();
+        var claimsCoveredByOriginal = new HashSet<FrontendDiagnostic>();
+        if (!claims.isEmpty()) {
+            for (var unit : analysisData.effectiveSourceUnits()) {
+                var sourcePath = FrontendDiagnostic.sourcePathText(unit.path());
+                for (var recovery : unit.parseRecoveries()) {
+                    var claimed = claims.get(recovery);
+                    if (claimed != null && recovery.severity() == FrontendDiagnosticSeverity.ERROR
+                            && activeDiagnostics.contains(FrontendDiagnostic.error(
+                            recovery.code(), recovery.message(), sourcePath, recovery.range()
+                    ))) {
+                        claimsCoveredByOriginal.add(claimed);
+                    }
+                }
+            }
+        }
+        for (var diagnostic : priorDiagnostics.asList()) {
+            if (!COMPILE_CHECK_CATEGORY.equals(diagnostic.category())
+                    && !diagnostic.category().startsWith("parse.")
+                    && isCompileBlockingPublishedDiagnostic(diagnostic)
+                    && !claimsCoveredByOriginal.contains(diagnostic)
+                    && activeDiagnostics.add(diagnostic)) {
+                diagnosticManager.report(diagnostic);
+            }
+        }
+    }
+
+    private static boolean isCompileBlockingPublishedDiagnostic(@NotNull FrontendDiagnostic diagnostic) {
+        return diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                || NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES.contains(diagnostic.category());
     }
 
     /// `frontend_await_implementation.md` §8, aligned with Godot's `must be called with "await"`:
@@ -223,8 +280,11 @@ public class FrontendCompileCheckAnalyzer {
     /// - replays published semantic facts against the marked surface and upgrades blocked routes
     ///   into final compile diagnostics
     private static final class AstWalkerCompileCheckVisitor implements ASTNodeHandler {
-        private final @NotNull Path sourcePath;
+        private final @NotNull String sourcePath;
         private final @NotNull DiagnosticSnapshot publishedDiagnostics;
+        private final @NotNull Set<FrontendDiagnostic> publishedDiagnosticIndex;
+        private final @NotNull FrontendAnalysisData analysisData;
+        private final @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
         private final @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes;
@@ -255,45 +315,36 @@ public class FrontendCompileCheckAnalyzer {
 
         /// Capture the shared semantic facts for one source file and prepare a dedicated walker.
         private AstWalkerCompileCheckVisitor(
-                @NotNull Path sourcePath,
+                @NotNull FrontendSourceUnit unit,
+                @NotNull FrontendAnalysisData analysisData,
                 @NotNull DiagnosticSnapshot publishedDiagnostics,
-                @NotNull FrontendAstSideTable<Scope> scopesByAst,
-                @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
-                @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes,
-                @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers,
-                @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls,
-                @NotNull FrontendAstSideTable<GdType> slotTypes,
-                @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans,
-                @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans,
-                @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans,
-                @NotNull FrontendAstSideTable<Evaluation> constantFacts,
-                @NotNull Set<LirFunctionDef> coroutineFunctions,
+                @NotNull Set<FrontendDiagnostic> publishedDiagnosticIndex,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
-            this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath must not be null");
-            this.publishedDiagnostics = Objects.requireNonNull(
-                    publishedDiagnostics,
-                    "publishedDiagnostics must not be null"
-            );
-            this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
-            this.symbolBindings = Objects.requireNonNull(symbolBindings, "symbolBindings must not be null");
-            this.expressionTypes = Objects.requireNonNull(expressionTypes, "expressionTypes must not be null");
-            this.resolvedMembers = Objects.requireNonNull(resolvedMembers, "resolvedMembers must not be null");
-            this.resolvedCalls = Objects.requireNonNull(resolvedCalls, "resolvedCalls must not be null");
-            this.slotTypes = Objects.requireNonNull(slotTypes, "slotTypes must not be null");
-            this.forIterationPlans = Objects.requireNonNull(forIterationPlans, "forIterationPlans must not be null");
-            this.matchPlans = Objects.requireNonNull(matchPlans, "matchPlans must not be null");
-            this.lambdaPlans = Objects.requireNonNull(lambdaPlans, "lambdaPlans must not be null");
-            this.constantFacts = Objects.requireNonNull(constantFacts, "constantFacts must not be null");
-            this.coroutineFunctions = Objects.requireNonNull(coroutineFunctions, "coroutineFunctions must not be null");
-            this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
+            sourcePath = Objects.requireNonNull(FrontendDiagnostic.sourcePathText(unit.path()));
+            this.publishedDiagnostics = publishedDiagnostics;
+            this.publishedDiagnosticIndex = publishedDiagnosticIndex;
+            this.analysisData = analysisData;
+            skippedSubtreeRoots = analysisData.skippedSubtreeRoots();
+            scopesByAst = analysisData.scopesByAst();
+            symbolBindings = analysisData.symbolBindings();
+            expressionTypes = analysisData.expressionTypes();
+            resolvedMembers = analysisData.resolvedMembers();
+            resolvedCalls = analysisData.resolvedCalls();
+            slotTypes = analysisData.slotTypes();
+            forIterationPlans = analysisData.forIterationPlans();
+            matchPlans = analysisData.matchPlans();
+            lambdaPlans = analysisData.lambdaPlans();
+            constantFacts = analysisData.constantFacts();
+            coroutineFunctions = analysisData.coroutineFunctions();
+            this.diagnosticManager = diagnosticManager;
             astWalker = new ASTWalker(this);
         }
 
         /// Walk the file once to mark compile surface, then scan published facts against that surface.
-        private void walk(@NotNull SourceFile sourceFile) {
+        private void walk(@NotNull SourceFile sourceFile, @NotNull Set<Node> constructorBlockAnchors) {
             astWalker.walk(Objects.requireNonNull(sourceFile, "sourceFile must not be null"));
-            scanPublishedCompileBlocks();
+            scanPublishedCompileBlocks(sourceFile, constructorBlockAnchors);
         }
 
         /// Unknown nodes are ignored until a dedicated compile-surface rule is added.
@@ -458,7 +509,7 @@ public class FrontendCompileCheckAnalyzer {
         /// `elif` reuses the same compile-surface rules as the parent `if` chain.
         @Override
         public @NotNull FrontendASTTraversalDirective handleElifClause(@NotNull ElifClause elifClause) {
-            if (supportedExecutableBlockDepth <= 0 || isNotPublished(elifClause)) {
+            if (supportedExecutableBlockDepth <= 0 || pruneSkippedRoot(elifClause) || isNotPublished(elifClause)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             markCompileSurfaceNode(elifClause);
@@ -509,6 +560,11 @@ public class FrontendCompileCheckAnalyzer {
             if (supportedExecutableBlockDepth <= 0 || isNotPublished(matchStatement)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            // The plan excludes damaged sections. Look at the source sections to diagnose any
+            // skipped root that has no upstream owner, even when no plan was published.
+            for (var section : matchStatement.sections()) {
+                pruneSkippedRoot(section);
+            }
             var plan = matchPlans.get(matchStatement);
             if (plan == null) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
@@ -520,6 +576,9 @@ public class FrontendCompileCheckAnalyzer {
             markCompileSurfaceNode(matchStatement);
             walkExpression(matchStatement.value());
             for (var sectionPlan : plan.sections()) {
+                if (skippedSubtreeRoots.containsKey(sectionPlan.section())) {
+                    continue;
+                }
                 for (var patternPlan : sectionPlan.patterns()) {
                     walkMatchPatternForCompileSurface(patternPlan.patternNode());
                 }
@@ -529,8 +588,11 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
-        private static boolean allMatchRoutesReady(@NotNull FrontendMatchPlan plan) {
+        private boolean allMatchRoutesReady(@NotNull FrontendMatchPlan plan) {
             for (var sectionPlan : plan.sections()) {
+                if (skippedSubtreeRoots.containsKey(sectionPlan.section())) {
+                    continue;
+                }
                 for (var patternPlan : sectionPlan.patterns()) {
                     if (!FrontendMatchSupport.isRouteLoweringReady(patternPlan.route())) {
                         return false;
@@ -559,7 +621,9 @@ public class FrontendCompileCheckAnalyzer {
                     var dictionary = (DictionaryExpression) pattern;
                     for (var entry : dictionary.entries()) {
                         walkExpression(entry.key());
-                        walkMatchPatternForCompileSurface(entry.value());
+                        if (entry.value() != null) {
+                            walkMatchPatternForCompileSurface(entry.value());
+                        }
                     }
                 }
                 case LITERAL, EXPRESSION -> walkExpression(pattern);
@@ -592,27 +656,70 @@ public class FrontendCompileCheckAnalyzer {
         private void walkAcceptedParameterDefaultRoots(@NotNull FunctionDeclaration functionDeclaration) {
             for (var parameter : functionDeclaration.parameters()) {
                 var defaultRoot = parameter.defaultValue();
-                if (defaultRoot != null
-                        && expressionTypes.containsKey(defaultRoot)
-                        && !hasPublishedBlockingDiagnosticWithin(defaultRoot)) {
+                var recoveries = analysisData.parseRecoveriesByOwner().get(parameter);
+                var defaultRecoveries = recoveries == null ? List.<FrontendParseRecovery>of() : recoveries.stream()
+                                                                                                .filter(recovery -> recovery.severity() == FrontendDiagnosticSeverity.ERROR
+                                                                                                                    && "parameter.default".equals(recovery.facet()))
+                                                                                                .toList();
+                var coveredBySlotRecovery = defaultRecoveries.stream().anyMatch(this::hasActiveRecovery);
+                if ((defaultRoot != null && skippedSubtreeRoots.containsKey(defaultRoot))
+                        || (defaultRoot == null && !defaultRecoveries.isEmpty())) {
+                    var anchor = defaultRoot != null ? defaultRoot : parameter;
+                    if (!coveredBySlotRecovery && hasNoPublishedBlockingDiagnosticWithin(anchor)) {
+                        reportCompileBlock(anchor, "Damaged parameter default cannot be compiled");
+                    }
+                } else if (defaultRoot != null && expressionTypes.containsKey(defaultRoot)
+                        && !coveredBySlotRecovery && hasNoPublishedBlockingDiagnosticWithin(defaultRoot)) {
                     walkExpression(defaultRoot);
                 }
             }
         }
 
-        /// Whether any blocking upstream diagnostic already owns a range inside this subtree, which
-        /// marks the whole parameter-default island as upstream-owned regardless of where exactly
-        /// the rejection anchored (root, inner step, or wrapper operand).
-        private boolean hasPublishedBlockingDiagnosticWithin(@NotNull Node root) {
+        private boolean hasActiveRecovery(@NotNull FrontendParseRecovery recovery) {
+            return recovery.severity() == FrontendDiagnosticSeverity.ERROR
+                    && FrontendParseRecovery.findActiveCoveringDiagnostic(
+                    recovery, analysisData, publishedDiagnosticIndex, sourcePath
+            ) != null;
+        }
+
+        private boolean hasActiveRecoveryAt(@NotNull Node owner) {
+            var recoveries = analysisData.parseRecoveriesByOwner().get(owner);
+            return recoveries != null && recoveries.stream().anyMatch(this::hasActiveRecovery);
+        }
+
+        private boolean pruneSkippedRoot(@NotNull Node root) {
+            if (!skippedSubtreeRoots.containsKey(root)) {
+                return false;
+            }
+            reportDamagedRootIfUncovered(root, "Damaged syntax cannot be compiled");
+            return true;
+        }
+
+        private boolean pruneDamagedExpression(@NotNull Expression expression) {
+            if (expression instanceof RecoveredInfixExpression) {
+                reportDamagedRootIfUncovered(expression, "Recovered infix expression cannot be compiled");
+                return true;
+            }
+            return pruneSkippedRoot(expression);
+        }
+
+        private void reportDamagedRootIfUncovered(@NotNull Node root, @NotNull String message) {
+            if (!hasActiveRecoveryAt(root) && hasNoPublishedBlockingDiagnosticWithin(root)) {
+                reportCompileBlock(root, message);
+            }
+        }
+
+        /// Whether the subtree has no upstream blocker at its root or any inner range.
+        private boolean hasNoPublishedBlockingDiagnosticWithin(@NotNull Node root) {
             var rootRange = FrontendRange.fromAstRange(root.range());
+            if (rootRange == null) {
+                return !hasPublishedConflictingDiagnosticAt(root);
+            }
             return publishedDiagnostics.asList().stream()
-                    .filter(diagnostic -> Objects.equals(
-                            diagnostic.sourcePath(),
-                            FrontendDiagnostic.sourcePathText(sourcePath)
-                    ))
+                    .filter(diagnostic -> sourcePath.equals(diagnostic.sourcePath()))
                     .filter(diagnostic -> isCompileBlockingPublishedDiagnostic(diagnostic)
                             && !isNonConflictingPublishedDiagnostic(diagnostic))
-                    .anyMatch(diagnostic -> {
+                    .noneMatch(diagnostic -> {
                         var range = diagnostic.range();
                         return range != null
                                 && range.startByte() >= rootRange.startByte()
@@ -623,7 +730,9 @@ public class FrontendCompileCheckAnalyzer {
         /// Replay the AST walker over a flat statement list in source order.
         private void walkStatements(@NotNull List<Statement> statements) {
             for (var statement : statements) {
-                astWalker.walk(statement);
+                if (!pruneSkippedRoot(statement)) {
+                    astWalker.walk(statement);
+                }
             }
         }
 
@@ -661,6 +770,9 @@ public class FrontendCompileCheckAnalyzer {
             // positions.
             var statementRoot = walkingStatementRootExpression;
             walkingStatementRootExpression = false;
+            if (pruneDamagedExpression(expression)) {
+                return;
+            }
             switch (expression) {
                 case LambdaExpression lambdaExpression -> walkLambdaExpression(lambdaExpression);
                 // ConditionalExpression: compile-ready via branch-result merge (value context) and
@@ -694,8 +806,11 @@ public class FrontendCompileCheckAnalyzer {
         /// AttributeCallStep during descent; intermediate calls remain value positions and are
         /// still checked recursively.
         private void walkAwaitExpression(@NotNull AwaitExpression awaitExpression) {
-            markCompileSurfaceNode(awaitExpression);
             var operand = awaitExpression.value();
+            if (pruneDamagedExpression(operand)) {
+                return;
+            }
+            markCompileSurfaceNode(awaitExpression);
             markCompileSurfaceNode(operand);
             rememberBareCallCallee(operand);
             rememberChainHeadIdentifier(operand);
@@ -751,7 +866,8 @@ public class FrontendCompileCheckAnalyzer {
                 if (binding.kind() != FrontendBindingKind.SUPER
                         || !compileSurfaceNodes.contains(identifierExpression)
                         || bareCallCallees.contains(identifierExpression)
-                        || chainHeadIdentifiers.contains(identifierExpression)) {
+                        || chainHeadIdentifiers.contains(identifierExpression)
+                        || isCoveredByPropagatedFailure(identifierExpression)) {
                     continue;
                 }
                 reportCompileBlock(
@@ -760,11 +876,13 @@ public class FrontendCompileCheckAnalyzer {
                 );
             }
         }
+
         /// Re-check all published fact tables once compile surface marking is complete.
-        private void scanPublishedCompileBlocks() {
+        private void scanPublishedCompileBlocks(@NotNull SourceFile sourceFile, @NotNull Set<Node> constructorBlockAnchors) {
             scanExpressionTypeCompileBlocks();
             scanResolvedMemberCompileBlocks();
-            scanResolvedCallCompileBlocks();
+            scanConstructorCompileBlocks(sourceFile, constructorBlockAnchors);
+            scanResolvedCallCompileBlocks(constructorBlockAnchors);
             scanBareValueReferenceCompileBlocks();
             scanSuperPositionCompileBlocks();
             scanSlotTypeCompileBlocks();
@@ -782,18 +900,22 @@ public class FrontendCompileCheckAnalyzer {
                     continue;
                 }
                 var fact = constantFacts.get(variableDeclaration);
-                if (fact instanceof Evaluation.Resolved resolved) {
+                if (fact instanceof Evaluation.Resolved(var value)) {
                     if (scopesByAst.get(variableDeclaration) instanceof BlockScope blockScope) {
                         var binding = blockScope.resolveValueHere(variableDeclaration.name().trim());
                         if (binding == null
                                 || binding.declaration() != variableDeclaration
-                                || !FrontendAnalysisData.sameType(binding.type(), resolved.value().type())) {
+                                || !FrontendAnalysisData.sameType(binding.type(), value.type())) {
                             throw new IllegalStateException(
                                     "Local constant '" + variableDeclaration.name().trim()
                                             + "' has a resolved fact but no matching constant slot type"
                             );
                         }
                     }
+                    continue;
+                }
+                if (variableDeclaration.value() != null
+                        && isCoveredByPropagatedFailure(variableDeclaration.value(), variableDeclaration)) {
                     continue;
                 }
                 var rejectionReason = fact instanceof Evaluation.Rejected rejected
@@ -828,7 +950,7 @@ public class FrontendCompileCheckAnalyzer {
                 if (!isCompileBlocking(publishedType.status()) || !compileSurfaceNodes.contains(anchor)) {
                     continue;
                 }
-                if (isAssignmentRootCoveredByExplicitSelfPrefixDiagnostic(anchor)) {
+                if (isCoveredByPropagatedFailure(anchor) || isAssignmentRootCoveredByExplicitSelfPrefixDiagnostic(anchor)) {
                     continue;
                 }
                 if (isCoveredByPropagatedValueOperandCompileBlock(anchor, publishedType)) {
@@ -877,7 +999,8 @@ public class FrontendCompileCheckAnalyzer {
                 if (!isCompileBlocking(publishedMember.status()) || !compileSurfaceNodes.contains(anchor)) {
                     continue;
                 }
-                if (isCoveredByStaticSelfBindingDiagnostic(publishedMember.detailReason())) {
+                if (isCoveredByPropagatedFailure(anchor)
+                        || isCoveredByStaticSelfBindingDiagnostic(publishedMember.detailReason())) {
                     continue;
                 }
                 reportCompileBlock(
@@ -893,19 +1016,15 @@ public class FrontendCompileCheckAnalyzer {
 
         /// Call facts stop compile mode either because upstream resolution already failed, or because a
         /// route that used to resolve is still outside the supported compile-time contract.
-        private void scanResolvedCallCompileBlocks() {
-            for (var entry : resolvedCalls.entrySet()) {
-                var anchor = requireCallAnchor(entry.getKey());
-                var publishedCall = Objects.requireNonNull(entry.getValue(), "publishedCall must not be null");
-                if (shouldBlockParameterizedGdccConstructor(anchor, publishedCall)) {
-                    reportCompileBlock(
-                            anchor,
-                            gdccParameterizedConstructorCompileBlockedMessage(publishedCall),
-                            true
-                    );
+        private void scanResolvedCallCompileBlocks(@NotNull Set<Node> constructorBlockAnchors) {
+            for (var anchor : compileSurfaceNodes) {
+                if (!(anchor instanceof AttributeCallStep || anchor instanceof CallExpression)
+                        || constructorBlockAnchors.contains(anchor)) {
                     continue;
                 }
-                if (!isCompileBlocking(publishedCall.status()) || !compileSurfaceNodes.contains(anchor)) {
+                var publishedCall = resolvedCalls.get(anchor);
+                if (publishedCall == null || !isCompileBlocking(publishedCall.status())
+                        || isCoveredByPropagatedFailure(anchor)) {
                     continue;
                 }
                 reportCompileBlock(
@@ -919,21 +1038,31 @@ public class FrontendCompileCheckAnalyzer {
             }
         }
 
-        /// Compile mode keeps a dedicated guard for GDCC parameterized constructors so regressions are
-        /// still caught even if an upstream semantic change accidentally republishes the route as resolved.
-        private static boolean shouldBlockParameterizedGdccConstructor(
-                @NotNull Node anchor,
-                @NotNull FrontendResolvedCall publishedCall
+        /// The constructor guard also checks rejected defaults, which are deliberately absent
+        /// from the compile surface. Follow this file's AST identities, pruning skipped ancestors
+        /// before matching the published anchors.
+        private void scanConstructorCompileBlocks(
+                @NotNull SourceFile sourceFile,
+                @NotNull Set<Node> constructorBlockAnchors
         ) {
-            if (publishedCall.callKind() != FrontendCallResolutionKind.CONSTRUCTOR
-                    || publishedCall.ownerKind() != ScopeOwnerKind.GDCC) {
-                return false;
+            if (constructorBlockAnchors.isEmpty()) {
+                return;
             }
-            return switch (anchor) {
-                case AttributeCallStep attributeCallStep -> !attributeCallStep.arguments().isEmpty();
-                case CallExpression callExpression -> !callExpression.arguments().isEmpty();
-                default -> false;
-            };
+            var pending = new ArrayDeque<Node>();
+            pending.push(sourceFile);
+            while (!pending.isEmpty()) {
+                var node = pending.pop();
+                if (skippedSubtreeRoots.containsKey(node) || node instanceof RecoveredInfixExpression) {
+                    continue;
+                }
+                if (constructorBlockAnchors.contains(node)) {
+                    var call = Objects.requireNonNull(resolvedCalls.get(node), "Constructor call fact must be present");
+                    reportCompileBlock(node, gdccParameterizedConstructorCompileBlockedMessage(call), true);
+                }
+                for (var child : node.getChildren().reversed()) {
+                    pending.push(child);
+                }
+            }
         }
 
         /// Residual method-references: Dictionary instance keys and builtin type-meta methods.
@@ -1085,7 +1214,8 @@ public class FrontendCompileCheckAnalyzer {
         private @NotNull Node compileAnchorForExpression(@NotNull Expression expression) {
             if (expression instanceof AttributeExpression attributeExpression && !attributeExpression.steps().isEmpty()) {
                 var finalStep = attributeExpression.steps().getLast();
-                if ((finalStep instanceof AttributePropertyStep || finalStep instanceof AttributeCallStep)
+                if ((finalStep instanceof AttributePropertyStep || finalStep instanceof AttributeCallStep
+                        || finalStep instanceof MissingAttributeStep || finalStep instanceof UnknownAttributeStep)
                         && compileSurfaceNodes.contains(finalStep)) {
                     return finalStep;
                 }
@@ -1099,6 +1229,26 @@ public class FrontendCompileCheckAnalyzer {
                 return compileAnchorForExpression(expression);
             }
             return node;
+        }
+
+        private boolean isCoveredByPropagatedFailure(@NotNull Node anchor) {
+            return isCoveredByPropagatedFailure(anchor, anchor);
+        }
+
+        /// A dependent fact yields to its primary source error, but only if that error is active
+        /// or the primary anchor itself will be checked on this file's compile surface.
+        private boolean isCoveredByPropagatedFailure(@NotNull Node factNode, @NotNull Node reportAnchor) {
+            var origin = analysisData.propagatedFailureOrigins().get(factNode);
+            if (origin == null) {
+                return false;
+            }
+            var recovery = origin.originRecovery();
+            if (recovery != null && hasActiveRecovery(recovery)) {
+                return true;
+            }
+            var primaryAnchor = origin.primaryAnchor();
+            return primaryAnchor != reportAnchor
+                    && (hasPublishedConflictingDiagnosticAt(primaryAnchor) || compileSurfaceNodes.contains(primaryAnchor));
         }
 
         /// Assignment root facts can propagate a prefix-owned blocked `self` route. When that exact
@@ -1122,7 +1272,7 @@ public class FrontendCompileCheckAnalyzer {
             return publishedDiagnostics.asList().stream().anyMatch(diagnostic ->
                     diagnostic.category().equals("sema.binding")
                             && diagnostic.message().contains("Keyword 'self' is not available in static context")
-                            && (diagnostic.sourcePath() != null && diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(sourcePath)))
+                            && sourcePath.equals(diagnostic.sourcePath())
             );
         }
 
@@ -1182,12 +1332,14 @@ public class FrontendCompileCheckAnalyzer {
             if (node instanceof Expression
                     || node instanceof AttributePropertyStep
                     || node instanceof AttributeCallStep
-                    || node instanceof AttributeSubscriptStep) {
+                    || node instanceof AttributeSubscriptStep
+                    || node instanceof MissingAttributeStep
+                    || node instanceof UnknownAttributeStep) {
                 return node;
             }
             throw new IllegalStateException(
-                    "expressionTypes must be keyed by Expression / AttributePropertyStep / "
-                            + "AttributeCallStep / AttributeSubscriptStep"
+                    "expressionTypes must be keyed by Expression / AttributePropertyStep / AttributeCallStep / "
+                            + "AttributeSubscriptStep / MissingAttributeStep / UnknownAttributeStep"
             );
         }
 
@@ -1208,14 +1360,6 @@ public class FrontendCompileCheckAnalyzer {
             );
         }
 
-        /// Call facts may be anchored either at an attribute step (`foo.bar()`) or a bare call expression.
-        private static @NotNull Node requireCallAnchor(@NotNull Node node) {
-            if (node instanceof AttributeCallStep || node instanceof CallExpression) {
-                return node;
-            }
-            throw new IllegalStateException("resolvedCalls must be keyed by attribute call steps or CallExpression");
-        }
-
         /// Render a stable human-facing label for generic expression-root diagnostics.
         private static @NotNull String describeExpression(@NotNull Expression expression) {
             return switch (Objects.requireNonNull(expression, "expression must not be null")) {
@@ -1232,6 +1376,8 @@ public class FrontendCompileCheckAnalyzer {
                 case AttributeCallStep attributeCallStep -> "Call step '" + attributeCallStep.name() + "(...)'";
                 case AttributeSubscriptStep attributeSubscriptStep ->
                         "Subscript step '" + attributeSubscriptStep.name() + "[...]'";
+                case MissingAttributeStep _ -> "Member access with a missing name";
+                case UnknownAttributeStep _ -> "Unknown member access step";
                 case Expression expression -> describeExpression(expression);
                 default -> throw new IllegalStateException(
                         "unexpected expressionTypes anchor: " + node.getClass().getSimpleName()
@@ -1278,12 +1424,15 @@ public class FrontendCompileCheckAnalyzer {
             if (!handledAnchors.add(anchor)) {
                 return;
             }
-            diagnosticManager.error(
+            var diagnostic = FrontendDiagnostic.error(
                     COMPILE_CHECK_CATEGORY,
                     message,
                     sourcePath,
                     FrontendRange.fromAstRange(anchor.range())
             );
+            if (!publishedDiagnosticIndex.contains(diagnostic)) {
+                diagnosticManager.report(diagnostic);
+            }
         }
 
         /// Return whether a non-whitelisted upstream blocker already owns this exact source location.
@@ -1302,21 +1451,11 @@ public class FrontendCompileCheckAnalyzer {
         ) {
             var anchorRange = FrontendRange.fromAstRange(anchor.range());
             return publishedDiagnostics.asList().stream()
-                    .filter(diagnostic -> Objects.equals(
-                            diagnostic.sourcePath(),
-                            FrontendDiagnostic.sourcePathText(sourcePath)
-                    ))
+                    .filter(diagnostic -> sourcePath.equals(diagnostic.sourcePath()))
                     .filter(diagnostic -> Objects.equals(diagnostic.range(), anchorRange))
                     .filter(predicate)
                     .findFirst()
                     .orElse(null);
-        }
-
-        /// Compile mode blocks on upstream errors and on the narrow warning categories that represent
-        /// missing lowering-ready publication.
-        private boolean isCompileBlockingPublishedDiagnostic(@NotNull FrontendDiagnostic diagnostic) {
-            return diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                    || NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES.contains(diagnostic.category());
         }
 
         /// Some upstream diagnostics explain the same missing fact and should coexist with compile_check.

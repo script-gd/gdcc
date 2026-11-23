@@ -23,6 +23,7 @@ import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Unit contracts for generic and contextual container-literal shared semantic.
@@ -131,6 +133,26 @@ class FrontendContainerLiteralSemanticSupportTest {
     }
 
     @Test
+    void keyOnlyEntryCannotPassNullToOrdinaryDictionaryLiteralResolver() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var key = stringLiteral("\"key\"");
+        var dictionary = new DictionaryExpression(List.of(new DictEntry(key, null, TINY)), false, TINY);
+
+        for (var finalizeWindow : List.of(false, true)) {
+            var visited = new ArrayList<Expression>();
+            var exception = assertThrows(NullPointerException.class,
+                    () -> FrontendContainerLiteralSemanticSupport.resolveDictionaryExpressionType(
+                            registry, dictionary, (expression, _) -> {
+                                visited.add(expression);
+                                return FrontendExpressionType.resolved(GdVariantType.VARIANT);
+                            }, finalizeWindow
+                    ));
+            assertEquals("Dictionary literal entry must have a value", exception.getMessage());
+            assertEquals(List.of(key), visited);
+        }
+    }
+
+    @Test
     void openEndedArrayAndDictionaryFailClosedWithoutPlan() throws Exception {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
@@ -164,7 +186,7 @@ class FrontendContainerLiteralSemanticSupportTest {
         var resolution = FrontendContainerLiteralSemanticSupport.resolveArrayExpressionType(
                 registry,
                 array,
-                (expression, finalizeWindow) -> expression instanceof IdentifierExpression
+                (expression, _) -> expression instanceof IdentifierExpression
                         ? FrontendExpressionType.failed("identifier missing")
                         : FrontendExpressionType.resolved(GdIntType.INT),
                 true
@@ -177,13 +199,91 @@ class FrontendContainerLiteralSemanticSupportTest {
     }
 
     @Test
+    void arrayFinalizationContinuesAfterFirstFailureButPreviewStops() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var first = identifier("first");
+        var second = identifier("second");
+        var last = integerLiteral("3");
+        var array = new ArrayExpression(List.of(first, second, last), false, TINY);
+        var firstIssue = FrontendExpressionType.failed("first element failed");
+
+        for (var finalizeWindow : List.of(false, true)) {
+            var visited = new ArrayList<Expression>();
+            var resolution = FrontendContainerLiteralSemanticSupport.resolveArrayExpressionType(
+                    registry,
+                    array,
+                    (expression, finalize, expected) -> {
+                        assertEquals(finalizeWindow, finalize);
+                        assertEquals(GdIntType.INT, expected);
+                        visited.add(expression);
+                        if (expression == first) {
+                            return firstIssue;
+                        }
+                        return expression == second
+                                ? FrontendExpressionType.deferred("second element failed")
+                                : FrontendExpressionType.resolved(GdIntType.INT);
+                    },
+                    finalizeWindow,
+                    new GdArrayType(GdIntType.INT)
+            );
+            assertEquals(finalizeWindow ? List.of(first, second, last) : List.of(first), visited);
+            assertEquals(firstIssue, resolution.expressionType());
+            assertFalse(resolution.rootOwnsOutcome());
+            assertNull(resolution.planOrNull());
+        }
+    }
+
+    @Test
+    void dictionaryFinalizationChecksEachKeyAndValueInOrderAfterEitherKindOfFailure() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var key = stringLiteral("\"first\"");
+        var value = integerLiteral("1");
+        var laterKey = stringLiteral("\"second\"");
+        var laterValue = integerLiteral("2");
+        var dictionary = new DictionaryExpression(
+                List.of(new DictEntry(key, value, TINY), new DictEntry(laterKey, laterValue, TINY)), false, TINY
+        );
+        var firstIssue = FrontendExpressionType.failed("first dictionary operand failed");
+
+        for (var firstFailingOperand : List.of(key, value)) {
+            for (var finalizeWindow : List.of(false, true)) {
+                var visited = new ArrayList<Expression>();
+                var resolution = FrontendContainerLiteralSemanticSupport.resolveDictionaryExpressionType(
+                        registry,
+                        dictionary,
+                        (expression, finalize, contextualType) -> {
+                            assertEquals(finalizeWindow, finalize);
+                            var expectedType = expression == key || expression == laterKey
+                                    ? GdStringType.STRING : GdIntType.INT;
+                            assertEquals(expectedType, contextualType);
+                            visited.add(expression);
+                            if (expression == firstFailingOperand) {
+                                return firstIssue;
+                            }
+                            return expression == laterValue
+                                    ? FrontendExpressionType.deferred("later dictionary operand failed")
+                                    : FrontendExpressionType.resolved(expectedType);
+                        },
+                        finalizeWindow,
+                        new GdDictionaryType(GdStringType.STRING, GdIntType.INT)
+                );
+                var previewOperands = firstFailingOperand == key ? List.of(key) : List.of(key, value);
+                assertEquals(finalizeWindow ? List.of(key, value, laterKey, laterValue) : previewOperands, visited);
+                assertEquals(firstIssue, resolution.expressionType());
+                assertFalse(resolution.rootOwnsOutcome());
+                assertNull(resolution.planOrNull());
+            }
+        }
+    }
+
+    @Test
     void deferredAndBlockedChildrenPropagateWithoutPlan() throws Exception {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
         var deferred = FrontendContainerLiteralSemanticSupport.resolveArrayExpressionType(
                 registry,
                 new ArrayExpression(List.of(identifier("deferred_child")), false, TINY),
-                (expression, finalizeWindow) -> FrontendExpressionType.deferred("child deferred"),
+                (_, _) -> FrontendExpressionType.deferred("child deferred"),
                 true
         );
         assertFalse(deferred.rootOwnsOutcome());
@@ -197,7 +297,7 @@ class FrontendContainerLiteralSemanticSupportTest {
                         false,
                         TINY
                 ),
-                (expression, finalizeWindow) -> expression instanceof IdentifierExpression
+                (expression, _) -> expression instanceof IdentifierExpression
                         ? FrontendExpressionType.blocked(null, "child blocked")
                         : FrontendExpressionType.resolved(GdIntType.INT),
                 true
@@ -243,9 +343,9 @@ class FrontendContainerLiteralSemanticSupportTest {
         var dictionary = new DictionaryExpression(
                 List.of(
                         new DictEntry(stringLiteral("\"hp\""), integerLiteral("1"), TINY),
-                        new DictEntry(stringNameLiteral("&\"hp\""), integerLiteral("2"), TINY),
+                        new DictEntry(new LiteralExpression("string_name", "&\"hp\"", TINY), integerLiteral("2"), TINY),
                         new DictEntry(integerLiteral("1"), integerLiteral("3"), TINY),
-                        new DictEntry(floatLiteral("1.0"), integerLiteral("4"), TINY)
+                        new DictEntry(new LiteralExpression("float", "1.0", TINY), integerLiteral("4"), TINY)
                 ),
                 false,
                 TINY
@@ -324,7 +424,7 @@ class FrontendContainerLiteralSemanticSupportTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var dictionary = new DictionaryExpression(
                 List.of(
-                        // "\u0068p" and "hp" are the same runtime string key after unescape.
+                        // The escaped and plain spellings of "hp" are the same runtime string key.
                         new DictEntry(stringLiteral("\"\\u0068p\""), integerLiteral("1"), TINY),
                         new DictEntry(stringLiteral("\"hp\""), integerLiteral("2"), TINY),
                         // 0o17 == 15 decimal; both must collide as int keys.
@@ -381,7 +481,7 @@ class FrontendContainerLiteralSemanticSupportTest {
         var resolution = FrontendContainerLiteralSemanticSupport.resolveArrayExpressionType(
                 registry,
                 array,
-                (expression, finalizeWindow) -> expression instanceof IdentifierExpression
+                (expression, _) -> expression instanceof IdentifierExpression
                         ? FrontendExpressionType.dynamic("runtime-open")
                         : FrontendExpressionType.resolved(GdIntType.INT),
                 true
@@ -587,7 +687,7 @@ class FrontendContainerLiteralSemanticSupportTest {
     }
 
     private static @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver resolvedChildren() {
-        return (expression, finalizeWindow) -> {
+        return (expression, _) -> {
             if (expression instanceof LiteralExpression literal) {
                 return switch (literal.kind()) {
                     case "integer", "number" -> FrontendExpressionType.resolved(GdIntType.INT);
@@ -602,23 +702,15 @@ class FrontendContainerLiteralSemanticSupportTest {
     }
 
     private static @NotNull FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver contextualResolvedChildren() {
-        return (expression, finalizeWindow, expectedType) -> resolvedChildren().resolve(expression, finalizeWindow);
+        return (expression, finalizeWindow, _) -> resolvedChildren().resolve(expression, finalizeWindow);
     }
 
     private static @NotNull LiteralExpression integerLiteral(@NotNull String sourceText) {
         return new LiteralExpression("integer", sourceText, TINY);
     }
 
-    private static @NotNull LiteralExpression floatLiteral(@NotNull String sourceText) {
-        return new LiteralExpression("float", sourceText, TINY);
-    }
-
     private static @NotNull LiteralExpression stringLiteral(@NotNull String sourceText) {
         return new LiteralExpression("string", sourceText, TINY);
-    }
-
-    private static @NotNull LiteralExpression stringNameLiteral(@NotNull String sourceText) {
-        return new LiteralExpression("string_name", sourceText, TINY);
     }
 
     private static @NotNull LiteralExpression nodePathLiteral(@NotNull String sourceText) {

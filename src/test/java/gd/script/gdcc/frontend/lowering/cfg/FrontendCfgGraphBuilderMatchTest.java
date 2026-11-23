@@ -1,7 +1,10 @@
 package gd.script.gdcc.frontend.lowering.cfg;
 
+import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.constant.GdConstantValue;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ConstantValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.GetVariantTypeItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.IntConstantItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MatchBindItem;
@@ -11,6 +14,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.MatchEqualItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MatchHasKeyItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MatchLengthCheckItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SequenceItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ValueOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendMatchRegion;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
@@ -19,6 +23,7 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdIntType;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
+import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.DictEntry;
 import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
@@ -38,7 +43,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Focused tests for `match` frontend CFG construction: the first four routes plus ARRAY /
@@ -413,100 +420,138 @@ class FrontendCfgGraphBuilderMatchTest {
     }
 
     @Test
-    void buildsDictionaryPatternWithHasKeyGatesAndFetches() throws Exception {
+    void buildsClosedDictionaryPatternWithKeyOnlyGateBeforeBind() throws Exception {
         var analyzed = analyzeFunction(
-                "cfg_match_dict.gd",
+                "cfg_match_key_only_and_bind.gd",
                 """
-                        class_name CfgMatchDict
+                        class_name CfgMatchKeyOnlyAndBind
                         extends RefCounted
                         
-                        func ping(value) -> int:
+                        func ping(value: Dictionary) -> int:
                             match value:
-                                {"k": 1, "j": var v, ..}:
-                                    return v
-                                _:
-                                    return 0
-                        """
-        );
-
-        var matchStatement = findMatch(analyzed);
-        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
-        var graph = build.graph();
-        var region = assertInstanceOf(FrontendMatchRegion.class, Objects.requireNonNull(build.regions().get(matchStatement)));
-        var nestedBind = findNestedDictionaryBind(analyzed);
-        var slot = Objects.requireNonNull(build.matchBindSlots().get(nestedBind));
-
-        assertAll(
-                () -> assertFalse(analyzed.diagnostics().hasErrors()),
-                () -> assertEquals(1, countItems(graph, MatchContainerMaterializeItem.class)),
-                () -> assertEquals(2, countItems(graph, MatchHasKeyItem.class)),
-                () -> assertEquals(2, countItems(graph, MatchElementFetchItem.class)),
-                () -> assertEquals(1, countItems(graph, MatchBindItem.class)),
-                () -> assertEquals("v", slot.bindSlotId()),
-                () -> assertEquals(
-                        gd.script.gdcc.type.GdVariantType.VARIANT.getTypeName(),
-                        slot.exposedType().getTypeName()
-                )
-        );
-        var lengthCheck = findItem(graph, MatchLengthCheckItem.class);
-        assertAll(
-                () -> assertEquals(2, lengthCheck.expectedCount()),
-                () -> assertTrue(lengthCheck.openEnded())
-        );
-    }
-
-    @Test
-    void wildcardDictionaryValueNeedsOnlyTheHasKeyGate() throws Exception {
-        var analyzed = analyzeFunction(
-                "cfg_match_dict_wildcard.gd",
-                """
-                        class_name CfgMatchDictWildcard
-                        extends RefCounted
-                        
-                        func ping(value) -> int:
-                            match value:
-                                {"k": _}:
+                                {"a", "b": var y}:
                                     return 1
                                 _:
                                     return 0
                         """
         );
+        var match = findMatch(analyzed);
+        var pattern = assertInstanceOf(DictionaryExpression.class, match.sections().getFirst().patterns().getFirst());
+        var keyOnly = pattern.entries().getFirst();
+        var binding = pattern.entries().getLast();
+        assertNull(keyOnly.value());
+        var firstValue = new GdConstantValue.StringValue("a");
+        var secondValue = new GdConstantValue.StringValue("b");
+        analyzed.analysisData().constantFacts().put(keyOnly.key(), new Evaluation.Resolved(firstValue));
+        analyzed.analysisData().constantFacts().put(binding.key(), new Evaluation.Resolved(secondValue));
 
         var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
         var graph = build.graph();
+        var region = assertInstanceOf(FrontendMatchRegion.class, build.regions().get(match));
+        var firstGate = requireDictionaryKeyGate(graph, keyOnly, firstValue);
+        var secondGate = requireDictionaryKeyGate(graph, binding, secondValue);
+        var firstBranch = assertInstanceOf(FrontendCfgGraph.BranchNode.class, graph.requireNode(firstGate.nextId()));
+        var secondBranch = assertInstanceOf(FrontendCfgGraph.BranchNode.class, graph.requireNode(secondGate.nextId()));
+        var secondHas = assertInstanceOf(MatchHasKeyItem.class, secondGate.items().getLast());
+        var fetchSequence = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode(secondBranch.trueTargetId()));
+        var fetch = assertInstanceOf(MatchElementFetchItem.class, fetchSequence.items().getFirst());
+        var bindSequence = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode(fetchSequence.nextId()));
+        var bind = assertInstanceOf(MatchBindItem.class, bindSequence.items().getFirst());
+        var miss = region.sections().getLast().testEntryId();
+        var length = findItem(graph, MatchLengthCheckItem.class);
         assertAll(
-                () -> assertFalse(analyzed.diagnostics().hasErrors()),
-                () -> assertEquals(1, countItems(graph, MatchHasKeyItem.class)),
-                () -> assertEquals(0, countItems(graph, MatchElementFetchItem.class))
+                () -> assertEquals(2, length.expectedCount()),
+                () -> assertFalse(length.openEnded()),
+                () -> assertEquals(secondGate.id(), firstBranch.trueTargetId()),
+                () -> assertEquals(miss, firstBranch.falseTargetId()),
+                () -> assertEquals(miss, secondBranch.falseTargetId()),
+                () -> assertEquals(1, countItems(graph, MatchElementFetchItem.class)),
+                () -> assertEquals(secondHas.keyValueId(), fetch.keyValueId()),
+                () -> assertEquals(secondHas.dictionaryValueId(), fetch.containerValueId()),
+                () -> assertEquals(fetch.resultValueId(), bind.subjectValueId()),
+                () -> assertEquals("y", bind.bindSlotId()),
+                () -> assertEquals(region.sections().getFirst().bodyEntryId(), bindSequence.nextId())
         );
     }
 
     @Test
-    void nestedDictionaryInArrayRecursesWithOwnMaterializeAndLengthGate() throws Exception {
+    void buildsOpenDictionaryPatternFromFoldedKeyWithoutLoweringKeyAst() throws Exception {
         var analyzed = analyzeFunction(
-                "cfg_match_nested.gd",
+                "cfg_match_folded_key_only.gd",
                 """
-                        class_name CfgMatchNested
+                        class_name CfgMatchFoldedKeyOnly
                         extends RefCounted
                         
-                        func ping(value) -> int:
+                        func ping(value: Dictionary) -> int:
                             match value:
-                                [{"k": var x}]:
-                                    return x
+                                {1 + 2, ..}:
+                                    return 1
                                 _:
                                     return 0
                         """
         );
+        var match = findMatch(analyzed);
+        var pattern = assertInstanceOf(DictionaryExpression.class, match.sections().getFirst().patterns().getFirst());
+        var entry = pattern.entries().getFirst();
+        var key = assertInstanceOf(BinaryExpression.class, entry.key());
+        var value = new GdConstantValue.IntValue(3);
+        analyzed.analysisData().constantFacts().put(key, new Evaluation.Resolved(value));
 
         var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
         var graph = build.graph();
+        var region = assertInstanceOf(FrontendMatchRegion.class, build.regions().get(match));
+        var gate = requireDictionaryKeyGate(graph, entry, value);
+        var branch = assertInstanceOf(FrontendCfgGraph.BranchNode.class, graph.requireNode(gate.nextId()));
+        var length = findItem(graph, MatchLengthCheckItem.class);
+        var unexpectedKeyItems = graph.nodeIds().stream()
+                .flatMap(nodeId -> sequenceItems(graph, nodeId).stream())
+                .filter(ValueOpItem.class::isInstance)
+                .filter(item -> item != gate.items().getFirst() && item != gate.items().getLast())
+                .filter(item -> item.anchor() == key || item.anchor() == key.left() || item.anchor() == key.right())
+                .toList();
         assertAll(
-                () -> assertFalse(analyzed.diagnostics().hasErrors()),
-                () -> assertEquals(2, countItems(graph, MatchContainerMaterializeItem.class)),
-                () -> assertEquals(2, countItems(graph, MatchLengthCheckItem.class)),
-                () -> assertEquals(1, countItems(graph, MatchHasKeyItem.class)),
-                () -> assertEquals(2, countItems(graph, MatchElementFetchItem.class)),
-                () -> assertEquals(1, countItems(graph, MatchBindItem.class))
+                () -> assertEquals(1, length.expectedCount()),
+                () -> assertTrue(length.openEnded()),
+                () -> assertEquals(region.sections().getFirst().bodyEntryId(), branch.trueTargetId()),
+                () -> assertEquals(region.sections().getLast().testEntryId(), branch.falseTargetId()),
+                () -> assertEquals(0, countItems(graph, MatchElementFetchItem.class)),
+                () -> assertTrue(unexpectedKeyItems.isEmpty(), () -> "Folded key or operands were lowered: " + unexpectedKeyItems)
+        );
+    }
+
+    @Test
+    void rejectsMissingOrRejectedFactEvenForLiteralDictionaryPatternKey() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_match_missing_key_fact.gd",
+                """
+                        class_name CfgMatchMissingKeyFact
+                        extends RefCounted
+                        
+                        func ping(value: Dictionary) -> int:
+                            match value:
+                                {"a": _}:
+                                    return 1
+                                _:
+                                    return 0
+                        """
+        );
+        var pattern = assertInstanceOf(
+                DictionaryExpression.class, findMatch(analyzed).sections().getFirst().patterns().getFirst()
+        );
+        var key = pattern.entries().getFirst().key();
+        var facts = analyzed.analysisData().constantFacts();
+        facts.remove(key);
+        var block = analyzed.function().body();
+        var missing = assertThrows(
+                IllegalStateException.class, () -> new FrontendCfgGraphBuilder().buildExecutableBody(block, analyzed.analysisData())
+        );
+        facts.put(key, new Evaluation.Rejected("not a constant", key));
+        var rejected = assertThrows(
+                IllegalStateException.class, () -> new FrontendCfgGraphBuilder().buildExecutableBody(block, analyzed.analysisData())
+        );
+        assertAll(
+                () -> assertEquals("dictionary pattern key is not a published constant at " + key.range(), missing.getMessage()),
+                () -> assertEquals(missing.getMessage(), rejected.getMessage())
         );
     }
 
@@ -555,17 +600,6 @@ class FrontendCfgGraphBuilderMatchTest {
                 .orElseThrow(() -> new AssertionError("Missing nested array bind"));
     }
 
-    private static @NotNull PatternBindingExpression findNestedDictionaryBind(@NotNull AnalyzedFunction analyzed) {
-        var match = findMatch(analyzed);
-        var dictionary = assertInstanceOf(DictionaryExpression.class, match.sections().getFirst().patterns().getFirst());
-        return dictionary.entries().stream()
-                .map(DictEntry::value)
-                .filter(PatternBindingExpression.class::isInstance)
-                .map(PatternBindingExpression.class::cast)
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("Missing nested dictionary bind"));
-    }
-
     private static @NotNull MatchBindItem findMatchBindItem(
             @NotNull FrontendCfgGraph graph,
             @NotNull PatternBindingExpression declaration
@@ -596,6 +630,33 @@ class FrontendCfgGraphBuilderMatchTest {
             }
         }
         return resultIds;
+    }
+
+    private static FrontendCfgGraph.@NotNull SequenceNode requireDictionaryKeyGate(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull DictEntry entry,
+            @NotNull GdConstantValue expected
+    ) {
+        for (var nodeId : graph.nodeIds()) {
+            if (!(graph.requireNode(nodeId) instanceof FrontendCfgGraph.SequenceNode sequence)) {
+                continue;
+            }
+            if (!sequence.items().isEmpty()
+                    && sequence.items().getLast() instanceof MatchHasKeyItem has
+                    && has.anchor() == entry.key()) {
+                assertEquals(2, sequence.items().size());
+                var constant = assertInstanceOf(ConstantValueItem.class, sequence.items().getFirst());
+                var branch = assertInstanceOf(FrontendCfgGraph.BranchNode.class, graph.requireNode(sequence.nextId()));
+                assertAll(
+                        () -> assertSame(entry.key(), constant.anchor()),
+                        () -> assertEquals(expected, constant.value()),
+                        () -> assertEquals(constant.resultValueId(), has.keyValueId()),
+                        () -> assertEquals(has.resultValueId(), branch.conditionValueId())
+                );
+                return sequence;
+            }
+        }
+        throw new AssertionError("Missing has(key) gate for " + entry.key().range());
     }
 
     private static <T> @NotNull T findItem(@NotNull FrontendCfgGraph graph, @NotNull Class<T> itemType) {

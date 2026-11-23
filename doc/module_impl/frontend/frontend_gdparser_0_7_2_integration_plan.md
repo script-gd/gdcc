@@ -510,6 +510,151 @@ flowchart TD
   - `./gradlew classes testClasses --no-daemon --info --console=plain` **主代码与测试代码零错误编译通过**；
   - `script/run-gradle-targeted-tests.sh --tests GdScriptParserServiceDiagnosticManagerTest,StringUtilTest,GdConstantValueTest,FrontendConstantEvaluatorTest,FrontendConstantMaterializationTest,FrontendBodyLoweringSupportTest,FrontendExportAnnotationSupportTest,FrontendContainerLiteralSemanticSupportTest` 全绿（依赖 `FrontendBodyOwnerProcedures.runMatchDictionaryKeyConstResolution` 接线的 `match` 端到端单测在紧随其后的 Phase 3 合入后验收）。
 
+#### Phase 2 实施记录
+
+- **基线与范围**：Phase 1 已随 `8294b3b8` 进入基线。全量诊断透传与恢复采集、活跃管理器覆盖核验及收尾、`StringUtil` 字面量解码与最小整数谓词均已落地；2A #1 中 `RecoveredInfixExpression -> UNSUPPORTED` 的显式分支与直接测试也已在 Phase 1 完成。下表记录 Phase 2 的实施结果；末尾附最终验证证据。
+- **已运行的基线（2026-11-23）**：在干净的 `/home/superice/projects/gdcc` 工作树 `8294b3b8` 运行上方阶段验收所列八类定向命令，wrapper 与本轮 XML 核对均退出 `0`，耗时 25 秒。八个测试类按上方顺序执行 10、39、12、44、15、18、7、22 项，共 167 项全通过，零失败、错误或跳过。试前与试后工作树均干净；现有补全类弃用提示不是测试失败。
+
+| 批次 | 文件与任务 | 实施状态 |
+|---|---|---|
+| 2A #1 | `FrontendExpressionSemanticSupport`：截断中缀显式 `UNSUPPORTED`；超界整数与最终窗口独立子诊断 | 截断中缀分支已在 Phase 1 完成；本阶段已实施有符号超界根失败、最终窗口记录首个失败并检查后续独立项、预览行为不变，已纳入最终定向验收 |
+| 2A #2 | `FrontendDeclaredTypeSupport`：推导标记 trivia、恢复感知类型槽归属 | 已实施双入口、严格 tokenizer trivia、同槽恢复组的活跃覆盖与单一报告，已纳入最终定向验收 |
+| 2A #3 | `FrontendMatchSupport`：Key-Only 判空、字典键只读已发布常量事实、跳过分支过滤 | 已实施 Key-Only 空值、按身份过滤分支及专用已解析常量入口；既有值模式不变，已纳入最终定向验收 |
+| 2A #4 | `FrontendStatementResolver`：字典键 hook、Key-Only 判空、受损分支短路 | 已实施已标记分支短路、常规键解析后触发接收所属 `MatchSection` 的默认空 hook、保留 Key-Only 行为；未接 Phase 3，已纳入最终定向验收 |
+| 2A #5 | `FrontendTypeCheckAnalyzer`：字典键事实、受损分支、构造器返回诊断归属 | 已实施仅接受已发布字典键常量、两处跳过入口，以及构造器、`_init` 和无箭头 `_static_init` 的带值返回诊断接管，已纳入最终定向验收 |
+| 2B #1 | `FrontendContainerLiteralSemanticSupport`：最终窗口保留首个失败并检查其余元素、键值 | 已实施并格式化，已纳入最终定向验收 |
+| 2B #2 | `FrontendAssignmentSemanticSupport`：缺名成员左值定型与已选失败依赖 | 已实施并格式化，已纳入最终定向验收 |
+| 2B #3 | `FrontendSuiteResolver`：已跳过裸 Lambda 单条诊断与 Lambda 返回类型恢复 | 已实施活跃诊断覆盖及认领、单条保底和八参返回类型入口；未改 Phase 3 标注生产者，已纳入最终定向验收 |
+| 2B #4 | `FrontendCompileCheckAnalyzer`：活跃诊断精确重放与去重、受损子树剪枝、五表主锚点让渡 | 已实施五字段精确重放、去重、剪枝与五表归属处理，已格式化，生产编译通过，已纳入最终定向验收 |
+| 2B #5 | `FrontendExportAnnotationSupport`：导出注解中最小整数边界 | 已实施并格式化，已纳入最终定向验收 |
+| 2C #1 | `GdConstantValue`：三种新增载荷，不扩大一般常量类型 | 已实施，已纳入最终定向验收 |
+| 2C #2 | `FrontendBodyLoweringSession`：三个新增载荷的精确 LIR 指令 | 已实施三个对应分支，已纳入最终定向验收 |
+| 2C #3 | `EvaluationPolicy`：匹配键能力，不扩大普通或枚举策略 | 已实施 `matchConstant()` 三项专用能力，`general()` 与 `enumPrePass()` 能力不变，已纳入最终定向验收 |
+| 2C #4 | `FrontendConstantEvaluator`：策略门控、特殊字面量解码、共享整数幅值谓词 | 已实施求值与校验共用三种字面量解码及最小值词法，死臂仍校验，`general()` 未放宽，已纳入最终定向验收 |
+| 2C #5 | `FrontendLocalConstLookupContext`：匹配键作用域与枚举命名空间隔离 | 已实施匹配键作用域与位置工厂、两路全局枚举解析及受限内建枚举查找；普通 `const` 不变，未接 Phase 3，已纳入最终定向验收 |
+| 2D #1 | `ConstantValueItem`：折叠常量、无操作数、结果槽 ID | 已实施，已纳入最终定向验收 |
+| 2D #2 | `ValueOpItem`：加入 `ConstantValueItem` 密封许可 | 已实施，最终主代码与测试代码编译通过 |
+| 2D #3 | `FrontendBodyLoweringSupport`：以载荷类型建立 `TEMP_SLOT` 物化 | 已实施，已纳入最终定向验收 |
+| 2D #4 | `FrontendSequenceItemInsnLoweringProcessors`：注册常量值项处理器并委托 LIR 物化 | 已实施，已纳入最终定向验收 |
+| 2D #5 | `FrontendCfgGraphBuilder`：最小整数直接物化并保持首选槽，Key-Only 真边直连，必须有已发布字典键事实 | 已实施，已纳入最终定向验收 |
+
+- **验收方式**：用不依赖后续阶段的正反定向用例覆盖各批合同，再在 GDCC 根目录串行执行 `classes testClasses`、扩展定向回归和原计划八类验收，逐轮核对 XML。以下是验证、双审与最终 IDEA 清理的记录。
+- **首轮生产编译（2026-11-23）**：20 个生产文件齐备后，在 GDCC 根目录执行 `./gradlew classes --no-daemon --info --console=plain`，退出 `0`，耗时 18 秒，实际执行 `:compileJava`。无编译错误；仅有 JVM native-access 与既有补全类弃用提示。因测试仍在编辑，本轮未执行 `testClasses` 或定向测试，不计作最终验收。
+- **Batch 2A 候验**：`FrontendExpressionSemanticSupportTest` 的 `resolveIntegerLiteralsRejectsSignedOverflowWithoutPublishingType`、`finalizeExpressionTypingVisitsIndependentOperandsAndKeepsFirstFailure`、`finalizeCallArgumentsContinuesWithSelectedFixedParameterTypes`、`resolveRecoveredInfixExpressionRejectsParsedCastWithoutResolvingOperand`；整类 `FrontendDeclaredTypeSupportTest`、`FrontendMatchSupportTest`；`FrontendSuiteResolverTest.statementResolutionVisitsDictionaryKeysAndHealthySiblingBranches`；`FrontendTypeCheckAnalyzerTest` 的 `checksInitializerReturnsWithAndWithoutLiveParserCoverage`、`checksStableDictionaryKeysUsingOnlyResolvedConstantFacts`、`analyzeChecksReturnCompatibilityAgainstPublishedCallableSlotsAndSkipsUnstableReturnValues`。待合并到最终定向集去重。
+- **Batch 2B 候验**：`FrontendContainerLiteralSemanticSupportTest`、`FrontendAssignmentSemanticSupportTest`、`FrontendExportAnnotationSupportTest`、`FrontendSuiteResolverRecoveryTest`、`FrontendCompileCheckRecoveryTest`、`FrontendCompileCheckAnalyzerTest` 已就绪，未运行；容器与导出注解两类已包含在八类验收中。
+- **首轮完整编译（2026-11-23）**：在 GDCC 根目录执行 `./gradlew classes testClasses --no-daemon --info --console=plain`，退出 `1`，耗时 17 秒。生产 `:compileJava` 为 `UP-TO-DATE`，`:compileTestJava` 的唯一错误是 `FrontendSuiteResolverRecoveryTest.java:152` 无法解析 `FrontendClassSkeletonBuilder`。本轮未运行定向 wrapper，待修复后继续。
+- **Batch 2C 候验**：`GdConstantValueTest`、`FrontendConstantEvaluatorTest`、`FrontendConstantMaterializationTest` 与 `FrontendLocalConstLookupContextTest` 均已补齐用例、未运行；前三类已包含在八类验收中，最后一类需额外定向执行。
+- **Batch 2D 候验**：`FrontendBodyLoweringSupportTest` 已含在八类验收中；额外执行 `FrontendCfgGraphBuilderMatchTest` 的 `buildsClosedDictionaryPatternWithKeyOnlyGateBeforeBind`、`buildsOpenDictionaryPatternFromFoldedKeyWithoutLoweringKeyAst`、`rejectsMissingOrRejectedFactEvenForLiteralDictionaryPatternKey`，`FrontendCfgGraphBuilderTest.buildExecutableBodyEmitsMinimumIntegerWithoutMaterializingItsMagnitude`，及 `FrontendLoweringBodyInsnPassTest` 的 `runLowersMinimumIntegerLocalAndReturnAsDirectSignedLiterals`、`runLowersPublishedDictionaryKeyFactsIntoLiteralOperandsForHasAndFetch`。这些用例验证 CFG/LIR 消费已发布事实，不代表 Phase 3C 的实际事实生产已接通。
+- **首轮合并验证（2026-11-23）**：补足测试中的 `FrontendClassSkeletonBuilder` 导入后，重跑 `./gradlew classes testClasses --no-daemon --info --console=plain`，实际执行 `:compileTestJava`，退出 `0`（18 秒）。随后的去重 wrapper 覆盖上方八类及 A/B/C/D 定向集，共 29 个 selector，21/21 份预期的新鲜 JUnit XML，执行 351 项，345 通过、6 失败，零错误或跳过；wrapper 退出 `1`，XML 数量、方法与零跳过校验退出 `0`。计划八类执行 179 项，全部通过（干净基线 167 项）。合并定向集尚未通过：
+  - **A2 类型槽归属**：`FrontendDeclaredTypeSupportTest.recoveredTypeSlotClaimsOwnerAndLeafErrorsOnceAcrossPhases` 在第 128 行断言失败；两次调用后宿主恢复项登记为活跃原始 `parse.syntax.unexpected_token`，测试期望保留统一的 `sema.type_resolution` 接管。诊断列表断言已通过。
+  - **A5 构造器返回**：`FrontendTypeCheckAnalyzerTest.checksInitializerReturnsWithAndWithoutLiveParserCoverage` 在第 78 行第二次使用同一分析器分析时抛出 `Enclosing callable scope has no AST declaration`（`FrontendSuiteResolver.java:491`）；首次有解析覆盖的分支已通过前置断言。
+  - **B3 增量修复授权**：`cachedScopeToAstIndex` 与 `lambdaNameCountersByOwningClass` 仅属于一次分析，但旧 `FrontendSuiteResolver` 跨公开分析入口保留两者，使同一分析器第二次解析已记录 Lambda 时读到旧作用域索引，且可能继承旧编号。仅在每轮分析入口清除两个缓存，不改算法、API 或 Phase 3 标注；添加同一实例重复分析回归。尚待落地及定向复验。
+  - **A2/A5 复验准备**：A2 更新了槽位覆盖断言，分别检查未全覆盖时的一条统一接管、原始诊断全覆盖时的精确归属及无关恢复项不被认领；A5 的构造器返回用例分离分析实例以验证不同管理器场景，并追加同代类型检查重入去重。均包含在现有 29 个 selector 中；同一分析器跨分析回归由 B3 独立覆盖。尚未重跑。
+  - **B4 整类回归：旧解析夹具两项失败**。基线中的 `FrontendCompileCheckAnalyzerTest` 未改：`analyzeForCompileKeepsRootOwnedTypeTestTargetFailureOwnedByExpressionResolution` 第 312 行的夹具实际为 `value is null`（第 317 行），原 `gdparser 0.7.2` 独立 probe 已确认 `parse.missing_type.type_test` 与 `parse.statement.trailing`；`analyzeForCompileKeepsDedicatedGuardForResolvedParameterizedGdccConstructorRegression` 第 879 行的旧夹具有公共前导 8 个空格，触发 `Indent`、`class_name`、`extends` 三条 `parse.syntax.unexpected_token`。两者均在零解析诊断检查失败，未验证到编译门行为；留待 Phase 5E 迁移，不从 29 个 selector 中移除整类。
+  - **B4 新编译门专项**：`FrontendCompileCheckRecoveryTest` 本轮 8/8 通过，零失败、错误或跳过；不抵消上述旧整类失败。
+  - **D 最小整数**：`FrontendCfgGraphBuilderTest.buildExecutableBodyEmitsMinimumIntegerWithoutMaterializingItsMagnitude` 第 109 行看到十进制/十六进制幅值和一元根的 4 条 `sema.expression_resolution`；`FrontendLoweringBodyInsnPassTest.runLowersMinimumIntegerLocalAndReturnAsDirectSignedLiterals` 第 10082 行同因在 `FrontendCfgGraphBuilder.java:4808` 拒绝 `FAILED` 的一元表达式。两项夹具依赖 Phase 3 的最小值预认领；D 的三个字典 CFG 用例及已发布键事实的 LIR 物化均通过。
+  - **D 复验准备**：两个最小整数用例在同一代 AST 上只为一元根提供 `int` 定型事实，不为幅值子项发布成功事实，随后走生产 CFG/LIR。这样可验证 Phase 2 的直接常量物化、不访问幅值及首选槽保留，无需提前接入 Phase 3 Sema 预认领。原有两个 selector 不变，待复跑。
+- **第二轮完整编译与 29 selector 复验（2026-11-23）**：`./gradlew classes testClasses --no-daemon --info --console=plain` 退出 `0`（24 秒），本轮实际执行 `:compileJava` 与 `:compileTestJava`。沿用同一 29 个 selector，不移除旧整类；wrapper 退出 `1`（12 秒）。21/21 份本轮 XML 的测试数按 selector 对应类顺序为 10、39、13、48、17、20、8、24、4、9、16、1、3、3、14、3、8、106、3、1、2，合计 352 项、350 通过、2 失败，零错误和跳过；XML 清单校验退出 `0`。两项失败仅为上文 B4 旧夹具（`value is null` 和 8 空格前导缩进），原因及行号未变，留 Phase 5E。
+  - **本阶段复验通过**：A2 槽位归属、A5 构造器返回及 D 的两个最小整数方法均从失败转为通过。新增 `FrontendSuiteResolverRecoveryTest.reusedSemanticAnalyzerRebuildsLambdaScopesAndRestartsNamingForBothPublicEntries` 通过，整类 3/3；`FrontendCompileCheckRecoveryTest` 保持 8/8。无新失败。合并运行中的计划八类为 179/179；单独的原始八类 wrapper 命令将在记录本次 XML 汇总后运行，不复制或备份 XML。
+- **计划八类独立验收（2026-11-23）**：先记录完整 29 selector 的同轮 XML 汇总，再于 GDCC 根目录直接执行上方原始八类 wrapper。wrapper 与本轮 XML 校验均退出 `0`（10 秒），8/8 份预期测试报告，179 项全部通过，零失败、错误、跳过或额外报告。未复制产物或 XML。这验证了计划规定的门槛，不把含两项旧夹具失败的扩展命令标为全绿；独立双审与最后一次 IDEA 清理后复核仍待记录。
+- **独立审阅 A**：`review-expert-a` 审阅完整 Phase 2 改动后给出 `APPROVE`，未报告阻塞、高、中或低严重度问题。确认五字段诊断重放、常量策略隔离、CFG 消费同代事实及后续阶段的界限。
+- **独立审阅 D**：`review-expert-d` 给出 `REQUEST_CHANGES`，提出四项中等严重度问题，尚待逐项核实与复审：
+  - **M1（A）**：已复现管理器 A 持有语义诊断 S → 管理器 B 同时持有原始解析诊断 P 与 S → 再用 A 调用编译门时，重入类型检查会把活跃语义接管改写为 P。修复已落盘，保留活跃 S；S 已失效时允许改用活跃 P。合并复验在原 29 selector 上增加 `FrontendTypeCheckAnalyzerTest.initializerReturnKeepsLiveSemanticClaimAcrossTypeCheckAndCompileManagers` 与 `FrontendTypeCheckAnalyzerTest.initializerReturnReplacesInactiveSemanticClaimWithLiveParserError`；原 A5 入口继续执行。
+  - **M2（B）**：原 JShell probe 中，同一 owner 的三处构造调用被错误归到两份源码，得到六条诊断。已修正构造器守卫的源码和剪枝边界；新增测试验证被标记跳过的分支不报告、诊断不会跨文件复制，且保留对未被语法剪枝的 rejected default 的专用守卫。现有整类 `FrontendCompileCheckRecoveryTest` 覆盖新增用例，待合并复验。
+  - **M3（C，已延期，待用户裁定）**：实测受损构造器返回的逐项快照复制呈二次增长，单独类型检查 4,000 个 `return` 的累计分配为 738 MiB。拟议方案是在公共 `DiagnosticManager` 加入 checkpoint/增量索引，并调整五个生产文件，涉及底层数据结构与诊断可见性契约，不按局部修复处理。本轮不实施，保留该风险待用户决定；M1、M2、M4 先复验并交原审阅者复核。
+  - **M4（D）**：已移除整个 CFG 的 `OpaqueExprValueItem` 总数断言。改按原键 `BinaryExpression` 及左右操作数的 AST 身份验证，不再约束两处返回实现；保留折叠载荷、`has`、不取值等断言。原 D selector 已覆盖，待合并复验。
+- **审阅修复复验（2026-11-23）**：M3 未改。`./gradlew classes testClasses --no-daemon --info --console=plain` 退出 `0`（24 秒），实际执行生产与测试编译。原 29 个 selector 加 M1 两个方法，共 31 个；wrapper 退出 `1`（12 秒），21/21 份本轮 XML、355 执行、353 通过、2 旧夹具失败、0 错误/跳过，XML 校验退出 `0`，无新失败。原计划八类在本轮为 179/179。M1 两种接管行为均通过（`FrontendTypeCheckAnalyzerTest` 5/5）；M2 的 `constructorGuardStaysInItsFileAndSkipsPrunedAncestorsButStillChecksRejectedDefaults` 及旧 default 守卫相关回归通过（`FrontendCompileCheckRecoveryTest` 9/9）；M4 的 `buildsOpenDictionaryPatternFromFoldedKeyWithoutLoweringKeyAst` 通过（字典 CFG 3/3）。仅 B4 的两项 Phase 5E 旧夹具原因为失败，未移除 selector。待原审阅者复核。
+- **原审阅者 D 复核**：定向批准 M1、M2、M4，未发现新阻断。M3 仍开放：等待用户决定是否授权仅在 `DiagnosticManager` 内增加窄查询增量索引（不引入公开 checkpoint），或延期处理。当前未实施任何 M3 改动，暂不启动最终 IDEA 清理。
+- **M3 用户裁定与实施范围**：用户已授权实施 `DiagnosticManager` 内部窄查询增量索引，不引入公开 checkpoint；原测量和待决记录保留。C 负责 manager/helper 并按原方法复测，A 负责两个调用点，B 负责 suite 调用点。当前正在实施，尚未验证。待全部落盘后，统一执行正式编译和行为测试，再交原审阅者 D 复审。
+  - `DiagnosticManager` 已实现两个分别延迟初始化、增量追加的索引，`report`、`reportAll`、`snapshot` 的实现和顺序/重复语义未变；待编译、行为验证与同法复测。
+  - `FrontendParseRecovery` 已增加接收 manager 的重载；既有 `Set` 路径与新增实时查询共用相同的五字段匹配及 `ERROR` 接管规则，待行为验证。
+  - `FrontendSuiteResolver` 已改为先核验整个恢复组的活跃覆盖，再对两个候选范围取最早写入的阻塞 `ERROR`；补发后直接使用刚发出的诊断，不重新查询。原整类 selector `FrontendSuiteResolverRecoveryTest` 已包含两个新增回归，覆盖诊断范围以及同一与不同 manager，待复验。
+  - `FrontendTypeCheckAnalyzer` 和 `FrontendDeclaredTypeSupport` 已移除逐节点诊断快照；至此 M3 五个生产文件均已落盘。新增 `FrontendTypeCheckAnalyzerTest.initializerReturnsKeepDistinctRangesWithMixedDiagnosticCoverage` 待并入定向验证。此时先运行 `classes` 更新性能测量产物，待直接测试完工且 C 的同法复测结束后，再串行运行正式编译和定向 wrapper，避免干扰测量。
+  - M3 生产产物更新：GDCC 根目录 `./gradlew classes --no-daemon --info --console=plain` 退出 `0`（17 秒），实际执行 `:compileJava`；仅有既有弃用和 JVM native-access 提示。生产构建完成后停跑 Gradle，供 C 独立测量。测量结束后，先正式 `classes testClasses`，再复跑原八类及扩展 34 个 selector（31 个原 selector 加上上面的类型检查方法和 `DiagnosticManagerTest`、`FrontendParseRecoveryTest` 两类）。
+  - **M3 同法性能复测（C，2026-11-23）**：探针退出 `0`。下列 MiB 为分析调用线程的累计分配量，不是峰值内存或 RSS。单独类型检查在 `N=250/500/1000/2000/4000` 个受损 `return` 时，耗时 ms／累计 MiB 分别为 `0.486/0.161`、`0.892/0.321`、`0.703/0.627`、`1.425/1.146`、`2.622/2.291`；旧 `N=4000` 为 `512.397/738.007`。同样的 4,000 项通过公开 `analyze` 时，从 `629.858 ms / 909.408 MiB` 降到 `103.188 ms / 174.089 MiB`，不据此断言整个公开分析流程线性。固定 1,000 个受损返回、附加诊断量为 `0/1000/3000` 时，旧分配 `46.624/92.583/184.502 MiB` 降为 `0.573/0.620/0.712 MiB`。独立类型检查逐样本断言完整诊断列表与顺序（含 padding），并核对接管数量及类别；公开 `analyze` 只核对诊断与接管的类别和数量，未断言顺序。合法对照均为零。五次样本中位数及复现方法见共享文档 `handoffs/gdcc-m3-diagnostic-index-benchmark.md`。
+- **M3 正式编译与扩展复验（2026-11-23）**：`./gradlew classes testClasses --no-daemon --info --console=plain` 退出 `0`（21 秒），生产 `:compileJava` 已为最新，实际执行 `:compileTestJava`。34 个 selector 的 wrapper 退出 `1`（12 秒），23/23 份本轮 XML、369 执行、367 通过、2 旧夹具失败、0 错误/跳过，XML 清单校验退出 `0`。无新增失败；仍仅 B4 两项 Phase 5E 旧夹具，未移除过滤器。计划八类在合并运行中为 179/179。
+  - **M3 行为覆盖**：`DiagnosticManagerTest` 9/9（实时五字段、重复与快照不变、最早双范围、无效批次不污染）；`FrontendParseRecoveryTest` 2/2（manager 隔离、原始诊断优先及拒绝 warning 接管）；`FrontendDeclaredTypeSupportTest` 9/9；`FrontendTypeCheckAnalyzerTest` 6/6（含混合覆盖与独立范围）；`FrontendSuiteResolverRecoveryTest` 5/5（含两个新增的范围与同/跨 manager 场景）。记录完成后再独立运行原八类，不复制或备份 XML。
+- **M3 后计划八类独立复验（2026-11-23）**：保存扩展集的统计与失败明细后，直接执行上方原始八类 wrapper。wrapper 与本次 XML 校验均退出 `0`（10 秒），8/8 份本轮 XML、179/179 通过、0 失败/错误/跳过，无额外报告。未备份产物；原 D 对 M3 的独立复审和最终 IDEA 清理仍待完成。
+- **原审阅者 D 第二次定向复审**：给出 `APPROVE`，确认 M1–M4 全部关闭，未发现新增阻断。认可 manager 的增量窄查询、恢复诊断的顺序与同法性能证据。
+- **独立审阅 A 最终交叉复核**：对最终增量给出 `APPROVE`，未发现新问题。至此两位独立审阅者均最终批准，M1–M4 全部关闭。仍保留 Phase 5E 的两项旧夹具失败和 Phase 3C 接线边界，不将其视为本次审阅遗留项。
+- **最后一次 IDEA 清理与终验**：各实施代理按 A → B → C → D 串行检查 42 个不同 Java 文件，避免 IDE 并发超时；四批完成后再正式编译与定向终验。
+  - **A 批 IDEA 清理**：10/10 文件检查成功；改动区内提示 5 → 2，范围内 3 项全部清零。保留的两项是跨类同形诊断认领循环的重复代码提示，不在本次四类清理范围内。三文件小改，未改变行为或触及范围外代码。交接 B 串行检查。
+  - **B 批 IDEA 清理**：10/10 文件前后复检成功，7 个待格式化文件均完成。改动区范围内提示 1 → 0（测试 lambda 参数名）；保留新测试中的 13 条测试 NPE 提示和范围外既有提示。交接 C 串行检查。
+  - **C 批 IDEA 清理**：13/13 文件扫描成功；4 个测试文件重排成功且没有差异。未改代码。保留 1 条新弱建议，因为将整个既有 `if`/`instanceof` 链转为 `switch` 会超出改动行；另有 10 项确认是基线提示。交接 D 串行检查。
+  - **D 批 IDEA 清理**：9/9 文件检查成功；4 个测试文件重排成功且无额外改动。改动区没有准入项；保留 4 条测试 NPE 或有意传 `null` 的提示，两行范围外缩进不改。A → B → C → D 已串行完成，共 42 个不同 Java 文件（10 + 10 + 13 + 9）。
+- **最终编译（2026-11-23）**：IDEA 清理结束后，在原 GDCC 工作树执行 `./gradlew classes testClasses --no-daemon --info --console=plain`，退出 `0`（19 秒），`compileJava`、`compileTestJava` 均实际执行，无编译错误。既有弃用及 JVM native-access 提示仍在。
+- **最终扩展回归（2026-11-23）**：按前述 34 个 selector 运行定向 wrapper，退出 `1`（12 秒）。在下一轮前核对 23/23 份本轮生成的 JUnit XML、定向方法与新增回归。369 项执行、367 通过、2 失败、0 错误、0 跳过、无额外报告，XML 校验退出 `0`。失败仅有下列两项；过滤器保留，未标为成功：
+  1. `FrontendCompileCheckAnalyzerTest.analyzeForCompileKeepsRootOwnedTypeTestTargetFailureOwnedByExpressionResolution`：第 312 行在 helper 的零解析诊断守卫失败，`value is null` 触发 `parse.missing_type.type_test`、`parse.statement.trailing`。
+  2. `FrontendCompileCheckAnalyzerTest.analyzeForCompileKeepsDedicatedGuardForResolvedParameterizedGdccConstructorRegression`：第 879 行在 helper 的零解析诊断守卫失败，旧夹具公共前导 8 空格导致 `Indent`、`class_name`、`extends` 三条 `parse.syntax.unexpected_token`。
+  两个旧夹具均未走到拟验证的编译门行为，留待 Phase 5E 迁移；无新失败。
+- **最终原计划八类独立验收（2026-11-23）**：再单独执行上方原始八类 wrapper，退出 `0`（10 秒）；8/8 份本轮 XML，179/179 通过、0 失败/错误/跳过，XML 校验退出 `0`，无额外报告。逐轮验证 XML 后才启动下一轮，未另存或打包产物。
+- **最终产物性能复测**：最终编译和测试结束、Gradle 停止后，在新 JShell 同法复跑，23 个测量点全部通过。下列为 5 次样本中位 `ms / MiB`，MiB 是当前分析线程累计分配量，不是 RSS。4,000 个非法返回的独立 TypeCheck 从旧 `512.397 / 738.007` 降至最终 `2.519 / 2.291`；公开 `analyze` 从 `629.858 / 909.408` 降至 `104.031 / 173.692`。4,000 个合法返回的公开 `analyze` 为 `19.346 / 48.197`、独立 TypeCheck 为 `0.880 / 0.703`。固定 1,000 个非法返回、附加 `0/1000/3000` 条无关 warning，最终独立分配量为 `0.573/0.620/0.712 MiB`。独立路径逐样本核对完整诊断列表和顺序与接管类别、数量；公开路径只核对类别和数量，不据此断言全链路线性。完整规模、合法对照、耗时范围与方法见共享 `handoffs/gdcc-m3-diagnostic-index-benchmark.md`（v2）。
+- **最终结论**：Phase 2 实施完毕，正式编译与八类验收通过。A、D 最终均 `APPROVE`，M1–M4 已关闭；IDEA 串行检查了 42 个不同 Java 文件。扩展集的两项旧夹具仍失败，Phase 2 不可独立发布字典匹配键能力。
+- **最终工作树核查**：`git diff --check` 退出 `0`，无输出。完整 `git status --untracked-files=all` 已核对；分支与上游一致，无暂存。38 个未暂存修改（37 个 Java 文件及本计划）、5 个新增 Java 文件均在本阶段范围。以下为完整的精简状态；未提交、未打包。
+
+```text
+## feat/frontend/pure-java-parser...origin/feat/frontend/pure-java-parser
+ M doc/module_impl/frontend/frontend_gdparser_0_7_2_integration_plan.md
+ M src/main/java/gd/script/gdcc/frontend/constant/GdConstantValue.java
+ M src/main/java/gd/script/gdcc/frontend/diagnostic/DiagnosticManager.java
+ M src/main/java/gd/script/gdcc/frontend/lowering/FrontendBodyLoweringSupport.java
+ M src/main/java/gd/script/gdcc/frontend/lowering/cfg/FrontendCfgGraphBuilder.java
+ M src/main/java/gd/script/gdcc/frontend/lowering/cfg/item/ValueOpItem.java
+ M src/main/java/gd/script/gdcc/frontend/lowering/pass/body/FrontendBodyLoweringSession.java
+ M src/main/java/gd/script/gdcc/frontend/lowering/pass/body/FrontendSequenceItemInsnLoweringProcessors.java
+ M src/main/java/gd/script/gdcc/frontend/parse/FrontendParseRecovery.java
+ M src/main/java/gd/script/gdcc/frontend/sema/FrontendDeclaredTypeSupport.java
+ M src/main/java/gd/script/gdcc/frontend/sema/FrontendMatchSupport.java
+ M src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzer.java
+ M src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendStatementResolver.java
+ M src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendSuiteResolver.java
+ M src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendTypeCheckAnalyzer.java
+ M src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/EvaluationPolicy.java
+ M src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendAssignmentSemanticSupport.java
+ M src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendConstantEvaluator.java
+ M src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendContainerLiteralSemanticSupport.java
+ M src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendExportAnnotationSupport.java
+ M src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendExpressionSemanticSupport.java
+ M src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendLocalConstLookupContext.java
+ M src/test/java/gd/script/gdcc/frontend/constant/GdConstantValueTest.java
+ M src/test/java/gd/script/gdcc/frontend/diagnostic/DiagnosticManagerTest.java
+ M src/test/java/gd/script/gdcc/frontend/lowering/FrontendBodyLoweringSupportTest.java
+ M src/test/java/gd/script/gdcc/frontend/lowering/FrontendLoweringBodyInsnPassTest.java
+ M src/test/java/gd/script/gdcc/frontend/lowering/cfg/FrontendCfgGraphBuilderMatchTest.java
+ M src/test/java/gd/script/gdcc/frontend/lowering/cfg/FrontendCfgGraphBuilderTest.java
+ M src/test/java/gd/script/gdcc/frontend/lowering/pass/body/FrontendConstantMaterializationTest.java
+ M src/test/java/gd/script/gdcc/frontend/sema/FrontendDeclaredTypeSupportTest.java
+ M src/test/java/gd/script/gdcc/frontend/sema/FrontendMatchSupportTest.java
+ M src/test/java/gd/script/gdcc/frontend/sema/FrontendSuiteResolverTest.java
+ M src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendTypeCheckAnalyzerTest.java
+ M src/test/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendAssignmentSemanticSupportTest.java
+ M src/test/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendConstantEvaluatorTest.java
+ M src/test/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendContainerLiteralSemanticSupportTest.java
+ M src/test/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendExportAnnotationSupportTest.java
+ M src/test/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendExpressionSemanticSupportTest.java
+?? src/main/java/gd/script/gdcc/frontend/lowering/cfg/item/ConstantValueItem.java
+?? src/test/java/gd/script/gdcc/frontend/parse/FrontendParseRecoveryTest.java
+?? src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendCompileCheckRecoveryTest.java
+?? src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendSuiteResolverRecoveryTest.java
+?? src/test/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendLocalConstLookupContextTest.java
+```
+
+- **后续阶段边界**：Phase 2 提供字典键事实接口与消费、最小整数定型/降级基础及编译门收尾。本阶段不实现 `FrontendBodyOwnerProcedures` 的字典键事实生产、最小整数操作数预认领/来源传播或 Phase 3 的 38-facet 标注。Phase 3C 写入同代字典键事实并完成对应端到端验证，Phase 5E 迁移上列两项旧夹具。补全切换和源文档同步仍在后续阶段。
+- **独立发布限制**：单独合入 Phase 2 时，没有生产代码为字典模式键写入同代 `constantFacts`。即使源码 `{"k": _}` 合法，也可能被类型检查拒绝；若绕过编译门直调 CFG，缺失键事实会触发异常。不得增设 AST 形状、运行时求值或其他回退。须等 Phase 3C 接入同代生产者并通过端到端验证，才具备发布这一能力的条件；Phase 2 验收通过不等于可独立发布。
+
+#### Phase 2 后续：提取 GDScript trivia 工具（2026-11-23）
+
+- 将扫描逻辑提取到 `StringUtil`，供推导类型标记、lambda 调用点描述符和补全接收者使用。前两者保留各自的注释、续行及字符串处理规则；补全仍只向后跳过 ASCII 空白。共 4 个生产文件和 4 个测试文件。独立审阅 `APPROVE`，未发现中、高严重度问题。
+- 编辑前窄基线 6/6（3 份本轮 JUnit XML）。提取后整跑 `StringUtilTest`、`FrontendDeclaredTypeSupportTest`、`FrontendLambdaIdentityAnalyzerTest`、`CompletionServiceTest`，分别通过 42/42、9/9、25/25、32/33，合计 108/109（4/4 份本轮 XML，wrapper 退出 `1`，0 错误或跳过）。单独复跑原 6 项和新增 5 项，11/11 通过（4/4 份本轮 XML，退出 `0`，0 失败、错误或跳过）。
+- 唯一失败是 `CompletionServiceTest.memberAccessOnFactFreeReceiverReturnsEmptyWithoutThrowing` 的空候选断言。真实快照的 JShell 复现中，`dropped = v.` 的 `v` 在字节区间 `[462,463)` 已有 `RESOLVED Vector2`；`resolveReceiverAtEnd` 首次精确命中就返回与公开入口相同的 49 项候选（含 `x`），未走本次改动的回扫。新旧空白谓词对全部 256 个字节值也一致。该失败与旧夹具的「接收者没有事实」假设冲突，不是本次提取引起；未改断言，编辑前窄基线未包含此方法。
+- 本轮 8 个实现及测试文件的 `git diff --check` 通过；全工作树另有 26 处范围外尾随空格，未改动。本次验证不替代上方 Phase 2 验收。
+
+#### Phase 2 后续：迁移九项旧失败（2026-11-23）
+
+- 移除五项依赖 Phase 3C 生产者的源码端到端旧例：`FrontendCfgGraphBuilderMatchTest` 的 `buildsDictionaryPatternWithHasKeyGatesAndFetches`、`wildcardDictionaryValueNeedsOnlyTheHasKeyGate`、`nestedDictionaryInArrayRecursesWithOwnMaterializeAndLengthGate`，以及 `FrontendLoweringBodyInsnPassTest` 的 `runLowersDictionaryPatternIntoHasGateAndKeyedFetch`、`runLowersNestedDictionaryInArrayWithBothFetchKinds`。保留并通过显式发布键事实的 CFG/LIR 消费正例、缺失或拒绝键事实的 CFG 负例及普通字典字面量拒绝 Key-Only 的负例；这些测试不替代源码端到端验收。
+- 其余四项只改测试：补全旧例拆成 `memberAccessOnUnknownReceiverReturnsEmptyWithoutThrowing` 和 `memberAccessOnTypedReceiverAtFunctionTailListsMembers`；循环外 `break` / `continue` 两例保留原名，用手工 AST 验证缺少循环帧时快速失败；cast 原名保留，使用可被当前解析器识别的夹具，继续断言发布类型、非安全转换警告和未知目标错误。
+- 在原 GDCC 工作树用相同 23 个类 selector 复跑：wrapper 退出 `0`（20 秒），23/23 份本轮 JUnit XML，810/810 通过、零失败、错误或跳过。逐类核对方法名单，原 805 个通过方法全部实际执行并通过；另外 5 个迁移后方法通过。HEAD 和暂存区未改变。本记录不改写此前 Phase 2 验收，也不代表 Phase 3C 已接通。
+
 ### Phase 3：38-Facet 选择性受损门控、裸 Lambda 编译/降级序号同构、空名防御与下游单归属去重闭环（分 3 批，分别为 5、4、4 个文件）
 - **Batch 3A（5 个文件）**：
   1. `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendErrorSubtreeAnnotator.java`（实现完整 38-facet 分级跳过门控：豁免 `ATTRIBUTE_MISSING_NAME`/`SUPER_MISSING_*` 与纯缺失冒号头部、保持容器/签名/`signal.parameter`/可调用体与参数类型槽位存活、将受损 `ElifClause`/`MatchSection` 精确收敛为分支级恢复根而将无缩进体空 `MatchStatement` 归入语句级跳过、**按 AST 形状 `ExpressionStatement(LambdaExpression)` 无条件同时标记外层语句与直接子 `LambdaExpression`**、标记空白名局部声明/空白迭代器 `ForStatement`、标记受损 `AnnotationStatement` 及 `VariableDeclaration.recoveryAnnotations()`）
@@ -529,6 +674,7 @@ flowchart TD
   4. `src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendAssignmentSemanticSupport.java`（仅由左值/右值依赖失败的既有返回点回传对应原始 AST，普通下标写目标先记录实际失败的基底或索引再传给原始左值，不改变左值优先的分支顺序）
 - **阶段验收**：
   - 配合对应单测批次运行 `FrontendErrorSubtreeAnnotatorTest`、`FrontendAnnotationUsageAnalyzerTest`、`FrontendParameterDefaultMetadataOwnerTest`、`FrontendLoopControlFlowAnalyzerTest`、`FrontendLoweringFunctionPreparationPassTest`、`FrontendSuperCallSemanticsTest`、`FrontendMatchSemanticsTest`、`FrontendCfgGraphBuilderMatchTest`、`FrontendLoweringBuildCfgPassTest`、`FrontendBodyOwnerProceduresExprTypeTest`。
+  - [ ] **Phase 3C 字典键端到端验收**：接好 `runMatchDictionaryKeyConstResolution` 后，恢复或新增并实际运行 `FrontendCfgGraphBuilderMatchTest` 和 `FrontendLoweringBodyInsnPassTest` 的源码至 CFG/LIR 正例。必须由同代分析发布键的 `constantFacts`，测试不得预种或伪造；覆盖普通字典键的 `has(key)` 门控和 keyed fetch、wildcard 只发 `has(key)` 不取值、数组内嵌套字典同时出现 indexed fetch 和 keyed fetch。保留现有显式发布事实的消费测试与缺失事实负例。
 
 ### Phase 4：纯 Java 8-Kind 补全服务切换、跳过门控分流与同行空套件作用域锚定（3 个文件）
 - **涉及文件（3 个）**：

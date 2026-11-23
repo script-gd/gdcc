@@ -21,7 +21,10 @@ import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralFloatInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
+import gd.script.gdcc.lir.insn.LiteralNilInsn;
+import gd.script.gdcc.lir.insn.LiteralNodePathInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
+import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.parser.DomLirParser;
 import gd.script.gdcc.lir.parser.DomLirSerializer;
@@ -35,11 +38,14 @@ import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
+import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdPlaneType;
 import gd.script.gdcc.type.GdProjectionType;
 import gd.script.gdcc.type.GdQuaternionType;
 import gd.script.gdcc.type.GdRect2Type;
 import gd.script.gdcc.type.GdRect2iType;
+import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdTransform2DType;
 import gd.script.gdcc.type.GdTransform3DType;
 import gd.script.gdcc.type.GdType;
@@ -101,6 +107,51 @@ class FrontendConstantMaterializationTest {
                 () -> assertEquals("out_string", stringInsn.resultId()),
                 () -> assertEquals("payload", stringInsn.value())
         );
+    }
+
+    @Test
+    void materializeMatchLiteralsEmitsExactLiteralInsnsIntoTypedNonRefSlots() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.materializeConstantValue(block, new GdConstantValue.NullValue(), "nil_out");
+        session.materializeConstantValue(block, new GdConstantValue.StringNameValue("name'"), "name_out");
+        session.materializeConstantValue(block, new GdConstantValue.NodePathValue("Node/Child"), "path_out");
+
+        assertEquals(
+                List.of(
+                        new LiteralNilInsn("nil_out"),
+                        new LiteralStringNameInsn("name_out", "name'"),
+                        new LiteralNodePathInsn("path_out", "Node/Child")
+                ),
+                block.getNonTerminatorInstructions()
+        );
+        for (var slot : Map.of(
+                "nil_out", GdNilType.NIL,
+                "name_out", GdStringNameType.STRING_NAME,
+                "path_out", GdNodePathType.NODE_PATH
+        ).entrySet()) {
+            var variable = session.targetFunction().getVariableById(slot.getKey());
+            assertNotNull(variable);
+            assertEquals(slot.getValue(), variable.type());
+            assertFalse(variable.ref());
+        }
+    }
+
+    @Test
+    void materializeMatchLiteralsRejectsWrongTypeAndRefWithoutEmittingInstructions() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.ensureVariable("variant_out", GdVariantType.VARIANT);
+        session.targetFunction().createAndAddRefVariable("ref_name_out", GdStringNameType.STRING_NAME);
+
+        var wrongType = assertThrows(IllegalStateException.class, () -> session.materializeConstantValue(
+                block, new GdConstantValue.NullValue(), "variant_out"));
+        var refSlot = assertThrows(IllegalStateException.class, () -> session.materializeConstantValue(
+                block, new GdConstantValue.StringNameValue("name"), "ref_name_out"));
+
+        assertTrue(wrongType.getMessage().contains("variant_out"), wrongType.getMessage());
+        assertTrue(refSlot.getMessage().contains("non-ref result slot"), refSlot.getMessage());
+        assertTrue(block.getNonTerminatorInstructions().isEmpty());
     }
 
     @Test
@@ -201,7 +252,7 @@ class FrontendConstantMaterializationTest {
                 var leafIndex = i;
                 assertAll(
                         vectorCase.type().getTypeName() + " leaf[" + i + "]",
-                        () -> assertEquals((double) (float) vectorCase.leaves()[leafIndex], leafInsn.value()),
+                        () -> assertEquals((float) vectorCase.leaves()[leafIndex], leafInsn.value()),
                         () -> assertEquals(GdFloatType.FLOAT, leafVariable.type()),
                         () -> assertFalse(leafVariable.ref())
                 );
@@ -290,7 +341,7 @@ class FrontendConstantMaterializationTest {
         assertNotNull(sizeVariable);
 
         assertAll(
-                () -> assertEquals(List.of(literalResultId(insns.get(0)), literalResultId(insns.get(1))),
+                () -> assertEquals(List.of(literalResultId(insns.getFirst()), literalResultId(insns.get(1))),
                         positionArgs),
                 () -> assertEquals(List.of(literalResultId(insns.get(3)), literalResultId(insns.get(4))),
                         sizeArgs),
@@ -337,7 +388,7 @@ class FrontendConstantMaterializationTest {
                                 .map(LiteralFloatInsn::value)
                                 .toList()),
                 () -> assertEquals(
-                        List.of(literalResultId(insns.get(0)), literalResultId(insns.get(1)), literalResultId(insns.get(2))),
+                        List.of(literalResultId(insns.getFirst()), literalResultId(insns.get(1)), literalResultId(insns.get(2))),
                         variableOperandIds(xConstruct)),
                 () -> assertEquals(
                         List.of(literalResultId(insns.get(4)), literalResultId(insns.get(5)), literalResultId(insns.get(6))),
@@ -393,7 +444,7 @@ class FrontendConstantMaterializationTest {
                 () -> assertEquals(GdBasisType.BASIS, basisVariable.type()),
                 () -> assertEquals(GdFloatVectorType.VECTOR3, originVariable.type()),
                 () -> assertEquals(
-                        List.of(literalResultId(insns.get(0)), literalResultId(insns.get(1)), literalResultId(insns.get(2))),
+                        List.of(literalResultId(insns.getFirst()), literalResultId(insns.get(1)), literalResultId(insns.get(2))),
                         variableOperandIds(
                                 assertInstanceOf(ConstructBuiltinInsn.class, insns.get(3)))),
                 () -> assertEquals(
@@ -432,8 +483,7 @@ class FrontendConstantMaterializationTest {
             for (var leaf = 0; leaf < 4; leaf++) {
                 expectedLeafIds.add(literalResultId(insns.get(column * 5 + leaf)));
             }
-            var expected = expectedLeafIds;
-            assertEquals(expected, variableOperandIds(columnConstruct), "column " + column);
+            assertEquals(expectedLeafIds, variableOperandIds(columnConstruct), "column " + column);
         }
         var projectionConstruct = assertInstanceOf(ConstructBuiltinInsn.class, insns.get(20));
         // Literal payloads keep the flat leaf order — a permuted column recipe would still
@@ -566,9 +616,8 @@ class FrontendConstantMaterializationTest {
         assertEquals(block.getNonTerminatorInstructions().size(), reparsed.size());
         for (var i = 0; i < reparsed.size(); i++) {
             var expected = block.getNonTerminatorInstructions().get(i);
-            var index = i;
             assertTrue(expected.checkEquals(reparsed.get(i)),
-                    "instruction " + index + ": " + expected);
+                    "instruction " + i + ": " + expected);
         }
     }
 
@@ -589,9 +638,8 @@ class FrontendConstantMaterializationTest {
         assertEquals(block.getNonTerminatorInstructions().size(), reparsed.size());
         for (var i = 0; i < reparsed.size(); i++) {
             var expected = block.getNonTerminatorInstructions().get(i);
-            var index = i;
             assertTrue(expected.checkEquals(reparsed.get(i)),
-                    "instruction " + index + ": " + expected);
+                    "instruction " + i + ": " + expected);
         }
     }
 
@@ -615,7 +663,7 @@ class FrontendConstantMaterializationTest {
             assertEquals(simpleLiteral.value(), domLiteral.value());
         }
 
-        var nulLiteral = (LiteralStringInsn) domParsed.get(0);
+        var nulLiteral = (LiteralStringInsn) domParsed.getFirst();
         assertEquals("a\0b", nulLiteral.value());
         assertEquals(3, nulLiteral.value().length());
         assertEquals('b', nulLiteral.value().charAt(2));
@@ -680,8 +728,8 @@ class FrontendConstantMaterializationTest {
             ids.add(insn.resultId());
         }
         for (var operand : insn.operands()) {
-            if (operand instanceof LirInstruction.VariableOperand variableOperand) {
-                ids.add(variableOperand.id());
+            if (operand instanceof LirInstruction.VariableOperand(var id)) {
+                ids.add(id);
             }
         }
         return ids;
@@ -696,7 +744,7 @@ class FrontendConstantMaterializationTest {
                 """
                         class_name ConstMaterializationHelper
                         extends RefCounted
-
+                        
                         func ping(seed: int) -> int:
                             return seed
                         """,
