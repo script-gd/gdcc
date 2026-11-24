@@ -1,12 +1,17 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
+import dev.superice.gdparser.frontend.ast.EnumDeclaration;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.frontend.constant.GdConstantValue;
 import gd.script.gdcc.frontend.constant.GdScriptEvaluatedConstant;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
@@ -17,6 +22,7 @@ import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.GdScriptClassConstant;
 import gd.script.gdcc.scope.ResolveRestriction;
+import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
@@ -30,6 +36,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -126,25 +133,43 @@ class FrontendConstSkeletonTest {
                 """);
 
         var classDef = findClass(fixture, "ConstForwardRefs");
-        var skeletonDiagnostics = skeletonDiagnostics(fixture);
+        var unit = fixture.units().getFirst();
+        assertTrue(unit.parseRecoveries().isEmpty());
+        var statements = unit.ast().statements();
+        var constant = assertInstanceOf(VariableDeclaration.class, statements.get(2));
+        var initializer = assertInstanceOf(BinaryExpression.class, constant.value());
+        var laterConstant = assertInstanceOf(IdentifierExpression.class, initializer.left());
+        var enumMember = assertInstanceOf(EnumDeclaration.class, statements.get(4)).members().getFirst();
+        assertEquals("B", constant.name());
+        assertEquals("A", laterConstant.name());
+        assertEquals("E", enumMember.name());
+        assertEquals("D", assertInstanceOf(IdentifierExpression.class, enumMember.value()).name());
+
+        var diagnostics = fixture.diagnostics().snapshot().asList();
+        assertEquals(2, diagnostics.size(), diagnostics::toString);
+        var constError = diagnostics.stream().filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton"))
+                .findFirst().orElseThrow(() -> new AssertionError("Missing class constant error: " + diagnostics));
+        var enumError = diagnostics.stream().filter(diagnostic -> diagnostic.category().equals("sema.enum_declaration"))
+                .findFirst().orElseThrow(() -> new AssertionError("Missing enum member error: " + diagnostics));
+        var rejectedNames = fixture.analysisData().rejectedClassConstants().get("ConstForwardRefs").keySet();
         assertAll(
-                () -> assertEquals(2, skeletonDiagnostics.size()),
-                () -> assertTrue(skeletonDiagnostics.stream().allMatch(diagnostic ->
-                        diagnostic.message().contains("declared later"))),
+                () -> assertEquals(FrontendDiagnosticSeverity.ERROR, constError.severity()),
+                () -> assertEquals("tmp/const_forward_refs.gd", constError.sourcePath()),
+                () -> assertEquals(FrontendRange.fromAstRange(laterConstant.range()), constError.range()),
+                () -> assertTrue(constError.message().contains("Constant 'B'"), constError::message),
+                () -> assertTrue(constError.message().contains("'A' is declared later"), constError::message),
+                () -> assertEquals(FrontendDiagnosticSeverity.ERROR, enumError.severity()),
+                () -> assertEquals("tmp/const_forward_refs.gd", enumError.sourcePath()),
+                () -> assertEquals(FrontendRange.fromAstRange(enumMember.range()), enumError.range()),
+                () -> assertTrue(enumError.message().contains("member 'E'"), enumError::message),
+                () -> assertTrue(enumError.message().contains("'D' is declared later"), enumError::message),
                 // `A`/`D` still publish; the forward consumers `B` and the enum do not.
                 () -> assertScalarConst(classDef, "A", GdIntType.INT, 5L),
                 () -> assertScalarConst(classDef, "D", GdIntType.INT, 4L),
                 () -> assertNull(findConstant(classDef, "B")),
                 () -> assertNull(findConstant(classDef, "E")),
                 // B joined the failed-const mask; a failed enum leaves no mask entry.
-                () -> assertTrue(
-                        fixture.analysisData().rejectedClassConstants()
-                                .get("ConstForwardRefs").containsKey("B")
-                ),
-                () -> assertFalse(
-                        fixture.analysisData().rejectedClassConstants()
-                                .get("ConstForwardRefs").containsKey("E")
-                )
+                () -> assertEquals(Set.of("B"), rejectedNames)
         );
     }
 
@@ -194,9 +219,9 @@ class FrontendConstSkeletonTest {
         var skeletonDiagnostics = skeletonDiagnostics(fixture);
         assertAll(
                 () -> assertEquals(2, skeletonDiagnostics.size()),
-                () -> assertTrue(skeletonDiagnostics.get(0).message().contains("own declaration"),
+                () -> assertTrue(skeletonDiagnostics.getFirst().message().contains("own declaration"),
                         "Expected self-reference reason but was: "
-                                + skeletonDiagnostics.get(0).message()),
+                                + skeletonDiagnostics.getFirst().message()),
                 () -> assertTrue(skeletonDiagnostics.get(1).message().contains("not a compile-time constant"),
                         "Expected non-constant member reason but was: "
                                 + skeletonDiagnostics.get(1).message()),
@@ -263,9 +288,9 @@ class FrontendConstSkeletonTest {
                 // Three failures: wrong-dimension vector conversion, `bool` payload mismatch,
                 // and `StringName`, which sits outside the frozen constant-type set entirely.
                 () -> assertEquals(3, skeletonDiagnostics.size()),
-                () -> assertTrue(skeletonDiagnostics.get(0).message().contains("cannot be converted")
-                                || skeletonDiagnostics.get(0).message().contains("declared type"),
-                        "Expected conversion failure but was: " + skeletonDiagnostics.get(0).message()),
+                () -> assertTrue(skeletonDiagnostics.getFirst().message().contains("cannot be converted")
+                                || skeletonDiagnostics.getFirst().message().contains("declared type"),
+                        "Expected conversion failure but was: " + skeletonDiagnostics.getFirst().message()),
                 () -> assertTrue(skeletonDiagnostics.get(2).message().contains("StringName"),
                         "Expected StringName whitelist rejection but was: "
                                 + skeletonDiagnostics.get(2).message()),
@@ -355,8 +380,8 @@ class FrontendConstSkeletonTest {
                 // same-module class name cannot descend into cross-class constants.
                 () -> assertScalarConst(classDef, "OK_BARE", GdIntType.INT, 0L),
                 () -> assertEquals(4, skeletonDiagnostics.size()),
-                () -> assertTrue(skeletonDiagnostics.get(0).message().contains("global enum"),
-                        "Expected global-enum rejection but was: " + skeletonDiagnostics.get(0).message()),
+                () -> assertTrue(skeletonDiagnostics.getFirst().message().contains("global enum"),
+                        "Expected global-enum rejection but was: " + skeletonDiagnostics.getFirst().message()),
                 () -> assertTrue(skeletonDiagnostics.get(1).message().contains("global enum"),
                         "Expected global-enum rejection but was: " + skeletonDiagnostics.get(1).message()),
                 () -> assertTrue(skeletonDiagnostics.get(2).message().contains("script class"),
@@ -395,8 +420,8 @@ class FrontendConstSkeletonTest {
                 ClassScope.class,
                 fixture.analysisData().scopesByAst().get(fixture.units().get(2).ast())
         );
-        var valueNames = childScope.valuesHere().stream().map(v -> v.name()).toList();
-        var visibleNames = childScope.collectVisibleValues().stream().map(v -> v.name()).toList();
+        var valueNames = childScope.valuesHere().stream().map(ScopeValue::name).toList();
+        var visibleNames = childScope.collectVisibleValues().stream().map(ScopeValue::name).toList();
         assertAll(
                 // Child's masked `PC` claims the name; parent's masked `GX` claims at its own
                 // layer, so grandparent's usable `GX` must not leak into enumeration — exactly
