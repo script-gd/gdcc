@@ -1,11 +1,16 @@
 package gd.script.gdcc.api.analysis;
 
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.ClassDeclaration;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.api.API;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.type.GdFloatVectorType;
 import org.jetbrains.annotations.NotNull;
@@ -13,14 +18,18 @@ import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static gd.script.gdcc.api.analysis.QueryTestSupport.file;
 import static gd.script.gdcc.api.analysis.QueryTestSupport.files;
 import static gd.script.gdcc.api.analysis.QueryTestSupport.offset;
+import static gd.script.gdcc.api.analysis.QueryTestSupport.offsetInside;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -38,10 +47,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// enumerate type names and file inner classes, skipped/error subtrees and fact-free receivers
 /// yield empty results without exceptions, and a stale snapshot answers from its own text.
 class CompletionServiceTest {
-    // Fixtures place a plain statement AFTER each unfinished `receiver.` line inside the same
-    // function: gdparser 0.6.0 then keeps the receiver's published facts (completion works),
-    // while a partial chain sitting at a function tail before the next `func` silently drops
-    // its receiver facts, and a line ending right after `call().` becomes an ErrorStatement.
+    private static final String FIXTURE_PATH = "/src/comp_fixture.gd";
+
+    // A following statement exercises replacement-range isolation across line boundaries.
+    // Function-tail cases separately verify that receiver facts survive at the end of a suite.
     private static final String NODE_PATH = "/src/comp_node.gd";
     private static final String NODE_SOURCE = """
             class_name CompNodeUser
@@ -212,7 +221,8 @@ class CompletionServiceTest {
             
             func f() -> void:
                 var ok = 1
-                var x = true if  else false
+                var valid = ok
+                var x = ok if  else false
             """;
 
     private static final String MASK_BASE_PATH = "/src/comp_mask_base.gd";
@@ -740,6 +750,227 @@ class CompletionServiceTest {
         assertTrue(result.candidates().isEmpty());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "func f(x: int):\n\tvar ok = x not |",
+            "func f(x: int):\n\tvar ok = x is int not |",
+            "func f(x: int):\n\tvar ok = x not \\\n\t\t|"
+    })
+    void expectedKeywordAfterInfixNotIsOnlyIn(String markedSource) {
+        var fixture = analyzeFixture(markedSource);
+        assertExpectedIn(fixture);
+    }
+
+    @Test
+    void expectedKeywordSurvivesSkippedInitializer() {
+        var fixture = analyzeFixture("func f(x: int):\n\tvar ok = (x not |)");
+        // The syntax-only answer must survive even when the ordinary cursor gate would reject it.
+        var index = fixture.index();
+        var anchor = index.nodeAt(fixture.cursor());
+        if (anchor == null) {
+            anchor = index.nodeAt(fixture.cursor() - 1);
+        }
+        assertSkippedVariable(fixture.analyzed(), index, anchor, "ok");
+        assertExpectedIn(fixture);
+    }
+
+    @Test
+    void notAfterIsExpectsTypeRatherThanIn() {
+        var fixture = analyzeFixture("func f(x: int):\n\tvar ok = x is not |");
+        var result = assertGap(fixture, CompletionContextKind.TYPE_POSITION);
+        assertTrue(result.candidates().stream().allMatch(candidate -> candidate.kind() == CompletionCandidateKind.TYPE));
+        assertLacks(result, "in");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "func f(|): pass",
+            "func f(x: Array[Inner, |): pass",
+            "signal s(a, |)"
+    })
+    void parameterNameSlotsHaveNoCandidates(String markedSource) {
+        assertEmptyGap(analyzeFixture(markedSource), CompletionContextKind.PARAMETER_NAME);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "func f():\n\tvar x = \"hel|lo\"",
+            "func f():\n\tvar x = not |",
+            "func f():\n\tvar x = 1 not\n\t\t|",
+            "func f():\n\t|",
+            "func f(): # note\n\t|",
+            "func outer():\n\tvar cb = (func(seed: int): # note\n\t\t|",
+            "func f(seed: int): \\\n# tri|via\n\tpass"
+    })
+    void unknownContextsDoNotOfferCandidates(String markedSource) {
+        assertEmptyGap(analyzeFixture(markedSource), CompletionContextKind.UNKNOWN);
+    }
+
+    // ------------------------------------------------------------------
+    // Completion at a callable's same-logical-line body
+    // ------------------------------------------------------------------
+
+    @Test
+    void suiteStartAtFunctionEofUsesTheColonOwner() {
+        var fixture = analyzeFixture("func f(seed: int):|");
+        var index = fixture.index();
+        // The callable ends at the cursor. Its half-open AST range still covers the colon.
+        assertNull(index.nodeAt(fixture.cursor()));
+        var atColon = index.nodeAt(fixture.cursor() - 1);
+        assertNotNull(atColon, "the colon must have an AST owner");
+        var owner = assertInstanceOf(FunctionDeclaration.class, atColon);
+        assertEquals(fixture.cursor(), owner.range().endByte());
+        assertEquals(fixture.cursor(), owner.body().range().startByte());
+        assertHas(assertSuite(fixture), "seed", CompletionCandidateKind.VALUE);
+    }
+
+    @Test
+    void suiteStartKeepsParametersWithWhitespaceAndSiblingDeclarations() {
+        var fixture = analyzeFixture("""
+                func prior():
+                    var unrelated = true if  else false
+                func f(seed: int): |
+                func next(neighbor: int): pass
+                """);
+        var result = assertSuite(fixture);
+        assertHas(result, "seed", CompletionCandidateKind.VALUE);
+        assertLacks(result, "neighbor");
+        assertLacks(result, "unrelated");
+    }
+
+    @Test
+    void suiteStartUsesParametersOfConstructorsAndRecoveredSignatures() {
+        assertHas(assertSuite(analyzeFixture("func _init(seed: int):|")), "seed", CompletionCandidateKind.VALUE);
+        assertHas(assertSuite(analyzeFixture("func f(x = 1]:|")), "x", CompletionCandidateKind.VALUE);
+    }
+
+    @ParameterizedTest(name = "[{index}]")
+    @ValueSource(strings = {"\n", "\r\n"})
+    void suiteStartCrossesContinuedTriviaWithUtf8Coordinates(String newline) {
+        var fixture = analyzeFixture(("# 前缀😀\nfunc f(seed: int): \\\n# trivia\n\n\t\\\n\t|").replace("\n", newline));
+        var result = assertSuite(fixture);
+        assertHas(result, "seed", CompletionCandidateKind.VALUE);
+        assertEquals(new QuerySourceRange(FIXTURE_PATH, fixture.cursor(), fixture.cursor(), 6, 2, 6, 2),
+                result.replaceableRange());
+        assertEquals(result, FrontendSnapshotCompletionService.completionCandidatesAt(fixture.analyzed(), FIXTURE_PATH, 5, 1));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0xD83D, 0xDE00, 0x1F600})
+    void suiteStartCoordinatesAgreeAfterSurrogatesInSource(int codePoint) {
+        var fixture = analyzeFixture("# " + Character.toString(codePoint) + "\nfunc f(seed: int):|");
+        // The JDK's UTF-8 encoder replaces a lone surrogate with one byte; a valid pair
+        // takes four. Both cursor APIs must agree on those physical offsets.
+        var expectedByte = Character.isBmpCodePoint(codePoint) ? 22 : 25;
+        assertEquals(expectedByte, fixture.cursor());
+        var byRow = FrontendSnapshotCompletionService.completionCandidatesAt(fixture.analyzed(), FIXTURE_PATH, 1, 18);
+        var byByte = assertSuite(fixture);
+        assertEquals(byByte, byRow);
+        assertEquals(new QuerySourceRange(FIXTURE_PATH, expectedByte, expectedByte, 2, 19, 2, 19),
+                byByte.replaceableRange());
+        assertHas(byByte, "seed", CompletionCandidateKind.VALUE);
+    }
+
+    @Test
+    void suiteStartCannotBorrowLfBeyondTheCursor() {
+        var fixture = analyzeFixture("func f(seed: int): \\\r|\n# trivia\r\n\tpass");
+        // The parser reports SUITE_START even between CR and LF, but the gap may only use bytes
+        // before the cursor.
+        assertEmptyGap(fixture, CompletionContextKind.SUITE_START);
+        // Stop before the tab: at the start of `pass`, the cursor is no longer in the gap.
+        var afterTrivia = new CompletionFixture(fixture.analyzed(), fixture.source(), offset(fixture.source(), "\tpass", 0));
+        assertHas(assertSuite(afterTrivia), "seed", CompletionCandidateKind.VALUE);
+    }
+
+    @Test
+    void suiteStartInLocalLambdaOmitsTheVariableStillBeingInitialized() {
+        var fixture = analyzeFixture("func helper(): pass\nfunc outer():\n\tvar before = 1\n\tvar cb = func(seed: int):|");
+        var index = fixture.index();
+        assertNull(index.nodeAt(fixture.cursor()));
+        var atColon = index.nodeAt(fixture.cursor() - 1);
+        assertNotNull(atColon, "the lambda must cover its colon");
+        var lambda = assertInstanceOf(LambdaExpression.class, atColon);
+        var parent = index.parentOf(lambda);
+        assertNotNull(parent, "the lambda must be part of the initializer");
+        var declaration = assertInstanceOf(VariableDeclaration.class, parent);
+        assertEquals("cb", declaration.name());
+        // Enumerating at the cursor instead of the colon would make cb look fully declared.
+        assertEquals(fixture.cursor(), declaration.range().endByte());
+        assertEquals(fixture.cursor(), lambda.body().range().startByte());
+        assertTrue(fixture.analyzed().analysisData().lambdaPlans().containsKey(lambda));
+
+        var result = assertSuite(fixture);
+        assertHas(result, "seed", CompletionCandidateKind.VALUE);
+        assertHas(result, "before", CompletionCandidateKind.VALUE);
+        assertHas(result, "helper", CompletionCandidateKind.METHOD);
+        assertHas(result, "print", CompletionCandidateKind.METHOD);
+        assertLacks(result, "cb");
+    }
+
+    @Test
+    void suiteStartInDictionaryLambdaUsesItsOwnParametersAndEarlierLocals() {
+        var fixture = analyzeFixture("""
+                func outer():
+                    var before = 1
+                    var d = {"f": func(seed: int):|}
+                    var later = 2
+                """);
+        assertTrue(fixture.analyzed().analysisData().lambdaPlans().containsKey(fixture.lambda()));
+        var result = assertSuite(fixture);
+        assertHas(result, "seed", CompletionCandidateKind.VALUE);
+        assertHas(result, "before", CompletionCandidateKind.VALUE);
+        assertLacks(result, "d");
+        assertLacks(result, "later");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "func outer(kept, kept = func(inner):| pass): pass",
+            "func outer(kept, kept = func(inner):|):",
+            "func outer(kept, kept = func(inner):|"
+    })
+    void suiteStartRejectsTheColonOfADiscardedDefaultLambda(String markedSource) {
+        var fixture = analyzeFixture(markedSource);
+        var index = fixture.index();
+        var owner = index.preorderNodes().stream()
+                .filter(FunctionDeclaration.class::isInstance)
+                .map(FunctionDeclaration.class::cast)
+                .findFirst().orElseThrow();
+        assertEquals("outer", owner.name());
+        assertEquals(List.of("kept"), owner.parameters().stream().map(Parameter::name).toList());
+        assertFalse(index.preorderNodes().stream().anyMatch(LambdaExpression.class::isInstance));
+        var atColon = index.nodeAt(fixture.cursor() - 1);
+        // The colon maps to a live outer callable (or its placeholder body), not the dropped lambda.
+        assertTrue(atColon == owner || atColon == owner.body());
+        assertInstanceOf(BlockScope.class, fixture.analyzed().analysisData().scopesByAst().get(owner.body()));
+        assertNull(skippedAncestor(fixture.analyzed(), index, owner));
+        assertEmptyGap(fixture, CompletionContextKind.SUITE_START);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "var cb = func(seed: int):|",
+            "func outer(ok = func(inner):|):",
+            "func outer():\n\tconst CB = {\"f\": func(seed: int):|}"
+    })
+    void suiteStartDoesNotOfferCandidatesForLambdasWithoutExecutablePlans(String markedSource) {
+        var fixture = analyzeFixture(markedSource);
+        var lambda = fixture.lambda();
+        var data = fixture.analyzed().analysisData();
+        // A scope exists even though the initializer is not part of the executable inventory.
+        assertInstanceOf(BlockScope.class, data.scopesByAst().get(lambda.body()));
+        assertNull(skippedAncestor(fixture.analyzed(), fixture.index(), lambda));
+        assertFalse(data.lambdaPlans().containsKey(lambda));
+        assertEmptyGap(fixture, CompletionContextKind.SUITE_START);
+    }
+
+    @Test
+    void suiteStartInLambdaInsideSkippedInitializerHasNoCandidates() {
+        var fixture = analyzeFixture("func outer():\n\tvar cb = (1 + func(seed: int):|");
+        assertSkippedVariable(fixture.analyzed(), fixture.index(), fixture.lambda(), "cb");
+        assertEmptyGap(fixture, CompletionContextKind.SUITE_START);
+    }
+
     // ------------------------------------------------------------------
     // Acceptance 4: type-position candidates
     // ------------------------------------------------------------------
@@ -762,30 +993,104 @@ class CompletionServiceTest {
         }
     }
 
+    @Test
+    void typePositionIgnoresUnnamedInnerClassButKeepsNamedSibling() {
+        var path = "/src/comp_unnamed_inner.gd";
+        var source = """
+                class Inner:
+                    pass
+                class:
+                    pass
+                func f():
+                    var v: Ve
+                """;
+        var analyzed = QueryTestSupport.analyze(api, "completion_unnamed_inner", files(file(path, source)));
+        var index = analyzed.astIndex().forDisplayPath(path);
+        assertNotNull(index);
+        assertTrue(index.preorderNodes().stream()
+                        .anyMatch(node -> node instanceof ClassDeclaration inner && inner.name() == null),
+                "the recovered unnamed class must be present in the snapshot");
+
+        var result = FrontendSnapshotCompletionService.completionCandidatesAt(analyzed, path, endOf(source, "Ve", 0));
+        assertEquals(CompletionContextKind.TYPE_POSITION, result.contextKind());
+        assertHas(result, "Inner", CompletionCandidateKind.TYPE);
+        assertHas(result, "Vector2", CompletionCandidateKind.TYPE);
+        assertLacks(result, "null");
+        assertTrue(result.candidates().stream()
+                .allMatch(candidate -> candidate.kind() == CompletionCandidateKind.TYPE && !candidate.name().isBlank()));
+    }
+
     // ------------------------------------------------------------------
     // Acceptance 5: skipped/error subtrees yield empty candidates
     // ------------------------------------------------------------------
 
     @Test
     void cursorInsideSkippedErrorSubtreeReturnsEmpty() {
-        // The fixture's last statement is an anchored ErrorStatement form: the whole
-        // subtree is recorded as skipped. The cursor sits on the declaration name `x`, which the
-        // completion classifier reports as IDENTIFIER — a context that WOULD produce scope-value
-        // candidates without the gate, so the empty answer proves the gate fired.
-        var cursor = offset(SKIP_SOURCE, "x = true", 0);
-        var unitIndex = snapshot.astIndex().forDisplayPath(SKIP_PATH);
-        var node = FrontendSnapshotQueryService.nodeAt(snapshot, SKIP_PATH, cursor);
-        var insideSkipped = false;
-        for (var current = node; current != null; current = unitIndex.parentOf(current)) {
-            if (snapshot.analysisData().skippedSubtreeRoots().containsKey(current)) {
-                insideSkipped = true;
-                break;
-            }
-        }
-        assertTrue(insideSkipped, "the cursor node must lie inside a recorded skipped root");
+        // The binding name is not an expression slot. Query the value reference inside the
+        // damaged initializer and compare it with a healthy use of the same name.
+        var cursor = offset(SKIP_SOURCE, "ok if", 0);
+        var index = snapshot.astIndex().forDisplayPath(SKIP_PATH);
+        assertNotNull(index);
+        assertSkippedVariable(snapshot, index, index.nodeAt(cursor), "x");
         var result = FrontendSnapshotCompletionService.completionCandidatesAt(snapshot, SKIP_PATH, cursor);
         assertEquals(CompletionContextKind.IDENTIFIER, result.contextKind());
         assertTrue(result.candidates().isEmpty());
+
+        var healthyCursor = endOf(SKIP_SOURCE, "valid = ", 0);
+        assertNull(skippedAncestor(snapshot, index, index.nodeAt(healthyCursor)));
+        var healthy = FrontendSnapshotCompletionService.completionCandidatesAt(snapshot, SKIP_PATH, healthyCursor);
+        assertEquals(CompletionContextKind.IDENTIFIER, healthy.contextKind());
+        assertHas(healthy, "ok", CompletionCandidateKind.VALUE);
+    }
+
+    @ParameterizedTest(name = "[{index}]")
+    @ValueSource(strings = {
+            "{\"a\":|",
+            "{\"a\":| ",
+            "{\"a\":|\n",
+            "{a =| ",
+            "{\"a\":\n\t\t| "
+    })
+    void dictionaryValueGapDoesNotLeakSkippedInitializerCandidates(String markedInitializer) {
+        var fixture = analyzeFixture("func f(ok: Node):\n\tvar x = " + markedInitializer);
+        var index = fixture.index();
+        // The skipped declaration can end before the caret, even though the parser still
+        // sees its unfilled value slot. Trivia must not pull candidates from the parent.
+        var declaration = index.nodeAt(offset(fixture.source(), "var x", 0));
+        assertSkippedVariable(fixture.analyzed(), index, declaration, "x");
+        assertEmptyGap(fixture, CompletionContextKind.IDENTIFIER);
+    }
+
+    @ParameterizedTest(name = "[{index}]")
+    @ValueSource(strings = {"{\"a\":| 1}", "{a =| 1}", "{\"a\":\n\t\t|1\n\t}"})
+    void healthyDictionaryValueGapStillOffersVisibleParameter(String markedInitializer) {
+        var fixture = analyzeFixture("func f(ok: Node):\n\tvar x = " + markedInitializer);
+        var index = fixture.index();
+        var declaration = index.nodeAt(offset(fixture.source(), "var x", 0));
+        assertNotNull(declaration);
+        assertNull(skippedAncestor(fixture.analyzed(), index, declaration));
+        assertHas(assertGap(fixture, CompletionContextKind.IDENTIFIER), "ok", CompletionCandidateKind.VALUE);
+    }
+
+    @Test
+    void typePositionInsideSkippedDeclarationDoesNotSuppressHealthySibling() {
+        var fixture = analyzeFixture("""
+                func f():
+                    var damaged: Array[Array[In|ner]]
+                    var healthy: Vector2
+                """);
+        var index = fixture.index();
+        assertSkippedVariable(fixture.analyzed(), index, index.nodeAt(fixture.cursor()), "damaged");
+        var result = fixture.complete();
+        assertEquals(CompletionContextKind.TYPE_POSITION, result.contextKind());
+        assertTrue(result.candidates().isEmpty());
+
+        var healthyCursor = offsetInside(fixture.source(), "Vector2", 0);
+        assertNull(skippedAncestor(fixture.analyzed(), index, index.nodeAt(healthyCursor)));
+        var healthy = FrontendSnapshotCompletionService.completionCandidatesAt(fixture.analyzed(), FIXTURE_PATH, healthyCursor);
+        assertEquals(CompletionContextKind.TYPE_POSITION, healthy.contextKind());
+        assertHas(healthy, "Vector2", CompletionCandidateKind.TYPE);
+        assertTrue(healthy.candidates().stream().allMatch(candidate -> candidate.kind() == CompletionCandidateKind.TYPE));
     }
 
     // ------------------------------------------------------------------
@@ -868,6 +1173,87 @@ class CompletionServiceTest {
     // ------------------------------------------------------------------
     // Assertion helpers
     // ------------------------------------------------------------------
+
+    private record CompletionFixture(ModuleAnalysisSnapshot analyzed, String source, int cursor) {
+        private AstUnitIndex index() {
+            var index = analyzed.astIndex().forDisplayPath(FIXTURE_PATH);
+            assertNotNull(index);
+            return index;
+        }
+
+        private CompletionLookupResult complete() {
+            return FrontendSnapshotCompletionService.completionCandidatesAt(analyzed, FIXTURE_PATH, cursor);
+        }
+
+        private LambdaExpression lambda() {
+            var lambdas = index().preorderNodes().stream()
+                    .filter(LambdaExpression.class::isInstance)
+                    .map(LambdaExpression.class::cast)
+                    .toList();
+            assertEquals(1, lambdas.size(), "fixture must contain one retained lambda");
+            return lambdas.getFirst();
+        }
+    }
+
+    /// The marker is only for fixture readability. The parser and snapshot see the same unmarked text.
+    private static CompletionFixture analyzeFixture(String markedSource) {
+        var marker = markedSource.indexOf('|');
+        assertTrue(marker >= 0 && marker == markedSource.lastIndexOf('|'), "fixture must contain one cursor marker");
+        var source = markedSource.substring(0, marker) + markedSource.substring(marker + 1);
+        var cursor = markedSource.substring(0, marker).getBytes(StandardCharsets.UTF_8).length;
+        try (var fixtureApi = new API()) {
+            var analyzed = QueryTestSupport.analyze(fixtureApi, "completion_fixture", files(file(FIXTURE_PATH, source)));
+            return new CompletionFixture(analyzed, source, cursor);
+        }
+    }
+
+    private static @Nullable Node skippedAncestor(ModuleAnalysisSnapshot analyzed, AstUnitIndex index, @Nullable Node node) {
+        for (var current = node; current != null; current = index.parentOf(current)) {
+            if (analyzed.analysisData().skippedSubtreeRoots().containsKey(current)) {
+                return current;
+            }
+        }
+        return null;
+    }
+
+    private static void assertSkippedVariable(ModuleAnalysisSnapshot analyzed, AstUnitIndex index, @Nullable Node node, String name) {
+        var skipped = skippedAncestor(analyzed, index, node);
+        assertNotNull(skipped, () -> "fixture must mark " + name + " as a skipped ancestor");
+        assertEquals(name, assertInstanceOf(VariableDeclaration.class, skipped).name());
+    }
+
+    private static CompletionLookupResult assertGap(CompletionFixture fixture, CompletionContextKind kind) {
+        var result = fixture.complete();
+        assertEquals(kind, result.contextKind());
+        var range = result.replaceableRange();
+        assertNotNull(range);
+        assertEquals(FIXTURE_PATH, range.displayPath());
+        assertEquals(fixture.cursor(), range.startByte());
+        assertEquals(fixture.cursor(), range.endByte());
+        return result;
+    }
+
+    private static void assertEmptyGap(CompletionFixture fixture, CompletionContextKind kind) {
+        assertTrue(assertGap(fixture, kind).candidates().isEmpty());
+    }
+
+    private static void assertExpectedIn(CompletionFixture fixture) {
+        assertEquals(List.of(new CompletionCandidate("in", CompletionCandidateKind.KEYWORD, null, null)),
+                assertGap(fixture, CompletionContextKind.EXPECTED_KEYWORD).candidates());
+    }
+
+    private static CompletionLookupResult assertSuite(CompletionFixture fixture) {
+        var result = assertGap(fixture, CompletionContextKind.SUITE_START);
+        var keywords = result.candidates().stream().filter(candidate -> candidate.kind() == CompletionCandidateKind.KEYWORD).toList();
+        var expected = Set.of("pass", "return", "var", "const", "if", "for", "while", "match", "assert");
+        assertEquals(expected.size(), keywords.size());
+        assertEquals(expected, Set.copyOf(keywords.stream().map(CompletionCandidate::name).toList()));
+        for (var keyword : keywords) {
+            assertNull(keyword.typeText());
+            assertNull(keyword.signatureText());
+        }
+        return result;
+    }
 
     private static @NotNull CompletionCandidate assertHas(
             @NotNull CompletionLookupResult result,

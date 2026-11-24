@@ -2,13 +2,21 @@ package gd.script.gdcc.api.analysis;
 
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
+import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.Range;
-import dev.superice.gdparser.infra.treesitter.CompletionContext;
-import dev.superice.gdparser.infra.treesitter.GdParserFacade;
+import dev.superice.gdparser.frontend.ast.TypeRef;
+import dev.superice.gdparser.frontend.gdscript.CompletionContext;
+import dev.superice.gdparser.frontend.gdscript.GdScriptParserFacade;
+import dev.superice.gdparser.frontend.gdscript.GdToken;
+import dev.superice.gdparser.frontend.gdscript.GdTokenType;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
@@ -44,26 +52,20 @@ import java.util.Objects;
 import java.util.Set;
 
 /// In-process completion candidate service over a published `ModuleAnalysisSnapshot`
-/// (`frontend_lsp_foundation_implementation.md` §2.5). Static, pure-read counterpart of
-/// `FrontendSnapshotQueryService`: same snapshot-first entry rule, same absent-result contract
-/// (unknown paths, `parse.internal` units, skipped/error subtrees and fact-free receivers all
-/// yield empty candidate lists — never throw, never resolve against another generation).
+/// and its frozen source. Unknown paths and failed parse units yield empty results.
 ///
-/// Generation-isolation contract: the gdparser completion parse runs over the SNAPSHOT'S OWN
-/// stored source text (a stale snapshot therefore answers self-consistently from its own text)
-/// and produces a NEW CST generation. Only the context `kind`, `replaceableRange` and
-/// `receiverRange` are consumed; no completion-CST node ever touches snapshot side tables.
+/// The parser classifies the cursor from that source, but only its context kind and byte
+/// ranges cross into this service. All semantic lookups use nodes from the snapshot's AST.
 ///
-/// Minimal V1 ruleset: member access after `.` (instance surface for typed
-/// receivers, static surface + constants/enums for class-name receivers), bare-identifier
-/// prefix (scope-chain values with declaration-after-use filtering, enclosing-class methods,
-/// global constants/enums, utility and language functions) and type positions (builtin/engine
-/// type names, project global class names, file inner classes). `CALL_ARGUMENT` is classified
-/// but yields no candidates. Prefix filtering and presentation ordering stay in the LSP layer.
+/// Member, identifier and type completion reject skipped cursor subtrees. A suite start
+/// instead checks the callable that owns the header colon. Expected keyword suggestions
+/// do not require semantic facts. Prefix filtering and presentation ordering remain the
+/// caller's responsibility.
 public final class FrontendSnapshotCompletionService {
-    /// One shared facade is safe: gdparser keeps no parse state on the instance (a fresh
-    /// TSParser is created per parse call), so concurrent completion requests do not race.
-    private static final GdParserFacade COMPLETION_FACADE = GdParserFacade.withDefaultLanguage();
+    /// The facade holds no parse state, so concurrent requests can share it.
+    private static final GdScriptParserFacade COMPLETION_FACADE = new GdScriptParserFacade();
+    private static final List<String> SUITE_START_KEYWORDS =
+            List.of("pass", "return", "var", "const", "if", "for", "while", "match", "assert");
 
     private FrontendSnapshotCompletionService() {
     }
@@ -87,26 +89,35 @@ public final class FrontendSnapshotCompletionService {
         if (view == null || unitIndex == null || byteOffset > unitIndex.totalBytes()) {
             return new CompletionLookupResult(CompletionContextKind.UNKNOWN, null, List.of());
         }
-        // New CST generation: kind + ranges only, never node identity (see class contract).
+        if (view.parseFailed()) {
+            // Do not reparse a source that already triggered an unexpected parser failure.
+            return new CompletionLookupResult(CompletionContextKind.UNKNOWN,
+                    unitIndex.queryRangeAt(byteOffset, byteOffset), List.of());
+        }
         var context = COMPLETION_FACADE.parseCompletionContext(view.source(), byteOffset);
         var contextKind = mapKind(context.kind());
         var replaceableRange = sanitizedReplaceableRange(unitIndex, context, byteOffset);
-        if (view.parseFailed()) {
-            // Failed units publish no facts; still report the context range so the LSP layer
-            // can position its (empty) completion request correctly.
-            return new CompletionLookupResult(contextKind, replaceableRange, List.of());
-        }
-        var cursorNode = locateCursorNode(unitIndex, byteOffset, context);
-        if (cursorNode != null && isInsideSkippedSubtree(snapshot, unitIndex, cursorNode)) {
-            // Skipped/error subtrees carry no facts. Unfinished member-access partial chains
-            // are deliberately never marked skipped, so the dot path is unaffected.
-            return new CompletionLookupResult(contextKind, replaceableRange, List.of());
-        }
-        var candidates = switch (contextKind) {
-            case MEMBER_ACCESS -> memberAccessCandidates(snapshot, unitIndex, context, view.source());
-            case IDENTIFIER -> identifierCandidates(snapshot, unitIndex, context, byteOffset, cursorNode);
-            case TYPE_POSITION -> typePositionCandidates(snapshot, unitIndex, cursorNode);
-            case CALL_ARGUMENT, UNKNOWN -> List.<CompletionCandidate>of();
+        List<CompletionCandidate> candidates = switch (contextKind) {
+            case CALL_ARGUMENT, PARAMETER_NAME, UNKNOWN -> List.of();
+            case EXPECTED_KEYWORD -> List.of(new CompletionCandidate("in", CompletionCandidateKind.KEYWORD, null, null));
+            case SUITE_START -> suiteStartCandidates(snapshot, unitIndex, view.source(), byteOffset);
+            case MEMBER_ACCESS, IDENTIFIER, TYPE_POSITION -> {
+                var cursorNode = locateCursorNode(unitIndex, byteOffset, context);
+                if (cursorNode != null && isInsideSkippedSubtree(snapshot, unitIndex, cursorNode)) {
+                    yield List.of();
+                }
+                if (contextKind == CompletionContextKind.MEMBER_ACCESS) {
+                    yield memberAccessCandidates(snapshot, unitIndex, context, view.source());
+                }
+                if (contextKind == CompletionContextKind.IDENTIFIER) {
+                    if (isSkippedIdentifierGap(snapshot, unitIndex, view.source(),
+                            context.replaceableRange(), byteOffset)) {
+                        yield List.of();
+                    }
+                    yield identifierCandidates(snapshot, unitIndex, context, byteOffset, cursorNode);
+                }
+                yield typePositionCandidates(snapshot, unitIndex, cursorNode);
+            }
         };
         return new CompletionLookupResult(contextKind, replaceableRange, candidates);
     }
@@ -205,6 +216,194 @@ public final class FrontendSnapshotCompletionService {
             current = unitIndex.parentOf(current);
         }
         return false;
+    }
+
+    /// Trivia in an empty identifier slot can lie outside its skipped AST subtree.
+    /// Check the parser-accepted slot's separator without changing the scope lookup anchor.
+    private static boolean isSkippedIdentifierGap(
+            @NotNull ModuleAnalysisSnapshot snapshot,
+            @NotNull AstUnitIndex unitIndex,
+            @NotNull String source,
+            @NotNull Range replaceableRange,
+            int byteOffset
+    ) {
+        if (replaceableRange.startByte() != byteOffset || replaceableRange.endByte() != byteOffset
+                || snapshot.analysisData().skippedSubtreeRoots().isEmpty()) {
+            return false;
+        }
+        var tokens = COMPLETION_FACADE.tokenize(source);
+        var separatorIndex = lastSignificantTokenEndingBy(tokens, byteOffset);
+        if (separatorIndex < 0) {
+            return false;
+        }
+        var separator = tokens.get(separatorIndex);
+        if (separator.type() != GdTokenType.COLON && separator.type() != GdTokenType.EQUAL) {
+            return false;
+        }
+        var anchor = unitIndex.nodeAt(separator.startByte());
+        return anchor != null && isInsideSkippedSubtree(snapshot, unitIndex, anchor);
+    }
+
+    // ------------------------------------------------------------------
+    // Suite start: header colon ownership and callable scope
+    // ------------------------------------------------------------------
+
+    /// Completes a callable's same-logical-line body slot. The cursor can lie outside the
+    /// callable's range, so anchor the lookup at the header colon in the snapshot AST.
+    private static @NotNull List<CompletionCandidate> suiteStartCandidates(
+            @NotNull ModuleAnalysisSnapshot snapshot,
+            @NotNull AstUnitIndex unitIndex,
+            @NotNull String source,
+            int byteOffset
+    ) {
+        var tokens = COMPLETION_FACADE.tokenize(source);
+        var colonIndex = lastSignificantTokenEndingBy(tokens, byteOffset);
+        if (colonIndex < 0) {
+            return List.of();
+        }
+        var colon = tokens.get(colonIndex);
+        if (colon.type() != GdTokenType.COLON
+                || !isSameLogicalLineGap(source.getBytes(StandardCharsets.UTF_8), colon.endByte(), byteOffset)) {
+            return List.of();
+        }
+        var host = nearestSuiteHost(unitIndex, colon.startByte());
+        if (host == null || !introducesSuiteBody(tokens, colonIndex, host)
+                || isInsideSkippedSubtree(snapshot, unitIndex, host.node())) {
+            return List.of();
+        }
+
+        var analysisData = snapshot.analysisData();
+        // A lambda in a non-executable initializer can have a structural scope without a plan.
+        if (host.node() instanceof LambdaExpression lambda && !analysisData.lambdaPlans().containsKey(lambda)) {
+            return List.of();
+        }
+        var scope = analysisData.scopesByAst().get(host.body());
+        if (scope == null) {
+            scope = analysisData.scopesByAst().get(host.node());
+        }
+        // At EOF the enclosing local initializer can end exactly at the cursor. The colon
+        // places the visibility lookup inside that initializer, before the local is declared.
+        var out = collectVisibleNameCandidates(snapshot, scope, colon.startByte());
+        for (var keyword : SUITE_START_KEYWORDS) {
+            out.put("K:" + keyword, new CompletionCandidate(keyword, CompletionCandidateKind.KEYWORD, null, null));
+        }
+        return List.copyOf(out.values());
+    }
+
+    private static int lastSignificantTokenEndingBy(@NotNull List<GdToken> tokens, int byteOffset) {
+        for (var i = tokens.size() - 1; i >= 0; i--) {
+            var token = tokens.get(i);
+            if (token.endByte() <= byteOffset && isSignificant(token)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static boolean isSignificant(@NotNull GdToken token) {
+        return switch (token.type()) {
+            case EOF, NEWLINE, INDENT, DEDENT -> false;
+            default -> true;
+        };
+    }
+
+    /// Layout tokens alone cannot prove the gap is on the same logical line: the tokenizer
+    /// drops line-comment breaks and suppresses layout inside brackets. Only a complete
+    /// explicit continuation opens the gap to subsequent blank lines and comment lines.
+    private static boolean isSameLogicalLineGap(byte @NotNull [] source, int start, int end) {
+        var continued = false;
+        var offset = start;
+        while (offset < end) {
+            var value = source[offset];
+            if (value == ' ' || value == '\t') {
+                offset++;
+                continue;
+            }
+            if (value == '\\') {
+                offset = lineBreakEnd(source, offset + 1, end);
+                continued = true;
+            } else if (!continued) {
+                return false;
+            } else if (value == '#') {
+                do {
+                    offset++;
+                } while (offset < end && source[offset] != '\n');
+                if (offset == end) {
+                    return false;
+                }
+                offset++;
+            } else {
+                offset = lineBreakEnd(source, offset, end);
+            }
+            if (offset < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// Returns the byte after a complete LF or CRLF before the cutoff, or -1.
+    private static int lineBreakEnd(byte @NotNull [] source, int offset, int end) {
+        if (offset == end) {
+            return -1;
+        }
+        if (source[offset] == '\n') {
+            return offset + 1;
+        }
+        return source[offset] == '\r' && offset + 1 < end && source[offset + 1] == '\n' ? offset + 2 : -1;
+    }
+
+    private static @Nullable SuiteHost nearestSuiteHost(@NotNull AstUnitIndex unitIndex, int colonStart) {
+        for (var current = unitIndex.nodeAt(colonStart); current != null; current = unitIndex.parentOf(current)) {
+            var host = switch (current) {
+                case FunctionDeclaration function ->
+                        new SuiteHost(function, function.parameters(), function.returnType(), function.body());
+                case ConstructorDeclaration constructor ->
+                        new SuiteHost(constructor, constructor.parameters(), constructor.returnType(), constructor.body());
+                case LambdaExpression lambda ->
+                        new SuiteHost(lambda, lambda.parameters(), lambda.returnType(), lambda.body());
+                default -> null;
+            };
+            if (host != null) {
+                return host;
+            }
+        }
+        return null;
+    }
+
+    /// A colon in a dropped duplicate parameter's lambda may resolve to the outer callable.
+    /// Require the colon to follow the retained signature and immediately introduce its body.
+    private static boolean introducesSuiteBody(@NotNull List<GdToken> tokens, int colonIndex, @NotNull SuiteHost host) {
+        var colon = tokens.get(colonIndex);
+        var bodyStart = host.body().range().startByte();
+        if (bodyStart < colon.endByte()
+                || host.returnType() != null && host.returnType().range().endByte() > colon.startByte()) {
+            return false;
+        }
+        for (var parameter : host.parameters()) {
+            if (parameter.range().endByte() > colon.startByte()) {
+                return false;
+            }
+        }
+        for (var i = colonIndex + 1; i < tokens.size(); i++) {
+            var token = tokens.get(i);
+            if (!isSignificant(token)) {
+                continue;
+            }
+            if (token.startByte() < bodyStart) {
+                if (token.startByte() >= colon.endByte() || token.endByte() > colon.endByte()) {
+                    return false;
+                }
+            } else if (token.type() != GdTokenType.ERROR) {
+                // Lexical errors within one token can be emitted out of byte order.
+                break;
+            }
+        }
+        return true;
+    }
+
+    private record SuiteHost(@NotNull Node node, @NotNull List<Parameter> parameters,
+                             @Nullable TypeRef returnType, @NotNull Block body) {
     }
 
     // ------------------------------------------------------------------
@@ -625,41 +824,43 @@ public final class FrontendSnapshotCompletionService {
             int byteOffset,
             @Nullable Node cursorNode
     ) {
+        var scope = cursorNode == null ? null : FrontendSnapshotQueryService.nearestScope(snapshot, unitIndex, cursorNode);
+        // On an identifier, look up visibility at the prefix start; otherwise use the cursor.
+        var replaceable = context.replaceableRange();
+        var useSiteOffset = replaceable.startByte() != replaceable.endByte()
+                && containsOffset(replaceable, byteOffset)
+                ? replaceable.startByte()
+                : byteOffset;
+        return List.copyOf(collectVisibleNameCandidates(snapshot, scope, useSiteOffset).values());
+    }
+
+    /// Collects names from the given lexical use site before adding the global fallback.
+    private static @NotNull Map<String, CompletionCandidate> collectVisibleNameCandidates(
+            @NotNull ModuleAnalysisSnapshot snapshot,
+            @Nullable Scope scope,
+            int useSiteOffset
+    ) {
         var out = new LinkedHashMap<String, CompletionCandidate>();
         var claimedValueNames = new HashSet<String>();
         var claimedMethodNames = new HashSet<String>();
-        if (cursorNode != null) {
-            var scope = FrontendSnapshotQueryService.nearestScope(snapshot, unitIndex, cursorNode);
-            if (scope != null) {
-                // The declaration-after-use pivot is the cursor byte itself: on an identifier
-                // the prefix start (declarations ending inside the prefix cannot exist), else
-                // the raw cursor offset.
-                var replaceable = context.replaceableRange();
-                var useSiteOffset = replaceable.startByte() != replaceable.endByte()
-                        && containsOffset(replaceable, byteOffset)
-                        ? replaceable.startByte()
-                        : byteOffset;
-                for (var value : FrontendVisibleValueEnumerator.enumerateVisibleValues(scope, useSiteOffset)) {
-                    var candidate = valueCandidate(value);
-                    putIfAbsent(out, valueKey(value), candidate);
-                    claimedValueNames.add(value.name());
-                }
-                // Terminal name claims (e.g. a failed `const` that masks its name) never emit a
-                // usable value, so enumeration alone cannot claim them; collect the blocked
-                // names along the same lexical chain so a same-named global constant, enum or
-                // method cannot reappear at the fallback layer.
-                for (Scope current = scope; current != null; current = current.enumerationParentScope()) {
-                    claimedValueNames.addAll(current.blockedValueNamesHere());
-                    claimedMethodNames.addAll(current.blockedValueNamesHere());
-                }
-                var owningClass = scope.owningClassOrNull();
-                if (owningClass != null) {
-                    collectClassMethods(snapshot, owningClass, out, claimedMethodNames);
-                }
+        if (scope != null) {
+            for (var value : FrontendVisibleValueEnumerator.enumerateVisibleValues(scope, useSiteOffset)) {
+                var candidate = valueCandidate(value);
+                putIfAbsent(out, valueKey(value), candidate);
+                claimedValueNames.add(value.name());
+            }
+            // Blocked names emit no value but still mask same-named global fallback entries.
+            for (var current = scope; current != null; current = current.enumerationParentScope()) {
+                claimedValueNames.addAll(current.blockedValueNamesHere());
+                claimedMethodNames.addAll(current.blockedValueNamesHere());
+            }
+            var owningClass = scope.owningClassOrNull();
+            if (owningClass != null) {
+                collectClassMethods(snapshot, owningClass, out, claimedMethodNames);
             }
         }
         collectGlobalNamespace(snapshot.classRegistry(), out, claimedValueNames, claimedMethodNames);
-        return List.copyOf(out.values());
+        return out;
     }
 
     /// All methods of the enclosing class hierarchy as identifier candidates (bare method
@@ -789,8 +990,11 @@ public final class FrontendSnapshotCompletionService {
                 : container.getChildren();
         for (var statement : statements) {
             if (statement instanceof ClassDeclaration innerClass) {
-                putIfAbsent(out, "T:" + innerClass.name(), new CompletionCandidate(
-                        innerClass.name(), CompletionCandidateKind.TYPE, null, null));
+                var innerName = StringUtil.trimToNull(innerClass.name());
+                if (innerName != null) {
+                    putIfAbsent(out, "T:" + innerName,
+                            new CompletionCandidate(innerName, CompletionCandidateKind.TYPE, null, null));
+                }
             }
         }
     }
@@ -805,6 +1009,9 @@ public final class FrontendSnapshotCompletionService {
             case IDENTIFIER -> CompletionContextKind.IDENTIFIER;
             case TYPE_POSITION -> CompletionContextKind.TYPE_POSITION;
             case CALL_ARGUMENT -> CompletionContextKind.CALL_ARGUMENT;
+            case PARAMETER_NAME -> CompletionContextKind.PARAMETER_NAME;
+            case SUITE_START -> CompletionContextKind.SUITE_START;
+            case EXPECTED_KEYWORD -> CompletionContextKind.EXPECTED_KEYWORD;
             case UNKNOWN -> CompletionContextKind.UNKNOWN;
         };
     }

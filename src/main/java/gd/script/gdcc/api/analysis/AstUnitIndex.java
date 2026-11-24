@@ -250,7 +250,7 @@ final class AstUnitIndex {
         if (ch <= 0x7FF) {
             return 2;
         }
-        // Lone surrogates cannot appear in well-formed parsed source; encode as U+FFFD (3 bytes).
-        return 3;
+        // The callers handle valid pairs; Java's UTF-8 encoder replaces a lone surrogate with one '?' byte.
+        return Character.isSurrogate(ch) ? 1 : 3;
     }
 }

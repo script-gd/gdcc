@@ -287,6 +287,24 @@ class SnapshotQueryEdgeTest {
     }
 
     @Test
+    void parseFailedCompletionUsesZeroWidthUnknownInsteadOfSourceContext() throws Exception {
+        var healthy = harness(false, (_, _) -> {});
+        var failed = harness(true, (_, _) -> {});
+        var start = offset(SOURCE, "probe", 0);
+        var cursor = offsetInside(SOURCE, "probe", 0);
+
+        // The same text has a real identifier context, so UNKNOWN cannot come from classifying
+        // the text normally. A failed view must not expose that context or its replacement span.
+        var healthyResult = FrontendSnapshotCompletionService.completionCandidatesAt(healthy.snapshot(), DISPLAY_PATH, cursor);
+        assertEquals(CompletionContextKind.IDENTIFIER, healthyResult.contextKind());
+        assertEquals(new QuerySourceRange(DISPLAY_PATH, start, start + 5, 4, 18, 4, 23), healthyResult.replaceableRange());
+
+        var failedResult = FrontendSnapshotCompletionService.completionCandidatesAt(failed.snapshot(), DISPLAY_PATH, cursor);
+        assertEquals(new CompletionLookupResult(CompletionContextKind.UNKNOWN,
+                new QuerySourceRange(DISPLAY_PATH, cursor, cursor, 4, 20, 4, 20), List.of()), failedResult);
+    }
+
+    @Test
     void snapshotKeepsSeededFactsQueryableAfterFreeze() throws Exception {
         // Sanity anchor: the structural freeze at publication must not break reads seeded
         // before publication (the query service relies on frozen-but-readable tables).

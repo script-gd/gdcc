@@ -845,6 +845,25 @@ flowchart TD
   3. `src/main/java/gd/script/gdcc/api/analysis/FrontendSnapshotCompletionService.java`（切换 `GdScriptParserFacade`、在重解析前短路拦截 `view.parseFailed()`、修复 `collectDirectInnerClasses` `trimToNull` 防御、将 `CALL_ARGUMENT`/`PARAMETER_NAME`/`UNKNOWN`/`EXPECTED_KEYWORD`/`SUITE_START` 统一前置于光标跳过门控、基于 `COMPLETION_FACADE.tokenize` + `isSameLogicalLineGap` + `colonToken.startByte()` 实现含宿主冒号归属验证与 `lambdaPlans()` 准入检查的 `SUITE_START` `BlockScope` 符号 + `KEYWORD` 枚举）
 - **阶段验收**：配合 `CompletionServiceTest` 与 `SnapshotQueryEdgeTest` 迁移后运行 `script/run-gradle-targeted-tests.sh --tests CompletionServiceTest,FrontendSnapshotQueryServiceTest,SnapshotQueryEdgeTest` 及 `ORG_GRADLE_PROJECT_includeEditorAddonTest=true script/run-gradle-targeted-tests.sh --tests gd.script.gdcc.api.EditorAddonDiagnosticsFixtureTest`（确认实际执行测试数 > 0 且 100% 通过）。
 
+#### Phase 4 实施状态（已完成）
+
+- **未改源码基线已验证**：`cccfc703` 上按计划运行标准三类，`CompletionServiceTest` 34/34、`FrontendSnapshotQueryServiceTest` 17/17、`SnapshotQueryEdgeTest` 9/9，共 **60/60**，三份新鲜 JUnit XML、零失败/错误/跳过。基线不代表新增补全行为已实现。
+- **公开枚举已实施并冻结**：新增上下文 `PARAMETER_NAME`、`SUITE_START`、`EXPECTED_KEYWORD` 及候选 `KEYWORD`。旧服务的 `switch` 表达式原先穷尽五种公开上下文，需要先补齐编译分支；红门仅允许为不可达的新枚举值补齐分支，旧解析入口和实际路由行为不变。首批测试冻结并确认可编译后执行精简红门；编译错误不算行为失败。
+- **首批测试红门已验证**：仅在旧服务的空候选 `case` 加入三个不可达枚举值，逐字证明服务其余代码不变。三项均编译、执行并在预期断言处暴露原缺陷：中缀 `not` 后误报 `UNKNOWN`，无名内部类构造候选时抛 NPE，`parseFailed` 仍返回 `IDENTIFIER` 与 `[60,65)` 替换范围（应为 `UNKNOWN` 与 `[62,62)`）。两份新鲜 XML，**3 项执行，3 项预期失败，零跳过**；红门验证的是测试能检出旧问题，不是修复已通过。后续待在新实现上复跑。
+- **纯 Java 路由已实施，定向验证通过**：切换 `GdScriptParserFacade` 与八类映射。非语义分支先于光标门控，三类语义分支继续使用原有跳过逻辑。`SUITE_START` 分流接入专用候选实现。
+- **重解析前失败短路已实施，定向验证通过**：`parseFailed` 单元在调用补全解析器前返回 `UNKNOWN`、光标零宽范围和空候选。
+- **缺名防御已实施，定向验证通过**：内部类候选名称经 `StringUtil.trimToNull` 过滤后再构造，无名节点不影响合法兄弟候选。
+- **同逻辑行套件锚定与可见性已实施，定向验证通过**：覆盖冒号归属、续行空隙、跳过宿主和已发布 Lambda 资格、冒号字节处的声明顺序及语句关键字。
+- **专项测试首轮唯一失败已归因并更正**：首轮标准三类 **92/93**，仅 `suiteStartCannotBorrowLfBeyondTheCursor` 的正向对照选错光标。对同一源码核验 GDParser 0.7.2 与冻结 API：字节 21（CR 与 LF 之间）为 `SUITE_START`、无候选；32（完整续行空隙末尾的缩进处）为 `SUITE_START`、有 `seed`；33（`pass` 起点）由上游按已有词元分类为 `UNKNOWN`。仅把正向光标从 33 移到 32 并更新说明，保留同一源码、负向断言与 `SUITE_START`、`seed` 的正向预期；生产代码逐字不变。
+- **复验通过，待双审**：同一冻结五 Java 路径聚合 `7a57ebbc4ba27f987170039a813bb1bef29771703001e84bbe7bd59447734772` 上，`classes` 退出 0（生产字节不变，编译任务 `UP-TO-DATE`）；标准三类 **93/93**（66+17+10，含六组共 21 份具名参数数据）、带标签 Addon JVM 夹具 **5/5**。四份新鲜 XML，零失败/错误/跳过，三条红门和光标两侧对照均通过。IDEA 只读无新增警告、错误或报告超时，旧生产解析器引用零匹配；HEAD/index 不变。等待 A/D 同候选评审及清理后终门，不标记完成，不执行 Phase 5 rollout 或正式规则文档同步。
+- **同一冻结候选的首轮双审已结束，阶段未完成**：A `APPROVE`（无发现）；D `REQUEST_CHANGES`。D 观察到两项：① 阻断项，`AstUnitIndex` 对未配对 UTF-16 代理项的 UTF-8 长度计算不一致，公开行列补全的套件路径会发生数组越界；② 中等项，`IDENTIFIER` 空槽光标位于跳过声明的右边界、之后只有尾随空白时，会错误给出候选。当前仅编写两条针对性回归，先在冻结的原生产实现上运行红门，再改生产代码；待修复、复审及清理后终门前不标记完成。
+- **D 两项在原生产冻结版本上的红门已验证**：三条选择器执行 **11 项，6 项预期失败、5 项对照通过，零跳过**。独立高/低代理项均在行列套件查询发生数组越界，合法代理对通过；损坏字典的四种尾随空隙误出候选，EOF 无尾随空白的损坏对照及三个健康字典值槽通过。冻结源文件和索引未变。待修改生产代码后在新冻结版本复跑。
+- **坐标对应修复已实施，回归通过**：为已确认的坐标阻断项纳入 `src/main/java/gd/script/gdcc/api/analysis/AstUnitIndex.java`。行列字节转换和实际 UTF-8 编码一致，孤立高/低代理项及有效代理对三例均通过。
+- **跳过声明尾随空隙修复已实施，回归通过**：`FrontendSnapshotCompletionService.java` 在 `IDENTIFIER` 零宽候选路径校验空隙归属。五个受损字典值槽均无候选，三个健康字典值槽仍返回可见参数；两修复均未改红门断言。
+- **六 Java 修复候选定向验收通过，待 A/D 复审**：同一冻结聚合 `b1538e51652d2e3643dbd2906731443ff523ce6d99bafe0e02d760533769c5c3` 上，`classes` 实际编译退出 0；标准三类 **104/104**（77+17+10，维持原 93 项并加入 D 的 11 个回归实例）；带标签的 Addon JVM 夹具 **5/5**。四份新鲜 XML 的用例显示名与旧门及冻结数据逐字匹配，零失败/错误/跳过。IDEA 六文件零错误/超时，保留两条未使用的既有索引方法提示与十二条测试可空提示；旧生产解析器引用仍为零，HEAD/index 与限定范围不变。待 A/D 同候选复审、清理许可和清理后终门，不标记阶段完成。
+- **A/D 同候选复审均 `APPROVE`**：Java binary diff SHA-256 `34920d9b549c072e0a766360ac7cb341e18138e96069d7798e80c91ffd4d6a88`。D 复查 17 项真实 API 探针；A 确认无新增回归；两项审阅问题均已关闭。
+- **Phase 4 已完成**：白名单只读终检无错误、超时或可清理项，六 Java 文件零改动，保留范围外两条既有未使用方法警告及十二条测试可空警告。最终六 Java 聚合 `b1538e51652d2e3643dbd2906731443ff523ce6d99bafe0e02d760533769c5c3`、Java binary diff `34920d9b549c072e0a766360ac7cb341e18138e96069d7798e80c91ffd4d6a88` 与 A/D 批准及实际编译、标准 **104/104**、Addon JVM **5/5** 完全一致（零失败、错误、跳过），未重复运行 Gradle。除原三生产、两测试文件外，仅为 D 的已确认坐标阻断项纳入 `AstUnitIndex.java`。HEAD/index 不变，限定范围及全局/暂存 diff-check 通过；无未关闭的 Phase 4 审阅问题。未实施 Phase 5，不改正式规则文档，不暂存、不提交。
+
 ### Phase 5：受影响单测迁移、新增正反回归测试与源文档同步（每批严格 ≤ 5 文件）
 - **Batch 5A（解析行为与字典模式/最小整数 CFG 单测，5 个文件）**：
   - `FrontendCastParseBehaviorTest`、`FrontendMatchParseBehaviorTest`、`FrontendCfgGraphBuilderMatchTest`（新增 `{"a", "b": var y}` 闭合混合模式、经 `EvaluationPolicy.matchConstant()` + `ConstantValueItem` 折叠的 `{1 + 2, ..}` 与 `{null: _, &"ok": _, ^'Node/Child': _, Side.SIDE_LEFT + 1: _, Vector2.AXIS_X + 1: _, (&"a" if true else &"b"): _, -9223372036854775808: _, ..}` 开放/闭合字典模式 CFG 链式测试，以及执行体 `var minimum = -9223372036854775808` 首选结果 ID 保留与 `return -9223372036854775808` `IntConstantItem(Long.MIN_VALUE)` 测试）、`FrontendConstParseBehaviorTest`、`FrontendEnumParseBehaviorTest`
