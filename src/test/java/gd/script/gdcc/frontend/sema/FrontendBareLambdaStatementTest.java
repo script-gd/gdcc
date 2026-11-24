@@ -1,12 +1,18 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
+import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
@@ -28,19 +34,17 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Regression coverage for issue #65: a bare lambda written directly as a function-body statement
-/// (`func(): ...`) is parsed as a statement-position `FunctionDeclaration` named `<anonymous>`.
-/// Godot parses the same shape as a lambda expression statement and rejects it with a source
-/// error ("Standalone lambdas cannot be accessed"), so the frontend must close the shape with one
-/// `sema.unsupported_binding_subtree` error anchored at the declaration, skip the subtree, and
-/// keep sibling subtrees resolving — never abort the pipeline with an exception.
+/// Bare lambda statements remain outside the callable surface and report exactly one error.
+/// Hand-built nested declarations still exercise the independent semantic guard.
 class FrontendBareLambdaStatementTest {
     @Test
     void bareLambdaStatementEmitsBoundaryDiagnosticAndSkipsSubtree() throws Exception {
@@ -58,11 +62,15 @@ class FrontendBareLambdaStatementTest {
         assertEquals(1, diagnostics.size(), () -> "Unexpected diagnostics: " + diagnostics);
         var diagnostic = diagnostics.getFirst();
         assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());
-        assertEquals("sema.unsupported_binding_subtree", diagnostic.category());
-        assertTrue(diagnostic.message().contains("Standalone lambda statement"), diagnostic.message());
-        // The boundary error anchors at the skipped subtree root (the whole declaration).
+        assertEquals("parse.lambda.bare_statement", diagnostic.category());
+        assertTrue(diagnostic.message().contains("Standalone lambdas cannot be accessed"), diagnostic.message());
         assertEquals(FrontendRange.fromAstRange(bareLambda.range()), diagnostic.range());
+        var lambda = assertInstanceOf(LambdaExpression.class, bareLambda.expression());
+        assertTrue(analyzed.analysisData().skippedSubtreeRoots().containsKey(bareLambda));
+        assertTrue(analyzed.analysisData().skippedSubtreeRoots().containsKey(lambda));
+        assertFalse(analyzed.analysisData().scopesByAst().containsKey(lambda));
         assertTrue(analyzed.analysisData().lambdaPlans().isEmpty());
+        assertTrue(analyzed.analysisData().lambdaIdentities().isEmpty());
     }
 
     @Test
@@ -76,6 +84,8 @@ class FrontendBareLambdaStatementTest {
                     func():
                         pass
                     var after := 2
+                    var kept = func():
+                        pass
 
                 func sibling():
                     var value := 3
@@ -108,16 +118,22 @@ class FrontendBareLambdaStatementTest {
 
         var diagnostics = analyzed.diagnostics().asList();
         assertEquals(1, diagnostics.size(), () -> "Unexpected diagnostics: " + diagnostics);
-        assertEquals("sema.unsupported_binding_subtree", diagnostics.getFirst().category());
+        assertEquals("parse.lambda.bare_statement", diagnostics.getFirst().category());
         // Sibling statements in the same suite and other callables in the same class still
         // resolve through the ordinary publication path.
         assertEquals(GdIntType.INT, analyzed.analysisData().slotTypes().get(before));
         assertEquals(GdIntType.INT, analyzed.analysisData().slotTypes().get(after));
         assertEquals(GdIntType.INT, analyzed.analysisData().slotTypes().get(value));
+        var kept = assertInstanceOf(LambdaExpression.class, assertInstanceOf(
+                VariableDeclaration.class, outerFunction.body().statements().getLast()
+        ).value());
+        assertEquals(1, analyzed.analysisData().lambdaPlans().size());
+        assertEquals(1, analyzed.analysisData().lambdaIdentities().size());
+        assertEquals(0, analyzed.analysisData().lambdaIdentities().get(kept).ordinal());
     }
 
     @Test
-    void namedNestedFunctionDeclarationGetsSameBoundary() throws Exception {
+    void namedBareLambdaStatementGetsSameBoundary() throws Exception {
         var analyzed = analyze("bare_named_lambda_statement.gd", """
                 class_name BareNamedLambdaStatement
                 extends Node
@@ -131,17 +147,14 @@ class FrontendBareLambdaStatementTest {
                 FunctionDeclaration.class,
                 functionDeclaration -> functionDeclaration.name().equals("outer")
         );
-        var nested = findStatement(
-                outerFunction.body().statements(),
-                FunctionDeclaration.class,
-                functionDeclaration -> functionDeclaration.name().equals("inner")
-        );
+        var nested = findBareLambdaStatement(outerFunction);
+        assertEquals("inner", assertInstanceOf(LambdaExpression.class, nested.expression()).name());
 
         var diagnostics = analyzed.diagnostics().asList();
         assertEquals(1, diagnostics.size(), () -> "Unexpected diagnostics: " + diagnostics);
         var diagnostic = diagnostics.getFirst();
-        assertEquals("sema.unsupported_binding_subtree", diagnostic.category());
-        assertTrue(diagnostic.message().contains("Standalone lambda statement"), diagnostic.message());
+        assertEquals("parse.lambda.bare_statement", diagnostic.category());
+        assertTrue(diagnostic.message().contains("Standalone lambdas cannot be accessed"), diagnostic.message());
         assertEquals(FrontendRange.fromAstRange(nested.range()), diagnostic.range());
     }
 
@@ -163,11 +176,7 @@ class FrontendBareLambdaStatementTest {
                 functionDeclaration -> functionDeclaration.name().equals("outer")
         );
         var ifStatement = findStatement(outerFunction.body().statements(), IfStatement.class, _ -> true);
-        var bareLambda = findStatement(
-                ifStatement.body().statements(),
-                FunctionDeclaration.class,
-                functionDeclaration -> functionDeclaration.name().equals("<anonymous>")
-        );
+        var bareLambda = findBareLambdaStatement(ifStatement);
         var after = findStatement(
                 outerFunction.body().statements(),
                 VariableDeclaration.class,
@@ -177,7 +186,7 @@ class FrontendBareLambdaStatementTest {
         var diagnostics = analyzed.diagnostics().asList();
         assertEquals(1, diagnostics.size(), () -> "Unexpected diagnostics: " + diagnostics);
         var diagnostic = diagnostics.getFirst();
-        assertEquals("sema.unsupported_binding_subtree", diagnostic.category());
+        assertEquals("parse.lambda.bare_statement", diagnostic.category());
         assertEquals(FrontendRange.fromAstRange(bareLambda.range()), diagnostic.range());
         assertEquals(GdIntType.INT, analyzed.analysisData().slotTypes().get(after));
     }
@@ -199,34 +208,38 @@ class FrontendBareLambdaStatementTest {
         // lambda never becomes a recorded suite entry, so no plan is published and no secondary
         // unrecorded-lambda diagnostics fire inside the rejected subtree.
         assertEquals(1, diagnostics.size(), () -> "Unexpected diagnostics: " + diagnostics);
-        assertEquals("sema.unsupported_binding_subtree", diagnostics.getFirst().category());
+        assertEquals("parse.lambda.bare_statement", diagnostics.getFirst().category());
         assertTrue(analyzed.analysisData().lambdaPlans().isEmpty());
     }
 
     @Test
     void interfacePhaseDoesNotRecordStatementPositionFunctions() throws Exception {
-        var phaseInput = phaseInput("bare_lambda_interface_surface.gd", """
+        var parsed = parseHealthy("bare_lambda_interface_surface.gd", """
                 class_name BareLambdaInterfaceSurface
                 extends Node
 
                 func outer():
-                    func():
+                    var discarded = func():
                         var state = 1
                 """);
-        var outerFunction = findStatement(
-                phaseInput.unit().ast().statements(),
-                FunctionDeclaration.class,
-                functionDeclaration -> functionDeclaration.name().equals("outer")
+        List<Function<LambdaExpression, Statement>> declarations = List.of(
+                FrontendBareLambdaStatementTest::asFunctionDeclaration,
+                lambda -> new ConstructorDeclaration(lambda.parameters(), lambda.returnType(), lambda.body(), lambda.range())
         );
-        var bareLambda = findBareLambdaStatement(phaseInput.unit().ast());
+        for (var declaration : declarations) {
+            var input = phaseInput(withFirstBodyStatement(parsed, declaration));
+            var outer = findStatement(input.unit().ast().statements(), FunctionDeclaration.class, _ -> true);
+            var nested = outer.body().statements().getFirst();
+            var nestedBody = assertInstanceOf(Block.class, nested.getChildren().getLast());
+            assertTrue(input.analysisData().scopesByAst().containsKey(nested));
 
-        var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
-
-        assertTrue(surface.suiteEntryRoots().containsCallableOwner(outerFunction));
-        assertTrue(surface.suiteEntryRoots().containsSupportedBlock(outerFunction.body()));
-        assertFalse(surface.suiteEntryRoots().containsCallableOwner(bareLambda));
-        assertFalse(surface.suiteEntryRoots().containsSupportedBlock(bareLambda.body()));
-        assertFalse(surface.bodyDeclarationIndex().containsBodyRoot(bareLambda.body()));
+            var surface = new FrontendInterfacePhase().analyze(input.registry(), input.analysisData());
+            assertTrue(surface.suiteEntryRoots().containsCallableOwner(outer));
+            assertTrue(surface.suiteEntryRoots().containsSupportedBlock(outer.body()));
+            assertFalse(surface.suiteEntryRoots().containsCallableOwner(nested));
+            assertFalse(surface.suiteEntryRoots().containsSupportedBlock(nestedBody));
+            assertFalse(surface.bodyDeclarationIndex().containsBodyRoot(nestedBody));
+        }
     }
 
     @Test
@@ -241,7 +254,8 @@ class FrontendBareLambdaStatementTest {
                     func():
                         var state = 1
                 """, diagnostics);
-        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        assertEquals(List.of("parse.lambda.bare_statement"), diagnostics.snapshot().asList().stream()
+                .map(FrontendDiagnostic::category).toList());
 
         new FrontendSemanticAnalyzer().analyzeForCompile(
                 new FrontendModule("test_module", List.of(unit)),
@@ -252,7 +266,7 @@ class FrontendBareLambdaStatementTest {
         var snapshot = diagnostics.snapshot();
         var allDiagnostics = snapshot.asList();
         assertEquals(1, allDiagnostics.size(), () -> "Unexpected diagnostics: " + allDiagnostics);
-        assertEquals("sema.unsupported_binding_subtree", allDiagnostics.getFirst().category());
+        assertEquals("parse.lambda.bare_statement", allDiagnostics.getFirst().category());
         // The rejected subtree never enters the compile surface, so the compile-only gate must
         // not wrap it into a second sema.compile_check error.
         assertFalse(allDiagnostics.stream().anyMatch(diagnostic ->
@@ -282,14 +296,13 @@ class FrontendBareLambdaStatementTest {
                 variableDeclaration -> variableDeclaration.name().equals("after")
         );
 
-        // A statement-position `_init` is the same standalone-lambda shape (Godot rejects it
-        // identically), regardless of whether the parser maps it to a FunctionDeclaration or a
-        // ConstructorDeclaration.
+        var nested = findBareLambdaStatement(outerFunction);
+        assertEquals("_init", assertInstanceOf(LambdaExpression.class, nested.expression()).name());
         var diagnostics = analyzed.diagnostics().asList();
         assertEquals(1, diagnostics.size(), () -> "Unexpected diagnostics: " + diagnostics);
         var diagnostic = diagnostics.getFirst();
-        assertEquals("sema.unsupported_binding_subtree", diagnostic.category());
-        assertTrue(diagnostic.message().contains("Standalone lambda statement"), diagnostic.message());
+        assertEquals("parse.lambda.bare_statement", diagnostic.category());
+        assertTrue(diagnostic.message().contains("Standalone lambdas cannot be accessed"), diagnostic.message());
         assertEquals(GdIntType.INT, analyzed.analysisData().slotTypes().get(after));
     }
 
@@ -317,7 +330,7 @@ class FrontendBareLambdaStatementTest {
 
         var diagnostics = analyzed.diagnostics().asList();
         assertEquals(1, diagnostics.size(), () -> "Unexpected diagnostics: " + diagnostics);
-        assertEquals("sema.unsupported_binding_subtree", diagnostics.getFirst().category());
+        assertEquals("parse.lambda.bare_statement", diagnostics.getFirst().category());
         assertEquals(GdIntType.INT, analyzed.analysisData().slotTypes().get(after));
     }
 
@@ -336,7 +349,7 @@ class FrontendBareLambdaStatementTest {
 
         var diagnostics = analyzed.diagnostics().asList();
         assertEquals(1, diagnostics.size(), () -> "Unexpected diagnostics: " + diagnostics);
-        assertEquals("sema.unsupported_binding_subtree", diagnostics.getFirst().category());
+        assertEquals("parse.lambda.bare_statement", diagnostics.getFirst().category());
         // The inner-class member itself still resolves normally.
         var after = findNode(
                 analyzed.unit().ast(),
@@ -359,18 +372,18 @@ class FrontendBareLambdaStatementTest {
                         pass
                 """);
 
-        // Each statement-position declaration is its own recovery root with its own diagnostic.
+        // Each rejected statement has its own recovery root and diagnostic.
         var diagnostics = analyzed.diagnostics().asList();
         assertEquals(2, diagnostics.size(), () -> "Unexpected diagnostics: " + diagnostics);
         for (var diagnostic : diagnostics) {
-            assertEquals("sema.unsupported_binding_subtree", diagnostic.category());
-            assertTrue(diagnostic.message().contains("Standalone lambda statement"), diagnostic.message());
+            assertEquals("parse.lambda.bare_statement", diagnostic.category());
+            assertTrue(diagnostic.message().contains("Standalone lambdas cannot be accessed"), diagnostic.message());
         }
-        var bareLambdas = new ArrayList<FunctionDeclaration>();
+        var bareLambdas = new ArrayList<ExpressionStatement>();
         collectMatchingNodes(
                 analyzed.unit().ast(),
-                FunctionDeclaration.class,
-                functionDeclaration -> functionDeclaration.name().equals("<anonymous>"),
+                ExpressionStatement.class,
+                statement -> statement.expression() instanceof LambdaExpression,
                 bareLambdas
         );
         assertEquals(2, bareLambdas.size());
@@ -386,15 +399,16 @@ class FrontendBareLambdaStatementTest {
 
     @Test
     void suiteEntryGuardRejectsHandBuiltNestedOwner() throws Exception {
-        var phaseInput = phaseInput("bare_lambda_entry_guard.gd", """
+        var parsed = parseHealthy("bare_lambda_entry_guard.gd", """
                 class_name BareLambdaEntryGuard
                 extends Node
 
                 func outer():
-                    func():
+                    var discarded = func():
                         pass
                 """);
-        var bareLambda = findBareLambdaStatement(phaseInput.unit().ast());
+        var phaseInput = phaseInput(withFirstBodyStatement(parsed, FrontendBareLambdaStatementTest::asFunctionDeclaration));
+        var bareLambda = findNode(phaseInput.unit().ast(), FunctionDeclaration.class, function -> function.name().equals("inner"));
         assertNotNull(phaseInput.analysisData().scopesByAst().get(bareLambda));
         // A hand-built surface can smuggle a statement-position declaration back into the
         // callable-owner list; the suite entry guard must reject it with a diagnostic at entry
@@ -420,12 +434,77 @@ class FrontendBareLambdaStatementTest {
         assertEquals(FrontendRange.fromAstRange(bareLambda.range()), diagnostic.range());
     }
 
-    private static @NotNull FunctionDeclaration findBareLambdaStatement(@NotNull Node root) {
-        return findNode(
-                root,
-                FunctionDeclaration.class,
-                functionDeclaration -> functionDeclaration.name().equals("<anonymous>")
+    @Test
+    void handBuiltBareLambdaWithoutRecoveryIsRejectedAndDoesNotConsumeAnOrdinal() throws Exception {
+        var parsed = parseHealthy("bare_lambda_without_recovery.gd", """
+                extends Node
+
+                func outer():
+                    var discarded = func():
+                        pass
+                    var kept = func():
+                        pass
+                """);
+        var unit = withFirstBodyStatement(parsed, lambda -> new ExpressionStatement(lambda, lambda.range()));
+        assertTrue(unit.parseRecoveries().isEmpty());
+
+        var diagnostics = new DiagnosticManager();
+        var analysisData = new FrontendSemanticAnalyzer().analyze(
+                new FrontendModule("test_module", List.of(unit)),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
         );
+        var outer = findStatement(unit.ast().statements(), FunctionDeclaration.class, _ -> true);
+        var statement = findBareLambdaStatement(outer);
+        var bare = assertInstanceOf(LambdaExpression.class, statement.expression());
+        var kept = assertInstanceOf(LambdaExpression.class, assertInstanceOf(
+                VariableDeclaration.class, outer.body().statements().getLast()
+        ).value());
+        var errors = diagnostics.snapshot().asList();
+        assertEquals(1, errors.size(), errors::toString);
+        assertEquals(FrontendDiagnosticSeverity.ERROR, errors.getFirst().severity());
+        assertEquals("sema.unsupported_binding_subtree", errors.getFirst().category());
+        assertTrue(errors.getFirst().message().contains("Standalone lambda statement"));
+        assertEquals(FrontendRange.fromAstRange(statement.range()), errors.getFirst().range());
+        assertTrue(analysisData.skippedSubtreeRoots().containsKey(statement));
+        assertTrue(analysisData.skippedSubtreeRoots().containsKey(bare));
+        assertFalse(analysisData.scopesByAst().containsKey(bare));
+        assertFalse(analysisData.lambdaPlans().containsKey(bare));
+        assertFalse(analysisData.lambdaIdentities().containsKey(bare));
+        assertEquals(1, analysisData.lambdaPlans().size());
+        assertEquals(1, analysisData.lambdaIdentities().size());
+        assertEquals(0, analysisData.lambdaIdentities().get(kept).ordinal());
+    }
+
+    private static @NotNull FrontendSourceUnit parseHealthy(@NotNull String fileName, @NotNull String source) {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", fileName), source, diagnostics);
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        return unit;
+    }
+
+    private static @NotNull FunctionDeclaration asFunctionDeclaration(@NotNull LambdaExpression lambda) {
+        return new FunctionDeclaration("inner", lambda.parameters(), lambda.returnType(), false, lambda.body(), lambda.range());
+    }
+
+    private static @NotNull FrontendSourceUnit withFirstBodyStatement(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull Function<LambdaExpression, Statement> replace
+    ) {
+        var topLevel = new ArrayList<>(unit.ast().statements());
+        var outer = assertInstanceOf(FunctionDeclaration.class, topLevel.getLast());
+        var statements = new ArrayList<>(outer.body().statements());
+        var declaration = assertInstanceOf(VariableDeclaration.class, statements.getFirst());
+        statements.set(0, replace.apply(assertInstanceOf(LambdaExpression.class, declaration.value())));
+        var body = new Block(statements, outer.body().range());
+        topLevel.set(topLevel.size() - 1, new FunctionDeclaration(
+                outer.name(), outer.parameters(), outer.returnType(), outer.isStatic(), body, outer.range()
+        ));
+        return new FrontendSourceUnit(unit.path(), unit.source(), new SourceFile(topLevel, unit.ast().range()));
+    }
+
+    private static @NotNull ExpressionStatement findBareLambdaStatement(@NotNull Node root) {
+        return findNode(root, ExpressionStatement.class, statement -> statement.expression() instanceof LambdaExpression);
     }
 
     private static @NotNull AnalyzedSource analyze(
@@ -435,7 +514,6 @@ class FrontendBareLambdaStatementTest {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
-        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
         var analysisData = new FrontendSemanticAnalyzer().analyze(
                 new FrontendModule("test_module", List.of(unit)),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
@@ -444,12 +522,8 @@ class FrontendBareLambdaStatementTest {
         return new AnalyzedSource(unit, analysisData, diagnostics.snapshot());
     }
 
-    private static @NotNull PhaseInput phaseInput(@NotNull String fileName, @NotNull String source) throws Exception {
-        var parserService = new GdScriptParserService();
+    private static @NotNull PhaseInput phaseInput(@NotNull FrontendSourceUnit unit) throws Exception {
         var diagnostics = new DiagnosticManager();
-        var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
-        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
-
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = FrontendAnalysisData.bootstrap();
         var module = new FrontendModule("test_module", List.of(unit));

@@ -5,15 +5,19 @@ import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
+import gd.script.gdcc.frontend.parse.FrontendParseRecovery;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
@@ -27,7 +31,6 @@ import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ScopeLookupStatus;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -90,7 +93,7 @@ class FrontendParameterDefaultMetadataOwnerTest {
 
         assertTrue(input.diagnostics().snapshot().isEmpty(), input.diagnostics().snapshot()::toString);
         var ping = findFunction(input.unit().ast(), "ping");
-        var constructorDefault = ping.parameters().get(0).defaultValue();
+        var constructorDefault = ping.parameters().getFirst().defaultValue();
         var constructorType = input.analysisData().expressionTypes().get(constructorDefault);
         assertNotNull(constructorType);
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, constructorType.status());
@@ -99,7 +102,7 @@ class FrontendParameterDefaultMetadataOwnerTest {
         var callDefault = findNode(
                 ping.parameters().get(1).defaultValue(),
                 CallExpression.class,
-                candidate -> true
+                _ -> true
         );
         var resolvedCall = input.analysisData().resolvedCalls().get(callDefault);
         assertNotNull(resolvedCall);
@@ -133,7 +136,7 @@ class FrontendParameterDefaultMetadataOwnerTest {
         assertEquals("_default_g$x", requireParameterDef(input, "CrossDefaultCall", "g", "x")
                 .getDefaultValueFunc());
         var g = findFunction(input.unit().ast(), "g");
-        var call = findNode(g.parameters().getLast().defaultValue(), CallExpression.class, candidate -> true);
+        var call = findNode(g.parameters().getLast().defaultValue(), CallExpression.class, _ -> true);
         var resolvedCall = input.analysisData().resolvedCalls().get(call);
         assertNotNull(resolvedCall);
         assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status());
@@ -160,7 +163,7 @@ class FrontendParameterDefaultMetadataOwnerTest {
         var selfUseSite = findNode(
                 ping.parameters().get(1).defaultValue(),
                 SelfExpression.class,
-                candidate -> true
+                _ -> true
         );
         var selfBinding = input.analysisData().symbolBindings().get(selfUseSite);
         assertNotNull(selfBinding);
@@ -173,7 +176,7 @@ class FrontendParameterDefaultMetadataOwnerTest {
         var memberCall = findNode(
                 ping.parameters().get(2).defaultValue(),
                 CallExpression.class,
-                candidate -> true
+                _ -> true
         );
         assertEquals(
                 FrontendCallResolutionStatus.RESOLVED,
@@ -325,7 +328,7 @@ class FrontendParameterDefaultMetadataOwnerTest {
             var getNode = findNode(
                     parameter.defaultValue(),
                     GetNodeExpression.class,
-                    candidate -> true
+                    _ -> true
             );
             var getNodeType = input.analysisData().expressionTypes().get(getNode);
             assertNotNull(getNodeType);
@@ -360,51 +363,161 @@ class FrontendParameterDefaultMetadataOwnerTest {
 
     @Test
     void mandatoryParameterAfterOptionalIsRejected() throws Exception {
-        var input = analyze("mandatory_after_optional.gd", """
+        assertOrderRecovery("mandatory_after_optional.gd", """
                 class_name MandatoryAfterOptional
                 extends RefCounted
                 
                 func ping(a = 1, b):
                     return b
-                """);
-
-        var ping = findFunction(input.unit().ast(), "ping");
-        var orderDiagnostics = diagnosticsByCategory(input.diagnostics().snapshot(), ORDER_CATEGORY);
-        assertEquals(1, orderDiagnostics.size(), orderDiagnostics::toString);
-        assertEquals(FrontendDiagnosticSeverity.ERROR, orderDiagnostics.getFirst().severity());
-        // Anchored at the violating mandatory parameter.
-        assertEquals(
-                FrontendRange.fromAstRange(ping.parameters().get(1).range()),
-                orderDiagnostics.getFirst().range()
-        );
-        // The violating parameter never receives metadata; the legal defaulted sibling still does.
-        var pingDef = requireFunctionDef(input, "MandatoryAfterOptional", "ping");
-        assertNull(pingDef.getParameter("b").getDefaultValueFunc());
-        assertEquals("_default_ping$a", pingDef.getParameter("a").getDefaultValueFunc());
+                """, "MandatoryAfterOptional", "b", DiagnosticCodes.SIGNATURE_MANDATORY_AFTER_OPTIONAL);
     }
 
     @Test
     void variadicParameterCannotHaveDefault() throws Exception {
-        var input = analyze("variadic_default.gd", """
+        assertOrderRecovery("variadic_default.gd", """
                 class_name VariadicDefault
                 extends RefCounted
                 
                 func ping(a = 1, ...rest = [2]):
                     pass
-                """);
+                """, "VariadicDefault", "rest", DiagnosticCodes.SIGNATURE_REST_WITH_DEFAULT);
+    }
 
-        var ping = findFunction(input.unit().ast(), "ping");
-        var orderDiagnostics = diagnosticsByCategory(input.diagnostics().snapshot(), ORDER_CATEGORY);
-        assertEquals(1, orderDiagnostics.size(), input.diagnostics().snapshot()::toString);
-        // Anchored at the violating variadic parameter, which never receives metadata; the legal
-        // defaulted sibling keeps its placeholder.
-        assertEquals(
-                FrontendRange.fromAstRange(ping.parameters().get(1).range()),
-                orderDiagnostics.getFirst().range()
+    private static void assertOrderRecovery(
+            String fileName, String source, String className, String parameterName, String parserCode
+    ) throws Exception {
+        var original = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", fileName), source, original);
+        var function = findFunction(unit.ast(), "ping");
+        var offender = function.parameters().getLast();
+        var recovery = unit.parseRecoveries().getFirst();
+        assertEquals(1, unit.parseRecoveries().size());
+        assertSame(function, recovery.owner());
+        assertEquals("function.signature", recovery.facet());
+        assertEquals(parserCode, recovery.code());
+        var parserErrors = original.snapshot().asList();
+        assertEquals(1, parserErrors.size());
+        assertTrue(recovery.range().startByte() >= offender.range().startByte());
+        assertTrue(recovery.range().endByte() <= offender.range().endByte());
+        for (var active : List.of(original, new DiagnosticManager())) {
+            var input = analyzeUnit(unit, active);
+            var errors = active.snapshot().asList();
+            assertEquals(1, errors.size());
+            if (active == original) {
+                assertEquals(parserErrors, errors);
+            } else {
+                assertEquals(ORDER_CATEGORY, errors.getFirst().category());
+                assertEquals(FrontendRange.fromAstRange(offender.range()), errors.getFirst().range());
+            }
+            assertEquals(errors.getFirst(), input.analysisData().claimedParseRecoveries().get(recovery));
+            assertEquals(FrontendDiagnosticSeverity.ERROR, errors.getFirst().severity());
+            var compiled = requireFunctionDef(input, className, "ping");
+            assertNull(compiled.getParameter(parameterName).getDefaultValueFunc());
+            assertEquals("_default_ping$a", compiled.getParameter("a").getDefaultValueFunc());
+            assertTrue(input.analysisData().scopesByAst().containsKey(function.body()));
+        }
+        var manual = manualOrderViolation(offender.variadic());
+        var input = analyzeUnit(manual, new DiagnosticManager());
+        var errors = input.diagnostics().snapshot().asList();
+        assertEquals(1, errors.size());
+        assertEquals(ORDER_CATEGORY, errors.getFirst().category());
+        var manualFunction = findFunction(manual.ast(), "ping");
+        assertEquals(FrontendRange.fromAstRange(manualFunction.parameters().getLast().range()), errors.getFirst().range());
+        assertNull(requireParameterDef(input, "ManualOrder", "ping", parameterName).getDefaultValueFunc());
+    }
+
+    @Test
+    void wrongCodeAndOutOfParameterRangeRecoveryDoNotSuppressManualOrderError() throws Exception {
+        var manual = manualOrderViolation(false);
+        var function = findFunction(manual.ast(), "ping");
+        var firstRange = FrontendRange.fromAstRange(function.parameters().getFirst().range());
+        var lastRange = FrontendRange.fromAstRange(function.parameters().getLast().range());
+        var recoveries = List.of(
+                new FrontendParseRecovery(DiagnosticCodes.SIGNATURE_REST_WITH_DEFAULT, FrontendDiagnosticSeverity.ERROR,
+                        "unrelated rest diagnostic", lastRange, function, "function.signature"),
+                new FrontendParseRecovery(DiagnosticCodes.SIGNATURE_MANDATORY_AFTER_OPTIONAL, FrontendDiagnosticSeverity.ERROR,
+                        "outside this parameter", firstRange, function, "function.signature")
         );
-        var pingDef = requireFunctionDef(input, "VariadicDefault", "ping");
-        assertNull(pingDef.getParameter("rest").getDefaultValueFunc());
-        assertEquals("_default_ping$a", pingDef.getParameter("a").getDefaultValueFunc());
+        var unit = new FrontendSourceUnit(manual.path(), manual.source(), manual.ast(), false, recoveries);
+        var manager = new DiagnosticManager();
+        var parserErrors = recoveries.stream().map(r ->
+                FrontendDiagnostic.error(r.code(), r.message(), FrontendDiagnostic.sourcePathText(unit.path()), r.range())).toList();
+        manager.reportAll(parserErrors);
+        var input = analyzeUnit(unit, manager);
+        var errors = manager.snapshot().asList();
+        assertEquals(3, errors.size());
+        assertEquals(parserErrors, errors.subList(0, 2));
+        assertEquals(ORDER_CATEGORY, errors.getLast().category());
+        assertEquals(lastRange, errors.getLast().range());
+        assertTrue(input.analysisData().claimedParseRecoveries().isEmpty());
+        assertNull(requireParameterDef(input, "ManualOrder", "ping", "b").getDefaultValueFunc());
+    }
+
+    @Test
+    void bareSuperDefaultReclaimsMetadataWithoutEchoInEitherManager() throws Exception {
+        var original = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "super_default.gd"), """
+                class_name SuperDefault
+                extends Node
+                func ping(x = super):
+                    return x
+                """, original);
+        var parameter = findFunction(unit.ast(), "ping").parameters().getFirst();
+        var parsed = original.snapshot().asList();
+        assertEquals(1, parsed.size());
+        assertEquals(DiagnosticCodes.SUPER_MISSING_ACCESS, parsed.getFirst().category());
+        assertSame(parameter, unit.parseRecoveries().getFirst().owner());
+        for (var manager : List.of(original, new DiagnosticManager())) {
+            var input = analyzeUnit(unit, manager);
+            assertNull(requireParameterDef(input, "SuperDefault", "ping", "x").getDefaultValueFunc());
+            var errors = manager.snapshot().asList();
+            assertEquals(1, errors.size());
+            if (manager == original) {
+                assertEquals(parsed, errors);
+            } else {
+                assertEquals("sema.expression_resolution", errors.getFirst().category());
+                assertEquals(FrontendRange.fromAstRange(parameter.defaultValue().range()), errors.getFirst().range());
+            }
+        }
+    }
+
+    @Test
+    void missingDefaultExpressionReclaimsOnlyItsOwnMetadata() throws Exception {
+        var original = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "empty_default_slot.gd"), """
+                class_name EmptyDefaultSlot
+                func ping(kept = 1, broken = ):
+                    return kept
+                """, original);
+        var function = findFunction(unit.ast(), "ping");
+        var broken = function.parameters().getLast().defaultValue();
+        var expected = original.snapshot().asList();
+        assertEquals(1, expected.size());
+        assertEquals("parse.missing_expression.parameter_default", expected.getFirst().category());
+        for (var active : List.of(original, new DiagnosticManager())) {
+            var input = analyzeUnit(unit, active);
+            var def = requireFunctionDef(input, "EmptyDefaultSlot", "ping");
+            assertEquals("_default_ping$kept", def.getParameter("kept").getDefaultValueFunc());
+            assertNull(def.getParameter("broken").getDefaultValueFunc());
+            assertTrue(input.analysisData().skippedSubtreeRoots().containsKey(broken));
+            assertTrue(input.analysisData().scopesByAst().containsKey(function.body()));
+            assertEquals(expected, active.snapshot().asList());
+        }
+    }
+
+    private static FrontendSourceUnit manualOrderViolation(boolean variadic) {
+        var diagnostics = new DiagnosticManager();
+        var source = "class_name ManualOrder\nfunc ping(a = 1, " + (variadic ? "...rest" : "b = 2") + "):\n    pass\n";
+        var healthy = new GdScriptParserService().parseUnit(Path.of("tmp", "manual_order.gd"), source, diagnostics);
+        assertTrue(diagnostics.isEmpty());
+        var function = findFunction(healthy.ast(), "ping");
+        var parameter = function.parameters().getLast();
+        var manual = new Parameter(parameter.name(), parameter.type(),
+                variadic ? new LiteralExpression("int", "2", parameter.range()) : null, variadic, parameter.range());
+        var invalid = new FunctionDeclaration(function.name(), List.of(function.parameters().getFirst(), manual),
+                function.returnType(), function.isStatic(), function.body(), function.range());
+        var statements = healthy.ast().statements().stream().map(s -> s == function ? invalid : s).toList();
+        return new FrontendSourceUnit(healthy.path(), healthy.source(), new SourceFile(statements, healthy.ast().range()));
     }
 
     @Test
@@ -425,7 +538,7 @@ class FrontendParameterDefaultMetadataOwnerTest {
         assertFalse(input.diagnostics().snapshot().hasErrors(), input.diagnostics().snapshot()::toString);
         var caller = findFunction(input.unit().ast(), "caller");
         var calls = new ArrayList<CallExpression>();
-        collectMatchingNodes(caller.body(), CallExpression.class, candidate -> true, calls);
+        collectMatchingNodes(caller.body(), CallExpression.class, _ -> true, calls);
         assertEquals(3, calls.size());
         for (var call : calls) {
             var resolvedCall = input.analysisData().resolvedCalls().get(call);
@@ -547,7 +660,7 @@ class FrontendParameterDefaultMetadataOwnerTest {
                 .getDefaultValueFunc());
         assertNull(requireParameterDef(input, "CrossDefaultReclaimCorner", "bad", "b").getDefaultValueFunc());
         var user = findFunction(input.unit().ast(), "user");
-        var call = findNode(user.parameters().getLast().defaultValue(), CallExpression.class, candidate -> true);
+        var call = findNode(user.parameters().getLast().defaultValue(), CallExpression.class, _ -> true);
         assertEquals(
                 FrontendCallResolutionStatus.RESOLVED,
                 Objects.requireNonNull(input.analysisData().resolvedCalls().get(call)).status()
@@ -768,7 +881,12 @@ class FrontendParameterDefaultMetadataOwnerTest {
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
         assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        return analyzeUnit(unit, diagnostics);
+    }
 
+    private static @NotNull AnalyzedInput analyzeUnit(
+            @NotNull FrontendSourceUnit unit, @NotNull DiagnosticManager diagnostics
+    ) throws Exception {
         var analysisData = new FrontendSemanticAnalyzer().analyze(
                 new FrontendModule("test_module", List.of(unit)),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),

@@ -1,10 +1,11 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
+import gd.script.gdcc.frontend.parse.FrontendParseRecovery;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
-import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
-import gd.script.gdcc.scope.Scope;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
@@ -32,6 +33,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -40,8 +42,8 @@ import java.util.Objects;
 /// The analyzer intentionally runs in the shared semantic pipeline instead of the compile-only
 /// gate because loop-control placement is a source contract, not a lowering readiness fact.
 /// Current behavior is kept deliberately narrow:
-/// - report `sema.loop_control_flow` when `break` / `continue` appears outside the current loop
-///   boundary
+/// - reject jumps outside the current loop boundary; keep exact parser coverage or report
+///   `sema.loop_control_flow` when no parser error is active
 /// - treat `while` / `for` as loop boundaries
 /// - reset loop depth at function / constructor / lambda boundaries so outer loops do not leak
 ///   into nested callables
@@ -72,7 +74,7 @@ public class FrontendLoopControlFlowAnalyzer {
         for (var sourceClassRelation : moduleSkeleton.sourceClassRelations()) {
             new AstWalkerLoopControlFlowVisitor(
                     sourceClassRelation.unit().path(),
-                    scopesByAst,
+                    analysisData,
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
         }
@@ -87,8 +89,8 @@ public class FrontendLoopControlFlowAnalyzer {
     }
 
     private static final class AstWalkerLoopControlFlowVisitor implements ASTNodeHandler {
-        private final @NotNull Path sourcePath;
-        private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
+        private final @NotNull String sourcePath;
+        private final @NotNull FrontendAnalysisData analysisData;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
         /// Tracks how many loop boundaries currently surround the active statement walk.
@@ -101,11 +103,11 @@ public class FrontendLoopControlFlowAnalyzer {
 
         private AstWalkerLoopControlFlowVisitor(
                 @NotNull Path sourcePath,
-                @NotNull FrontendAstSideTable<Scope> scopesByAst,
+                @NotNull FrontendAnalysisData analysisData,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
-            this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath must not be null");
-            this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
+            this.sourcePath = Objects.requireNonNull(FrontendDiagnostic.sourcePathText(sourcePath));
+            this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
             astWalker = new ASTWalker(this);
         }
@@ -347,16 +349,35 @@ public class FrontendLoopControlFlowAnalyzer {
                 @NotNull Node node,
                 @NotNull String message
         ) {
-            diagnosticManager.error(
-                    LOOP_CONTROL_FLOW_CATEGORY,
-                    message,
-                    sourcePath,
-                    FrontendRange.fromAstRange(node.range())
-            );
+            var matching = analysisData.parseRecoveriesByOwner().getOrDefault(node, List.of());
+            var covered = false;
+            var uncovered = new ArrayList<FrontendParseRecovery>();
+            for (var recovery : matching) {
+                if (!"statement.control".equals(recovery.facet())
+                        || recovery.severity() != FrontendDiagnosticSeverity.ERROR) {
+                    continue;
+                }
+                var covering = FrontendParseRecovery.findActiveCoveringDiagnostic(
+                        recovery, analysisData, diagnosticManager, sourcePath);
+                if (covering == null) {
+                    uncovered.add(recovery);
+                } else {
+                    covered = true;
+                    recovery.claimCoveringDiagnostic(analysisData, diagnosticManager, covering);
+                }
+            }
+            if (!covered || !uncovered.isEmpty()) {
+                var fallback = FrontendDiagnostic.error(
+                        LOOP_CONTROL_FLOW_CATEGORY, message, sourcePath, FrontendRange.fromAstRange(node.range()));
+                diagnosticManager.report(fallback);
+                for (var recovery : uncovered) {
+                    analysisData.claimParseRecovery(recovery, fallback);
+                }
+            }
         }
 
         private boolean isNotPublished(@Nullable Node node) {
-            return node == null || !scopesByAst.containsKey(node);
+            return node == null || !analysisData.scopesByAst().containsKey(node);
         }
     }
 }

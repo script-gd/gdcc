@@ -225,7 +225,7 @@ public final class FrontendSemanticAnalyzer {
         // Error-subtree annotation lifts parser error nodes into `skippedSubtreeRoots()` after the
         // skeleton published its own rejected roots and before scope analysis consumes the table,
         // so both scope and body phases skip the parser-damaged subtrees without reporting again.
-        FrontendErrorSubtreeAnnotator.annotate(module, analysisData);
+        FrontendErrorSubtreeAnalyzer.annotate(module, analysisData);
 
         // Scope analysis remains a dedicated phase after skeleton publication so later binder/body
         // work can consume one stable lexical graph instead of interleaving scope creation with

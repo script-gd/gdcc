@@ -4,8 +4,10 @@ import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.RecoveredInfixExpression;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import org.junit.jupiter.api.Test;
@@ -15,6 +17,8 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Freezes gdparser {@code CastExpression} AST shape for explicit cast support.
@@ -26,22 +30,19 @@ class FrontendCastParseBehaviorTest {
     private final GdScriptParserService parserService = new GdScriptParserService();
 
     @Test
-    void unparenthesizedPlusBindsTighterThanCastInGdparser() {
-        // Freeze actual gdparser 0.5.2 shape: `a + b as float` is `a + (b as float)`.
-        // Godot treats `as` as lower than binary ops (`(a + b) as float`); parentheses
-        // restore that shape in the companion test below. Do not rewrite the dependency AST.
+    void unparenthesizedPlusBindsTighterThanCast() {
         var unit = parse("cast_plus_precedence.gd", """
                 func probe(a, b):
                     return a + b as float
                 """);
 
-        var sum = binaryFromReturn(unit, "probe");
+        var cast = castFromReturn(unit, "probe");
+        assertEquals("float", cast.targetType().sourceText());
+
+        var sum = assertInstanceOf(BinaryExpression.class, cast.value());
         assertEquals("+", sum.operator());
         assertEquals("a", assertInstanceOf(IdentifierExpression.class, sum.left()).name());
-
-        var cast = assertInstanceOf(CastExpression.class, sum.right());
-        assertEquals("float", cast.targetType().sourceText());
-        assertEquals("b", assertInstanceOf(IdentifierExpression.class, cast.value()).name());
+        assertEquals("b", assertInstanceOf(IdentifierExpression.class, sum.right()).name());
     }
 
     @Test
@@ -114,22 +115,36 @@ class FrontendCastParseBehaviorTest {
     }
 
     @Test
-    void missingCastTypeSpecifierProducesParseLoweringError() {
+    void missingCastTypeSpecifierKeepsOperandInRecoveredInfix() {
         var diagnostics = new DiagnosticManager();
-        parserService.parseUnit(Path.of("tmp", "cast_missing_type.gd"), """
+        var unit = parserService.parseUnit(Path.of("tmp", "cast_missing_type.gd"), """
                 func probe(value):
                     return value as
                 """, diagnostics);
 
-        assertFalse(diagnostics.snapshot().isEmpty());
-        assertTrue(diagnostics.snapshot().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("parse.lowering")
-                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && diagnostic.message().startsWith("CST structural issue:")
-                        && diagnostic.range() != null
-        ));
-        // Parser remains tolerant: a SourceFile is still produced for downstream recovery.
-        assertTrue(true);
+        assertFalse(unit.parseFailed());
+        var returnStatement = returnFromFunction(unit, "probe");
+        var recovered = assertInstanceOf(RecoveredInfixExpression.class, returnStatement.value());
+        assertEquals("as", recovered.operator());
+        assertEquals("value", assertInstanceOf(IdentifierExpression.class, recovered.operand()).name());
+        assertEquals("cast.type", recovered.problem().nodeType());
+
+        var errors = diagnostics.snapshot().asList();
+        assertEquals(1, errors.size(), errors::toString);
+        var error = errors.getFirst();
+        assertEquals(DiagnosticCodes.MISSING_TYPE_CAST, error.category());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
+        var range = error.range();
+        assertNotNull(range);
+        assertEquals("as", unit.source().substring(range.startByte(), range.endByte()));
+        assertEquals(range.endByte(), recovered.problem().range().startByte());
+        assertEquals(range.endByte(), recovered.problem().range().endByte());
+
+        assertEquals(1, unit.parseRecoveries().size());
+        var recovery = unit.parseRecoveries().getFirst();
+        assertEquals(error, recovery.toDiagnostic(error.sourcePath()));
+        assertSame(returnStatement, recovery.owner());
+        assertEquals("return.value", recovery.facet());
     }
 
     private FrontendSourceUnit parse(String fileName, String source) {
@@ -140,16 +155,12 @@ class FrontendCastParseBehaviorTest {
     }
 
     private static CastExpression castFromReturn(FrontendSourceUnit unit, String functionName) {
-        var function = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getFirst());
-        assertEquals(functionName, function.name());
-        var returnStatement = assertInstanceOf(ReturnStatement.class, function.body().statements().getFirst());
-        return assertInstanceOf(CastExpression.class, returnStatement.value());
+        return assertInstanceOf(CastExpression.class, returnFromFunction(unit, functionName).value());
     }
 
-    private static BinaryExpression binaryFromReturn(FrontendSourceUnit unit, String functionName) {
+    private static ReturnStatement returnFromFunction(FrontendSourceUnit unit, String functionName) {
         var function = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getFirst());
         assertEquals(functionName, function.name());
-        var returnStatement = assertInstanceOf(ReturnStatement.class, function.body().statements().getFirst());
-        return assertInstanceOf(BinaryExpression.class, returnStatement.value());
+        return assertInstanceOf(ReturnStatement.class, function.body().statements().getFirst());
     }
 }

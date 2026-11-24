@@ -69,6 +69,7 @@ import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
+import gd.script.gdcc.util.IdentityHashSet;
 import gd.script.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
@@ -131,8 +132,6 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -750,10 +749,8 @@ public final class FrontendCfgGraphBuilder {
             }
         }
 
-        var hitTargetId = bodyStatementsEntryId;
-        var bodyEntryId = bodyStatementsEntryId;
-        if (!topLevelSlots.isEmpty()) {
-            var bindSequence = new OpenSequence(nextSequenceId());
+        var bindSequence = topLevelSlots.isEmpty() ? null : new OpenSequence(nextSequenceId());
+        if (bindSequence != null) {
             for (var bindSlot : topLevelSlots) {
                 bindSequence.items().add(new MatchBindItem(
                         bindSlot.declaration(),
@@ -761,18 +758,19 @@ public final class FrontendCfgGraphBuilder {
                         bindSlot.bindSlotId()
                 ));
             }
-            // Bind commits on the hit path before the guard so `when` can read the new locals.
-            var afterBindId = bodyStatementsEntryId;
-            if (sectionPlan.hasGuard()) {
-                var guard = Objects.requireNonNull(sectionPlan.section().guard(), "guard");
-                afterBindId = buildCondition(guard, bodyStatementsEntryId, nextMissId).entryId();
-            }
-            publishSequenceNode(bindSequence.id(), bindSequence.items(), afterBindId);
-            hitTargetId = bindSequence.id();
-            bodyEntryId = bindSequence.id();
-        } else if (sectionPlan.hasGuard()) {
+        }
+
+        var hitTargetId = bodyStatementsEntryId;
+        if (sectionPlan.hasGuard()) {
             var guard = Objects.requireNonNull(sectionPlan.section().guard(), "guard");
             hitTargetId = buildCondition(guard, bodyStatementsEntryId, nextMissId).entryId();
+        }
+        var bodyEntryId = bodyStatementsEntryId;
+        if (bindSequence != null) {
+            // Bind commits on the hit path before the guard so `when` can read the new locals.
+            publishSequenceNode(bindSequence.id(), bindSequence.items(), hitTargetId);
+            hitTargetId = bindSequence.id();
+            bodyEntryId = bindSequence.id();
         }
 
         var nextPatternMissId = nextMissId;
@@ -1635,7 +1633,7 @@ public final class FrontendCfgGraphBuilder {
         if (retyped.isEmpty()) {
             return;
         }
-        var retypedDeclarations = Collections.newSetFromMap(new IdentityHashMap<>());
+        var retypedDeclarations = new IdentityHashSet<>();
         for (var slot : retyped) {
             retypedDeclarations.add(slot.declaration());
         }
@@ -3548,17 +3546,23 @@ public final class FrontendCfgGraphBuilder {
                             receiverBuild.resultValueId(),
                             resultValueId
                     ));
-                    yield new ValueBuild(
-                            receiverBuild.cursor(),
-                            attributePropertyStep,
-                            resultValueId,
-                            null
-                    );
-                }
-                if (isResolvedInstanceMethodReference(publishedMember)) {
+                } else if (isResolvedInstanceMethodReference(publishedMember)) {
                     // RESOLVED Object/self or non-Dictionary builtin METHOD reads construct a
                     // fresh Callable. Do not attach a property writable route.
                     receiverBuild.cursor().currentSequence().items().add(new CallableLoadItem(
+                            attributePropertyStep,
+                            publishedMember.memberName(),
+                            receiverBuild.resultValueId(),
+                            resultValueId
+                    ));
+                } else if (isResolvedUnsupportedMethodReference(publishedMember)) {
+                    throw new IllegalStateException(
+                            "RESOLVED method-reference '"
+                                    + publishedMember.memberName()
+                                    + "' cannot lower as a property; Dictionary keys and type-meta builtin methods stay unsupported"
+                    );
+                } else {
+                    receiverBuild.cursor().currentSequence().items().add(new MemberLoadItem(
                             attributePropertyStep,
                             publishedMember.memberName(),
                             receiverBuild.resultValueId(),
@@ -3568,32 +3572,14 @@ public final class FrontendCfgGraphBuilder {
                             receiverBuild.cursor(),
                             attributePropertyStep,
                             resultValueId,
-                            null
+                            appendPropertyWritableRoute(
+                                    receiverBuild,
+                                    attributePropertyStep,
+                                    publishedMember.memberName()
+                            )
                     );
                 }
-                if (isResolvedUnsupportedMethodReference(publishedMember)) {
-                    throw new IllegalStateException(
-                            "RESOLVED method-reference '"
-                                    + publishedMember.memberName()
-                                    + "' cannot lower as a property; Dictionary keys and type-meta builtin methods stay unsupported"
-                    );
-                }
-                receiverBuild.cursor().currentSequence().items().add(new MemberLoadItem(
-                        attributePropertyStep,
-                        publishedMember.memberName(),
-                        receiverBuild.resultValueId(),
-                        resultValueId
-                ));
-                yield new ValueBuild(
-                        receiverBuild.cursor(),
-                        attributePropertyStep,
-                        resultValueId,
-                        appendPropertyWritableRoute(
-                                receiverBuild,
-                                attributePropertyStep,
-                                publishedMember.memberName()
-                        )
-                );
+                yield new ValueBuild(receiverBuild.cursor(), attributePropertyStep, resultValueId, null);
             }
             case AttributeCallStep attributeCallStep -> {
                 var publishedCall = requireLoweringReadyCall(attributeCallStep);
@@ -5034,7 +5020,7 @@ public final class FrontendCfgGraphBuilder {
     private static @NotNull Set<PatternBindingExpression> copyFoldedMatchBindDeclarations(
             @NotNull Set<PatternBindingExpression> declarations
     ) {
-        Set<PatternBindingExpression> copied = Collections.newSetFromMap(new IdentityHashMap<>());
+        var copied = new IdentityHashSet<PatternBindingExpression>();
         copied.addAll(declarations);
         return copied;
     }
@@ -5488,7 +5474,7 @@ public final class FrontendCfgGraphBuilder {
         forSourceIteratorSlots = new FrontendAstSideTable<>();
         forIteratorStateSlots = new FrontendAstSideTable<>();
         matchBindSlots = new FrontendAstSideTable<>();
-        foldedMatchBindDeclarations = Collections.newSetFromMap(new IdentityHashMap<>());
+        foldedMatchBindDeclarations = new IdentityHashSet<>();
         loopStack.clear();
         nextSequenceIndex = 0;
         nextBranchIndex = 0;

@@ -30,4 +30,11 @@ build there — this tree itself must never be configured or built in place.
     an unescaped shell command. Signing launch/wait/status failures return a diagnostic and
     failure status rather than terminating the embedding process through `tcc_error`.
     Regression coverage: `TinyCcCompilerTest` (including macOS child-JVM signing recovery).
+  - `tcc.h`, `libtcc.c`, `tccelf.c`, `tccasm.c`: opt-in `-Wl,-z,noexecstack` emits a read/write,
+    non-executable `PT_GNU_STACK` for Linux x86-64 ELF shared libraries only. An executable
+    `.note.GNU-stack` in assembled input or a linked object (including a selected archive member)
+    makes the opt-in link fail. Missing notes are not interpreted; the option is for GDCC's
+    controlled inputs, not a general stack-requirement detector. Without the option, output and
+    linker behavior are unchanged. Other output modes retain unsupported-option diagnostics using
+    the warning switches in effect at the option.
   Update this record when changing the upstream pin or local patch list.

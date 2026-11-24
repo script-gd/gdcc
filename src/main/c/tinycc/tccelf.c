@@ -2408,6 +2408,14 @@ static ElfW(Phdr) *update_phdr(ElfW(Phdr) *ph, int type, Section *s, addr_t addr
     return ph;
 }
 
+#ifdef TCC_GDCC_NOEXECSTACK
+static int elf_noexecstack(const TCCState *s1)
+{
+    return s1->noexecstack_option && s1->output_type == TCC_OUTPUT_DLL
+        && s1->output_format == TCC_OUTPUT_FORMAT_ELF;
+}
+#endif
+
 /* Assign sections to segments and decide how are sections laid out when loaded
    in memory. This function also fills corresponding program headers. */
 static int layout_sections(TCCState *s1, int *sec_order, struct dyn_inf *d)
@@ -2417,6 +2425,9 @@ static int layout_sections(TCCState *s1, int *sec_order, struct dyn_inf *d)
     ElfW(Phdr) *ph = NULL, *ph2;
     int i, f, n, phnum, phfill;
     int file_offset;
+#ifdef TCC_GDCC_NOEXECSTACK
+    int stack_ph = -1;
+#endif
 
     /* compute number of program headers */
     phnum = sort_sections(s1, sec_order, d);
@@ -2434,8 +2445,20 @@ static int layout_sections(TCCState *s1, int *sec_order, struct dyn_inf *d)
         d->ehfr = phnum++;
     if (d->relro)
         d->relro = phnum++;
+#ifdef TCC_GDCC_NOEXECSTACK
+    if (elf_noexecstack(s1))
+        stack_ph = phnum++;
+#endif
     d->phnum = phnum;
     d->phdr = tcc_mallocz(phnum * sizeof(ElfW(Phdr)));
+#ifdef TCC_GDCC_NOEXECSTACK
+    if (stack_ph >= 0) {
+        ph2 = &d->phdr[stack_ph];
+        ph2->p_type = PT_GNU_STACK;
+        ph2->p_flags = PF_R | PF_W;
+        ph2->p_align = 16;
+    }
+#endif
 
     file_offset = 0;
     if (s1->output_format == TCC_OUTPUT_FORMAT_ELF) {
@@ -3042,6 +3065,12 @@ static int elf_output_file(TCCState *s1, const char *filename)
 
         /* if linking, also link in runtime libraries (libc, libgcc, etc.) */
         tcc_add_runtime(s1);
+#ifdef TCC_GDCC_NOEXECSTACK
+        if (elf_noexecstack(s1) && s1->requires_execstack) {
+            ret = tcc_error_noabort("-z noexecstack conflicts with an executable .note.GNU-stack section");
+            goto the_end;
+        }
+#endif
 	resolve_common_syms(s1);
 
         if (!s1->static_link) {
@@ -3223,6 +3252,11 @@ static int elf_output_obj(TCCState *s1, const char *filename)
 LIBTCCAPI int tcc_output_file(TCCState *s, const char *filename)
 {
     s->nb_errors = 0;
+#ifdef TCC_GDCC_NOEXECSTACK
+    /* A DLL's format can still change after tcc_set_output_type(). */
+    if (!elf_noexecstack(s) && tcc_check_noexecstack_option(s) < 0)
+        return -1;
+#endif
     if (s->test_coverage)
         tcc_tcov_add_file(s, filename);
     if (s->output_type == TCC_OUTPUT_OBJ)
@@ -3301,6 +3335,11 @@ ST_FUNC int tcc_load_object_file(TCCState *s1,
     ElfW(Sym) *sym, *symtab;
     ElfW_Rel *rel;
     Section *s;
+#ifdef TCC_GDCC_NOEXECSTACK
+    static const char stack_note[] = ".note.GNU-stack";
+    unsigned long shstr_size;
+    int requires_execstack = 0;
+#endif
 
     lseek(fd, file_offset, SEEK_SET);
     if (tcc_object_type(fd, &ehdr) != AFF_BINTYPE_REL)
@@ -3319,6 +3358,9 @@ invalid:
     /* load section names */
     sh = &shdr[ehdr.e_shstrndx];
     strsec = load_data(fd, file_offset + sh->sh_offset, sh->sh_size);
+#ifdef TCC_GDCC_NOEXECSTACK
+    shstr_size = sh->sh_size;
+#endif
 
     /* load symtab and strtab */
     old_to_new_syms = NULL;
@@ -3331,6 +3373,14 @@ invalid:
 
     for(i = 1; i < ehdr.e_shnum; i++) {
         sh = &shdr[i];
+#ifdef TCC_GDCC_NOEXECSTACK
+        /* Read the input marker before filtering or merging sections by name. */
+        if ((sh->sh_flags & SHF_EXECINSTR)
+            && shstr_size >= sizeof(stack_note)
+            && sh->sh_name <= shstr_size - sizeof(stack_note)
+            && !memcmp(strsec + sh->sh_name, stack_note, sizeof(stack_note)))
+            requires_execstack = 1;
+#endif
         if (sh->sh_type == SHT_SYMTAB) {
             if (symtab) {
                 tcc_error_noabort("object must contain only one symtab");
@@ -3584,6 +3634,10 @@ invalid:
     }
  done:
     ret = !s1->nb_errors - 1; /* errors possibly from set_elf_sym() */
+#ifdef TCC_GDCC_NOEXECSTACK
+    if (!ret && requires_execstack)
+        s1->requires_execstack = 1;
+#endif
  the_end:
     tcc_free(symtab);
     tcc_free(strtab);

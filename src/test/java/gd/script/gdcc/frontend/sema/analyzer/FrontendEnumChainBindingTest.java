@@ -41,7 +41,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Script enum chain binding (`frontend_enum_implementation.md`): enum members resolve through
@@ -459,8 +458,8 @@ class FrontendEnumChainBindingTest {
                     enum State { keys }
 
                 func ping():
-                \tvar names = Other.State.keys()
-                \tvar member = Other.State.keys
+                    var names = Other.State.keys()
+                    var member = Other.State.keys
                 """);
 
         assertTrue(analyzed.diagnostics().isEmpty(), () -> "Unexpected diagnostics: " + analyzed.diagnostics());
@@ -516,8 +515,8 @@ class FrontendEnumChainBindingTest {
                     enum State { IDLE }
 
                 func ping():
-                \tvar ok := Other.State.IDLE + 1
-                \tvar bad = Other.State.IDLE.JUMP
+                    var ok := Other.State.IDLE + 1
+                    var bad = Other.State.IDLE.JUMP
                 """);
 
         var ping = findFunction(analyzed.unit().ast(), "ping");
@@ -699,7 +698,7 @@ class FrontendEnumChainBindingTest {
 
         assertTrue(analyzed.diagnostics().isEmpty(), () -> "Unexpected diagnostics: " + analyzed.diagnostics());
         var ping = findFunction(analyzed.unit().ast(), "ping");
-        var chain = findNode(ping, AttributeExpression.class, expression -> true);
+        var chain = findNode(ping, AttributeExpression.class, _ -> true);
         var type = analyzed.analysisData().expressionTypes().get(chain);
         assertNotNull(type);
         assertAll(
@@ -728,7 +727,7 @@ class FrontendEnumChainBindingTest {
                 """);
 
         assertTrue(analyzed.diagnostics().isEmpty(), () -> "Unexpected diagnostics: " + analyzed.diagnostics());
-        var initializer = findNode(analyzed.unit().ast(), AttributeExpression.class, chain -> true);
+        var initializer = findNode(analyzed.unit().ast(), AttributeExpression.class, _ -> true);
         var type = analyzed.analysisData().expressionTypes().get(initializer);
         assertNotNull(type);
         assertAll(
@@ -756,7 +755,7 @@ class FrontendEnumChainBindingTest {
 
         assertTrue(analyzed.diagnostics().isEmpty(), () -> "Unexpected diagnostics: " + analyzed.diagnostics());
         var ping = findFunction(analyzed.unit().ast(), "ping");
-        var defaultChain = findNode(ping, AttributeExpression.class, chain -> true);
+        var defaultChain = findNode(ping, AttributeExpression.class, _ -> true);
         var type = analyzed.analysisData().expressionTypes().get(defaultChain);
         assertNotNull(type);
         assertAll(

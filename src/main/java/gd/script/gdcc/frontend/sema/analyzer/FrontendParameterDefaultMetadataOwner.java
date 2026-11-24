@@ -3,10 +3,12 @@ package gd.script.gdcc.frontend.sema.analyzer;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Parameter;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
+import gd.script.gdcc.frontend.parse.FrontendParseRecovery;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
@@ -22,16 +24,17 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.util.IdentityHashSet;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.NavigableMap;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 
 /// Single owner of source-function parameter-default semantics and `LirParameterDef.defaultValueFunc`
 /// metadata. Driven by `FrontendSuiteResolver` once per module, before any callable body
@@ -201,31 +204,19 @@ public final class FrontendParameterDefaultMetadataOwner {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        var violatingParameters = Collections.newSetFromMap(new IdentityHashMap<Parameter, Boolean>());
+        var violatingParameters = new IdentityHashSet<Parameter>();
         var seenDefault = false;
-        // The shared diagnostic manager pools all units of the module, so parse diagnostics must be
-        // matched by source path AND range — byte ranges are file-local, and another file's damaged
-        // region must never suppress a genuine order violation in this file.
         var functionSourcePath = FrontendDiagnostic.sourcePathText(
                 sourcePathFor(interfaceSurface, functionDeclaration, analysisData)
         );
+        var orderRecoveries = indexOrderRecoveries(functionDeclaration, analysisData);
         for (var parameter : parameters) {
-            // Parser-damaged parameter lists (gdparser recovers `x = 1 +` into a defaulted `x` plus
-            // a phantom parameter whose name comes from the ERROR text) already own their
-            // `parse.lowering` diagnostic: suppress the order violation anchored inside the damaged
-            // region so the parser stays the single diagnostic owner for this root cause.
-            if (functionSourcePath != null && coveredByParseDiagnostic(diagnosticManager, functionSourcePath, parameter)) {
-                continue;
-            }
             if (parameter.variadic()) {
                 if (parameter.defaultValue() != null) {
                     violatingParameters.add(parameter);
                     reportInvalidOrder(
-                            interfaceSurface,
-                            analysisData,
-                            diagnosticManager,
-                            functionDeclaration,
-                            parameter,
+                            parameter, DiagnosticCodes.SIGNATURE_REST_WITH_DEFAULT, functionSourcePath,
+                            orderRecoveries, analysisData, diagnosticManager,
                             "The rest parameter '" + parameter.name().trim() + "' cannot have a default value."
                     );
                 }
@@ -238,11 +229,8 @@ public final class FrontendParameterDefaultMetadataOwner {
             if (seenDefault) {
                 violatingParameters.add(parameter);
                 reportInvalidOrder(
-                        interfaceSurface,
-                        analysisData,
-                        diagnosticManager,
-                        functionDeclaration,
-                        parameter,
+                        parameter, DiagnosticCodes.SIGNATURE_MANDATORY_AFTER_OPTIONAL, functionSourcePath,
+                        orderRecoveries, analysisData, diagnosticManager,
                         "Cannot have mandatory parameters after optional parameters ('"
                                 + parameter.name().trim() + "')."
                 );
@@ -251,44 +239,61 @@ public final class FrontendParameterDefaultMetadataOwner {
         return violatingParameters;
     }
 
-    /// Returns whether a parse-phase diagnostic of the same source file has a range overlapping the
-    /// anchor parameter, meaning the parser already owns the diagnostic for the damaged structure
-    /// the parameter was recovered from.
-    private static boolean coveredByParseDiagnostic(
-            @NotNull DiagnosticManager diagnosticManager,
-            @NotNull String sourcePath,
-            @NotNull Parameter parameter
+    /// Signature recoveries share an owner; the code and position identify the offending slot.
+    private static @NotNull NavigableMap<Integer, List<FrontendParseRecovery>> indexOrderRecoveries(
+            @NotNull FunctionDeclaration functionDeclaration,
+            @NotNull FrontendAnalysisData analysisData
     ) {
-        var anchor = FrontendRange.fromAstRange(parameter.range());
-        for (var diagnostic : diagnosticManager.snapshot().asList()) {
-            if (!diagnostic.category().startsWith("parse.")) {
-                continue;
-            }
-            if (!sourcePath.equals(diagnostic.sourcePath())) {
-                continue;
-            }
-            var range = diagnostic.range();
-            if (range != null && range.startByte() < anchor.endByte() && anchor.startByte() < range.endByte()) {
-                return true;
+        var indexed = new TreeMap<Integer, List<FrontendParseRecovery>>();
+        for (var recovery : analysisData.parseRecoveriesByOwner().getOrDefault(functionDeclaration, List.of())) {
+            var range = recovery.range();
+            if (range != null && recovery.severity() == FrontendDiagnosticSeverity.ERROR
+                    && "function.signature".equals(recovery.facet())
+                    && (DiagnosticCodes.SIGNATURE_MANDATORY_AFTER_OPTIONAL.equals(recovery.code())
+                    || DiagnosticCodes.SIGNATURE_REST_WITH_DEFAULT.equals(recovery.code()))) {
+                indexed.computeIfAbsent(range.startByte(), _ -> new ArrayList<>()).add(recovery);
             }
         }
-        return false;
+        return indexed;
     }
 
     private static void reportInvalidOrder(
-            @NotNull FrontendInterfaceSurface interfaceSurface,
+            @NotNull Parameter parameter,
+            @NotNull String code,
+            @Nullable String sourcePath,
+            @NotNull NavigableMap<Integer, List<FrontendParseRecovery>> orderRecoveries,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager,
-            @NotNull FunctionDeclaration functionDeclaration,
-            @NotNull Parameter parameter,
             @NotNull String detail
     ) {
-        diagnosticManager.error(
-                INVALID_PARAMETER_DEFAULT_ORDER_CATEGORY,
-                detail,
-                sourcePathFor(interfaceSurface, functionDeclaration, analysisData),
-                FrontendRange.fromAstRange(parameter.range())
-        );
+        var range = FrontendRange.fromAstRange(parameter.range());
+        var matched = false;
+        var uncovered = new ArrayList<FrontendParseRecovery>();
+        if (range != null) {
+            for (var candidates : orderRecoveries.subMap(range.startByte(), true, range.endByte(), true).values()) {
+                for (var recovery : candidates) {
+                    var recoveryRange = Objects.requireNonNull(recovery.range());
+                    if (!code.equals(recovery.code()) || recoveryRange.endByte() > range.endByte()) {
+                        continue;
+                    }
+                    matched = true;
+                    var cover = FrontendParseRecovery.findActiveCoveringDiagnostic(
+                            recovery, analysisData, diagnosticManager, sourcePath);
+                    if (cover == null) {
+                        uncovered.add(recovery);
+                    } else {
+                        recovery.claimCoveringDiagnostic(analysisData, diagnosticManager, cover);
+                    }
+                }
+            }
+        }
+        if (!matched || !uncovered.isEmpty()) {
+            var fallback = FrontendDiagnostic.error(INVALID_PARAMETER_DEFAULT_ORDER_CATEGORY, detail, sourcePath, range);
+            diagnosticManager.report(fallback);
+            for (var recovery : uncovered) {
+                analysisData.claimParseRecovery(recovery, fallback);
+            }
+        }
     }
 
     /// Island semantic analysis (phase 3): resolves the default expression through the
@@ -308,12 +313,18 @@ public final class FrontendParameterDefaultMetadataOwner {
                 parameter.defaultValue(),
                 "parameter-default island requires a default expression"
         );
+        var recoveries = defaultRecoveries(parameter, defaultValue, analysisData);
         // Parameter-default islands do not pass through the suite statement loop, so they consume
         // the skipped-subtree contract on their own: a parser-damaged default expression skips only
         // this default (placeholder metadata is reclaimed, leaving the parameter required), never
         // the whole callable. No diagnostic is emitted — the parser already owns one.
         if (analysisData.skippedSubtreeRoots().containsKey(defaultValue)) {
             reclaimDefaultMetadata(island);
+            claimCoveredDefaultRecoveries(recoveries, island, interfaceSurface, analysisData, diagnosticManager);
+            if (recoveries.isEmpty()) {
+                reportUnsupportedDefaultExpression(
+                        functionDeclaration, parameter, interfaceSurface, analysisData, diagnosticManager);
+            }
             return;
         }
         var callableScope = island.callableScope();
@@ -355,15 +366,70 @@ public final class FrontendParameterDefaultMetadataOwner {
         context.typedEnvironment().exportPatchTransaction().applyTo(analysisData);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
-        if (isAccepted(analysisData.expressionTypes().get(defaultValue))) {
+        if (recoveries.isEmpty() && isAccepted(analysisData.expressionTypes().get(defaultValue))) {
             return;
         }
         reclaimDefaultMetadata(island);
-        if (errorCount(diagnosticManager) == errorsBefore) {
+        claimCoveredDefaultRecoveries(recoveries, island, interfaceSurface, analysisData, diagnosticManager);
+        if (recoveries.isEmpty() && errorCount(diagnosticManager) == errorsBefore) {
             // Visibility violations stay silent inside the island; anchor the single owner
             // diagnostic at the default root. Roots that already produced their own error
             // (unknown names, failed calls, unrecorded lambdas) keep that upstream diagnostic.
             reportUnsupportedDefaultExpression(functionDeclaration, parameter, interfaceSurface, analysisData, diagnosticManager);
+        }
+    }
+
+    private static @NotNull List<FrontendParseRecovery> defaultRecoveries(
+            @NotNull Parameter parameter,
+            @NotNull Node defaultValue,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+        if (analysisData.parseRecoveriesByOwner().isEmpty()) {
+            return List.of();
+        }
+        var recoveries = new ArrayList<FrontendParseRecovery>();
+        for (var recovery : analysisData.parseRecoveriesByOwner().getOrDefault(parameter, List.of())) {
+            if ("parameter.default".equals(recovery.facet()) && recovery.severity() == FrontendDiagnosticSeverity.ERROR) {
+                recoveries.add(recovery);
+            }
+        }
+        collectDefaultSubtreeRecoveries(defaultValue, analysisData, recoveries);
+        return recoveries;
+    }
+
+    private static void collectDefaultSubtreeRecoveries(
+            @NotNull Node node,
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull List<FrontendParseRecovery> recoveries
+    ) {
+        for (var recovery : analysisData.parseRecoveriesByOwner().getOrDefault(node, List.of())) {
+            if (recovery.severity() == FrontendDiagnosticSeverity.ERROR) {
+                recoveries.add(recovery);
+            }
+        }
+        for (var child : node.getChildren()) {
+            collectDefaultSubtreeRecoveries(child, analysisData, recoveries);
+        }
+    }
+
+    /// Existing parse/semantic coverage wins. Uncovered parser records still belong to the
+    /// shared replay so an inactive manager cannot turn syntax damage into a second island error.
+    private static void claimCoveredDefaultRecoveries(
+            @NotNull List<FrontendParseRecovery> recoveries,
+            @NotNull PendingDefaultIsland island,
+            @NotNull FrontendInterfaceSurface interfaceSurface,
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        if (recoveries.isEmpty()) {
+            return;
+        }
+        var path = FrontendDiagnostic.sourcePathText(sourcePathFor(interfaceSurface, island.functionDeclaration(), analysisData));
+        for (var recovery : recoveries) {
+            var covering = FrontendParseRecovery.findActiveCoveringDiagnostic(recovery, analysisData, diagnosticManager, path);
+            if (covering != null) {
+                recovery.claimCoveringDiagnostic(analysisData, diagnosticManager, covering);
+            }
         }
     }
 

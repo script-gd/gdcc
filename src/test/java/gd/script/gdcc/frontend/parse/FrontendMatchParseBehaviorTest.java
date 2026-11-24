@@ -7,8 +7,10 @@ import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.MatchSection;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import org.junit.jupiter.api.Test;
@@ -20,12 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Freezes the gdparser 0.5.3 match-pattern AST contracts used by match lowering.
+/// Freezes the match-pattern AST contracts used by match lowering.
 ///
-/// Scope is parser shape only: how match sections/patterns are represented, and which Godot
-/// pattern forms gdparser cannot represent (`[.., 1]` leading rest, key-only dictionary entries).
+/// Scope is parser shape only: match sections and patterns, trailing rest, key-only dictionary
+/// entries, and recovery for misplaced rest markers.
 /// Semantic classification stays in `FrontendMatchSupportTest`.
 class FrontendMatchParseBehaviorTest {
     private final GdScriptParserService parserService = new GdScriptParserService();
@@ -211,9 +214,6 @@ class FrontendMatchParseBehaviorTest {
 
     @Test
     void trailingRestParsesOpenEndedWhileLeadingRestFailsAtParse() {
-        // R1 probe: gdparser 0.5.3 grammar only admits `..` in trailing position. `[1, ..]` maps to
-        // openEnded=true; `[.., 1]` is a CST structural error instead of an open-ended array, so the
-        // "position of `..` is not representable" deviation shows up as parse failure, not silent acceptance.
         var trailingUnit = parse("match_array_rest_trailing.gd", """
                 func probe(x):
                     match x:
@@ -224,18 +224,22 @@ class FrontendMatchParseBehaviorTest {
         var trailingArray = assertInstanceOf(ArrayExpression.class, trailingMatch.sections().getFirst().patterns().getFirst());
         assertTrue(trailingArray.openEnded());
         assertEquals(1, trailingArray.elements().size());
+        assertEquals("1", assertInstanceOf(LiteralExpression.class, trailingArray.elements().getFirst()).sourceText());
 
-        assertParseLoweringError("match_array_rest_leading.gd", """
+        var leadingSection = parseWithMisplacedRest("match_array_rest_leading.gd", """
                 func probe(x):
                     match x:
                         [.., 1]:
                             pass
                 """);
+        var leadingArray = assertInstanceOf(ArrayExpression.class, leadingSection.patterns().getFirst());
+        assertTrue(leadingArray.openEnded());
+        assertEquals(1, leadingArray.elements().size());
+        assertEquals("1", assertInstanceOf(LiteralExpression.class, leadingArray.elements().getFirst()).sourceText());
     }
 
     @Test
     void dictionaryTrailingRestParsesOpenEndedWhileLeadingRestFailsAtParse() {
-        // Symmetric R1 anchor for dictionaries: the grammar admits `..` only in trailing position.
         var unit = parse("match_dict_rest_trailing.gd", """
                 func probe(x):
                     match x:
@@ -246,41 +250,43 @@ class FrontendMatchParseBehaviorTest {
         var dictionary = assertInstanceOf(DictionaryExpression.class, match.sections().getFirst().patterns().getFirst());
         assertTrue(dictionary.openEnded());
         assertEquals(1, dictionary.entries().size());
+        assertStringLiteral(dictionary.entries().getFirst().key(), "\"k\"");
+        assertEquals("1", assertInstanceOf(LiteralExpression.class, dictionary.entries().getFirst().value()).sourceText());
 
-        assertParseLoweringError("match_dict_rest_leading.gd", """
+        var leadingSection = parseWithMisplacedRest("match_dict_rest_leading.gd", """
                 func probe(x):
                     match x:
                         {.., "k": 1}:
                             pass
                 """);
+        var recovered = assertInstanceOf(DictionaryExpression.class, leadingSection.patterns().getFirst());
+        assertTrue(recovered.openEnded());
+        assertEquals(1, recovered.entries().size());
+        assertStringLiteral(recovered.entries().getFirst().key(), "\"k\"");
+        assertEquals("1", assertInstanceOf(LiteralExpression.class, recovered.entries().getFirst().value()).sourceText());
     }
 
     @Test
-    void keyOnlyDictionaryEntryIsNotRepresentable() {
-        // R8 probe: Godot accepts key-only entries `{"a", "b"}` (key existence check). The
-        // gdparser 0.5.3 grammar admits the form as two `_primary_expression` dictionary
-        // children, but the mapper only consumes `pair` / `pattern_open_ending` children: it
-        // drops the keys with `parse.lowering` warnings and maps to a zero-entry dictionary, so
-        // key-existence semantics are not representable. The form is therefore removed from the
-        // match support surface (`{"k": _}` is the equivalent supported spelling); do not patch
-        // or upgrade gdparser for it (architectural change, out of scope).
-        var diagnostics = new DiagnosticManager();
-        var unit = parserService.parseUnit(Path.of("tmp", "match_dict_key_only.gd"), """
+    void keyOnlyDictionaryPatternPreservesKeysWithoutValues() {
+        var unit = parse("match_dict_key_only.gd", """
                 func probe(x):
                     match x:
                         {"a", "b"}:
                             pass
-                """, diagnostics);
+                """);
 
         var match = matchFromFunction(unit, "probe");
         var dictionary = assertInstanceOf(DictionaryExpression.class, match.sections().getFirst().patterns().getFirst());
-        assertTrue(dictionary.entries().isEmpty());
+        assertFalse(dictionary.openEnded());
+        assertEquals(2, dictionary.entries().size());
 
-        var warnings = diagnostics.snapshot().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals("parse.lowering")
-                        && diagnostic.severity() == FrontendDiagnosticSeverity.WARNING)
-                .toList();
-        assertEquals(2, warnings.size(), () -> "expected one warning per dropped key, got: " + diagnostics.snapshot().asList());
+        var first = dictionary.entries().getFirst();
+        assertStringLiteral(first.key(), "\"a\"");
+        assertNull(first.value());
+
+        var last = dictionary.entries().getLast();
+        assertStringLiteral(last.key(), "\"b\"");
+        assertNull(last.value());
     }
 
     private FrontendSourceUnit parse(String fileName, String source) {
@@ -293,15 +299,26 @@ class FrontendMatchParseBehaviorTest {
         return unit;
     }
 
-    private void assertParseLoweringError(String fileName, String source) {
+    private MatchSection parseWithMisplacedRest(String fileName, String source) {
         var diagnostics = new DiagnosticManager();
-        parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
-        assertFalse(diagnostics.snapshot().isEmpty(), "expected parse diagnostics");
-        assertTrue(diagnostics.snapshot().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("parse.lowering")
-                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && diagnostic.range() != null
-        ), () -> "expected parse.lowering ERROR, got: " + diagnostics.snapshot().asList());
+        var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
+        assertFalse(unit.parseFailed());
+        var errors = diagnostics.snapshot().asList();
+        assertEquals(1, errors.size(), errors::toString);
+        var error = errors.getFirst();
+        assertEquals(DiagnosticCodes.MATCH_REST_NOT_LAST, error.category());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
+        var range = error.range();
+        assertNotNull(range);
+        assertEquals("..", source.substring(range.startByte(), range.endByte()));
+
+        var section = matchFromFunction(unit, "probe").sections().getFirst();
+        assertEquals(1, unit.parseRecoveries().size());
+        var recovery = unit.parseRecoveries().getFirst();
+        assertEquals(error, recovery.toDiagnostic(error.sourcePath()));
+        assertSame(section, recovery.owner());
+        assertEquals("match.pattern", recovery.facet());
+        return section;
     }
 
     private static MatchStatement matchFromFunction(FrontendSourceUnit unit, String functionName) {

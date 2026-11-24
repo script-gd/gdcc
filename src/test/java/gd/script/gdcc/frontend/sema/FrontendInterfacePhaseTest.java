@@ -18,6 +18,7 @@ import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendInterfacePhase;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
 import gd.script.gdcc.frontend.sema.resolver.FrontendFilteredValueHitReason;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
@@ -47,6 +48,77 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 class FrontendInterfacePhaseTest {
+    @Test
+    void skipsMarkedStatementAndIndependentlyMarkedLambdaWithPublishedScopes() throws Exception {
+        var input = phaseInput("interface_marked_lambda_roots.gd", """
+                func run():
+                    var dropped_statement = func():
+                        pass
+                    var dropped_value = func():
+                        pass
+                    var kept = func():
+                        pass
+                """);
+        var function = findStatement(input.unit().ast().statements(), FunctionDeclaration.class, _ -> true);
+        var statements = function.body().statements();
+        var droppedStatement = assertInstanceOf(VariableDeclaration.class, statements.getFirst());
+        var droppedValue = assertInstanceOf(VariableDeclaration.class, statements.get(1));
+        var kept = assertInstanceOf(VariableDeclaration.class, statements.getLast());
+        var first = assertInstanceOf(LambdaExpression.class, droppedStatement.value());
+        var second = assertInstanceOf(LambdaExpression.class, droppedValue.value());
+        var third = assertInstanceOf(LambdaExpression.class, kept.value());
+        var skipped = input.analysisData().skippedSubtreeRoots();
+        skipped.put(droppedStatement, true);
+        skipped.put(second, true);
+
+        var surface = new FrontendInterfacePhase().analyze(input.registry(), input.analysisData());
+        assertFalse(surface.suiteEntryRoots().containsCallableOwner(first));
+        assertFalse(surface.suiteEntryRoots().containsCallableOwner(second));
+        assertTrue(surface.suiteEntryRoots().containsCallableOwner(third));
+        assertEquals(List.of(droppedValue, kept), surface.bodyDeclarationIndex().declarationsFor(function.body())
+                .stream().map(FrontendBodyLocalDeclaration::declaration).toList());
+    }
+
+    @Test
+    void doesNotIndexBlankIteratorEvenWhenItsBodyScopeIsPublished() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "interface_blank_iterator.gd"), """
+                func run():
+                    for in [1]:
+                        var loop_local: int = 2
+                    var after: int = 3
+                """, diagnostics);
+        var parseDiagnostics = diagnostics.snapshot().asList();
+        assertEquals(1, parseDiagnostics.size(), parseDiagnostics::toString);
+        assertEquals("parse.for.missing_iterator", parseDiagnostics.getFirst().category());
+        var input = phaseInput(unit, diagnostics);
+        var function = findStatement(unit.ast().statements(), FunctionDeclaration.class, _ -> true);
+        var loop = assertInstanceOf(ForStatement.class, function.body().statements().getFirst());
+        assertTrue(loop.iterator().isBlank());
+        assertTrue(input.analysisData().scopesByAst().containsKey(loop.body()));
+        assertFalse(input.analysisData().skippedSubtreeRoots().containsKey(loop));
+        assertEquals(parseDiagnostics, diagnostics.snapshot().asList());
+
+        var surface = new FrontendInterfacePhase().analyze(input.registry(), input.analysisData());
+        var loopDeclarations = surface.bodyDeclarationIndex().declarationsFor(loop.body());
+        assertEquals(1, loopDeclarations.size());
+        assertSame(loop.body().statements().getFirst(), loopDeclarations.getFirst().declaration());
+        assertEquals(0, loopDeclarations.getFirst().sourceOrder());
+        assertFalse(surface.typedLexicalBaseline().containsDeclaration(loop));
+        assertSame(function.body().statements().getLast(),
+                surface.bodyDeclarationIndex().declarationsFor(function.body()).getFirst().declaration());
+
+        var analyzed = new FrontendSemanticAnalyzer().analyze(
+                new FrontendModule("test_module", List.of(unit)),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        assertEquals(parseDiagnostics, diagnostics.snapshot().asList());
+        assertTrue(analyzed.skippedSubtreeRoots().containsKey(loop));
+        assertFalse(analyzed.scopesByAst().containsKey(loop.body()));
+        assertEquals(GdIntType.INT, analyzed.slotTypes().get(function.body().statements().getLast()));
+    }
+
     @Test
     void buildsSupportedBodyDeclarationIndexTypedBaselineAndSuiteEntryRoots() throws Exception {
         var phaseInput = phaseInput("interface_supported_blocks.gd", """
@@ -399,7 +471,13 @@ class FrontendInterfacePhaseTest {
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
         assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        return phaseInput(unit, diagnostics);
+    }
 
+    private static @NotNull PhaseInput phaseInput(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull DiagnosticManager diagnostics
+    ) throws Exception {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = FrontendAnalysisData.bootstrap();
         var module = new FrontendModule("test_module", List.of(unit));

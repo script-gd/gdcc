@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -45,9 +46,9 @@ class TinyCcCompilerParallelTest {
         var tuA = writeTu(projectA, "a.c");
         var tuB = writeTu(projectB, "b.c");
         var probe = new SerializationProbe();
-        TinyCcCompiler.NativeFactory factory = (bundleRoot, targetPlatform, roundArena) -> {
+        TinyCcCompiler.NativeFactory factory = (_, targetPlatform, _) -> {
             probe.active.incrementAndGet();
-            return new BlockingFakeTinyCcNative(probe);
+            return new BlockingFakeTinyCcNative(probe, targetPlatform);
         };
         var compiler = new TinyCcCompiler(() -> tempDir, factory);
 
@@ -176,15 +177,11 @@ class TinyCcCompilerParallelTest {
 
     /// A [TinyCcNative] whose first addFile call blocks until released; the second one signals
     /// `secondInsideAddFile` (unreachable when the global lock serializes the rounds).
-    private static final class BlockingFakeTinyCcNative implements TinyCcNative {
-        private final SerializationProbe probe;
-
-        BlockingFakeTinyCcNative(@NotNull SerializationProbe probe) {
-            this.probe = probe;
-        }
-
+    private record BlockingFakeTinyCcNative(
+            @NotNull SerializationProbe probe, @NotNull TargetPlatform targetPlatform
+    ) implements TinyCcNative {
         @Override
-        public @Nullable MemorySegment newState() {
+        public @NotNull MemorySegment newState() {
             return MemorySegment.ofAddress(1);
         }
 
@@ -233,9 +230,9 @@ class TinyCcCompilerParallelTest {
         @Override
         public int outputFile(@NotNull MemorySegment state, @NotNull String file) {
             try {
-                Files.writeString(Path.of(file), "fake shared object");
+                TinyCcElfTestFixtures.writeLockTestArtifact(file, targetPlatform);
             } catch (IOException e) {
-                throw new java.io.UncheckedIOException(e);
+                throw new UncheckedIOException(e);
             }
             return 0;
         }

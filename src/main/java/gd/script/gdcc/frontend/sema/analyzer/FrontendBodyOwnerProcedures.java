@@ -23,25 +23,31 @@ import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.MatchSection;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.MissingAttributeStep;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
+import dev.superice.gdparser.frontend.ast.PreloadExpression;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.frontend.constant.GdConstantValue;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
+import gd.script.gdcc.frontend.parse.FrontendParseRecovery;
+import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendAnalysisData.FrontendPropagatedFailureOrigin;
 import gd.script.gdcc.frontend.sema.FrontendAwaitCallPending;
 import gd.script.gdcc.frontend.sema.FrontendAwaitCoroutineOwner;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
@@ -90,20 +96,28 @@ import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdCompilerType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import gd.script.gdcc.util.IdentityHashSet;
+import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /// Statement-local owner procedures used by the body SuiteResolver path.
 ///
@@ -142,6 +156,9 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     private FrontendAnalysisData cachedAnalysisData;
     private FrontendBodyDeclarationIndex cachedBodyDeclarationIndex;
     private FrontendVisibleValueResolver cachedVisibleValueResolver;
+    private FrontendAnalysisData recoveryLookupGeneration;
+    private final @NotNull Map<Path, List<FrontendSourceUnit>> recoveryUnitsByPath = new HashMap<>();
+    private final @NotNull Map<Path, StepRecoveryLookup> recoveryLookups = new HashMap<>();
 
     @Override
     public void runTopBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
@@ -287,7 +304,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         var resolver = new BodyExpressionResolver(context);
         forEachExpression(root, expression -> {
             if (expression instanceof AttributeExpression attributeExpression) {
-                var reduced = resolver.reduceAttributeExpression(attributeExpression);
+                var reduced = resolver.reduceAttributeExpression(attributeExpression, false);
                 if (reduced != null) {
                     publishReduction(context, reduced);
                 }
@@ -485,12 +502,12 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 new FrontendLocalConstLookupContext(variableDeclaration, blockScope, context),
                 EvaluationPolicy.general()
         );
-        if (evaluation instanceof Evaluation.Resolved resolved) {
+        if (evaluation instanceof Evaluation.Resolved(var value)) {
             evaluation = applyConstDeclaredTypeConversion(
                     context,
                     variableDeclaration,
                     blockScope,
-                    resolved.value()
+                    value
             );
         }
         context.typedEnvironment().putConstantFact(
@@ -531,20 +548,20 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 context.analysisData().moduleSkeleton().topLevelCanonicalNameMap()
         );
         if (!(declaredCheck
-                instanceof FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.Resolved resolvedDeclared)) {
+                instanceof FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.Resolved(var declaredType))) {
             return new Evaluation.Resolved(value);
         }
         var converted = FrontendConstDeclaredTypeSupport.convertToDeclaredType(
                 context.classRegistry(),
                 value,
-                resolvedDeclared.declaredType()
+                declaredType
         );
         return converted != null
                 ? new Evaluation.Resolved(converted)
                 : new Evaluation.Rejected(
                 "constant value of type '" + value.type().getTypeName()
                         + "' cannot be assigned to declared type '"
-                        + resolvedDeclared.declaredType().getTypeName() + "'",
+                        + declaredType.getTypeName() + "'",
                 variableDeclaration
         );
     }
@@ -617,11 +634,27 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     }
 
     @Override
+    public void runMatchDictionaryKeyConstResolution(
+            @NotNull FrontendSuiteContext context,
+            @NotNull MatchSection section,
+            @NotNull Expression keyRoot
+    ) {
+        var scope = context.analysisData().scopesByAst().get(section);
+        var lookup = FrontendLocalConstLookupContext.forMatchDictionaryKey(
+                keyRoot,
+                scope != null ? scope : context.currentScope(),
+                context
+        );
+        var evaluation = FrontendConstantEvaluator.evaluate(keyRoot, lookup, EvaluationPolicy.matchConstant());
+        context.typedEnvironment().putConstantFact(FrontendSemanticStage.CONST_RESOLUTION, keyRoot, evaluation);
+    }
+
+    @Override
     public void runMatchPatternResolution(
             @NotNull FrontendSuiteContext context,
             @NotNull MatchStatement matchStatement
     ) {
-        var plan = FrontendMatchSupport.buildPlan(matchStatement);
+        var plan = FrontendMatchSupport.buildPlan(matchStatement, context.analysisData().skippedSubtreeRoots());
         context.typedEnvironment().putMatchPlan(
                 FrontendSemanticStage.MATCH_PATTERN_RESOLUTION,
                 matchStatement,
@@ -1426,13 +1459,25 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             @NotNull FrontendChainReductionHelper.ReductionResult result
     ) {
         for (var trace : result.stepTraces()) {
+            var origin = context.analysisData().propagatedFailureOrigins().get(trace.step());
+            if (origin != null && origin.primaryAnchor() == trace.step()) {
+                reportAnchoredFailure(
+                        context,
+                        trace.step(),
+                        origin.originRecovery(),
+                        MEMBER_RESOLUTION_CATEGORY,
+                        Objects.requireNonNull(trace.detailReason(), "detailReason must not be null")
+                );
+            }
             if (trace.suggestedMember() != null) {
                 context.typedEnvironment().putResolvedMember(
                         FrontendSemanticStage.CHAIN_BINDING,
                         trace.step(),
                         trace.suggestedMember()
                 );
-                reportMemberTrace(context, trace);
+                if (origin == null) {
+                    reportMemberTrace(context, trace);
+                }
             }
             if (trace.suggestedCall() != null) {
                 context.typedEnvironment().putResolvedCall(
@@ -1440,7 +1485,9 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         trace.step(),
                         trace.suggestedCall()
                 );
-                reportCallTrace(context, trace);
+                if (origin == null) {
+                    reportCallTrace(context, trace);
+                }
             }
         }
         reportRecoveryBoundary(context, result);
@@ -1451,6 +1498,30 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     context.sourcePath(),
                     FrontendRange.fromAstRange(note.anchor().range())
             );
+        }
+    }
+
+    private static void reportAnchoredFailure(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Node anchor,
+            @Nullable FrontendParseRecovery recovery,
+            @NotNull String category,
+            @NotNull String detailReason
+    ) {
+        var sourcePath = FrontendDiagnostic.sourcePathText(context.sourcePath());
+        var data = context.analysisData();
+        var manager = context.diagnosticManager();
+        var covering = recovery == null ? null
+                : FrontendParseRecovery.findActiveCoveringDiagnostic(recovery, data, manager, sourcePath);
+        if (covering == null) {
+            var range = recovery != null ? recovery.range() : FrontendRange.fromAstRange(anchor.range());
+            covering = FrontendDiagnostic.error(category, detailReason, sourcePath, range);
+            if (!manager.contains(covering)) {
+                manager.report(covering);
+            }
+        }
+        if (recovery != null) {
+            data.claimParseRecovery(recovery, covering);
         }
     }
 
@@ -1637,7 +1708,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             var suppress = suppressUpstreamConsequenceDiagnostics
                     && upstreamErrorInside(context, upstreamDiagnostics, entry.getKey());
             if (!suppress
-                    && !resolver.isAssignmentTargetPrefixExpression(entry.getKey())
+                    && (!resolver.isAssignmentTargetPrefixExpression(entry.getKey())
+                            || resolver.isPrimaryFailureAnchor(entry.getKey()))
                     && resolver.rootOwnsExpressionDiagnostic(entry.getKey())) {
                 reportExpressionDiagnostic(context, resolver, entry.getKey(), entry.getValue());
             }
@@ -1650,7 +1722,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 reportUnsafeCastWarning(context, resolver, castExpression, entry.getValue());
             }
             if (entry.getKey() instanceof AttributeExpression attributeExpression) {
-                publishAttributeStepExpressionTypes(context, resolver.reduceAttributeExpression(attributeExpression));
+                publishAttributeStepExpressionTypes(context, resolver.reduceAttributeExpression(attributeExpression, true));
             }
         }
         if (expression instanceof AssignmentExpression assignmentExpression) {
@@ -1916,6 +1988,15 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         if (!resolver.markExpressionDiagnosticReported(expression)) {
             return;
         }
+        var origin = resolver.failureOrigin(expression);
+        if (expressionType.status() == FrontendExpressionTypeStatus.FAILED
+                && origin != null && origin.primaryAnchor() == expression && origin.originRecovery() != null) {
+            reportAnchoredFailure(
+                    context, expression, origin.originRecovery(), EXPRESSION_RESOLUTION_CATEGORY,
+                    Objects.requireNonNull(expressionType.detailReason(), "detailReason must not be null")
+            );
+            return;
+        }
         switch (expressionType.status()) {
             case FAILED -> context.diagnosticManager().error(
                     EXPRESSION_RESOLUTION_CATEGORY,
@@ -2053,7 +2134,129 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         }
     }
 
-    private static final class BodyExpressionResolver {
+    private @Nullable FrontendParseRecovery findRecovery(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Node anchor,
+            @NotNull String code
+    ) {
+        if (anchor.range() == null) {
+            return null;
+        }
+        var data = context.analysisData();
+        if (recoveryLookupGeneration != data) {
+            recoveryLookups.clear();
+            recoveryUnitsByPath.clear();
+            // Group sources once, preserving the order of all units sharing an exact Path.
+            // Build the recovery index itself only for files queried for a damaged receiver.
+            for (var unit : data.effectiveSourceUnits()) {
+                if (!unit.parseRecoveries().isEmpty()) {
+                    recoveryUnitsByPath.computeIfAbsent(unit.path(), _ -> new ArrayList<>()).add(unit);
+                }
+            }
+            recoveryLookupGeneration = data;
+        }
+        var path = context.sourcePath();
+        var units = recoveryUnitsByPath.get(path);
+        if (units == null) {
+            return null;
+        }
+        var lookup = recoveryLookups.computeIfAbsent(path, _ -> {
+            var indexed = new StepRecoveryLookup();
+            for (var unit : units) {
+                unit.parseRecoveries().forEach(indexed::add);
+            }
+            return indexed;
+        });
+        return lookup.find(anchor, code);
+    }
+
+    /// @param offset byte start for token anchors; either token boundary for a zero-width step
+    private record RecoveryBoundary(@NotNull String code, int offset) {
+    }
+
+    /// The parser may link a diagnostic to an enclosing syntax slot rather than to the surviving
+    /// expression. Require both the token boundary and AST identity inside the linked owner.
+    private static final class StepRecoveryLookup {
+        private final Map<RecoveryBoundary, List<FrontendParseRecovery>> byBoundary = new HashMap<>();
+        private final IdentityHashMap<Node, IdentityHashMap<Node, Integer>> distancesByOwner = new IdentityHashMap<>();
+
+        private void add(@NotNull FrontendParseRecovery recovery) {
+            var range = recovery.range();
+            if (range == null || recovery.owner() == null || recovery.severity() != FrontendDiagnosticSeverity.ERROR) {
+                return;
+            }
+            var code = recovery.code();
+            var missingName = code.equals(DiagnosticCodes.ATTRIBUTE_MISSING_NAME)
+                    || code.equals(DiagnosticCodes.SUPER_MISSING_NAME);
+            if (!missingName && !code.equals(DiagnosticCodes.SUPER_MISSING_ACCESS)
+                    && !code.equals(DiagnosticCodes.SUPER_MISSING_CALL)) {
+                return;
+            }
+            addAt(code, range.startByte(), recovery);
+            if (missingName && range.startByte() != range.endByte()) {
+                addAt(code, range.endByte(), recovery);
+            }
+        }
+
+        private void addAt(@NotNull String code, int offset, @NotNull FrontendParseRecovery recovery) {
+            byBoundary.computeIfAbsent(new RecoveryBoundary(code, offset), _ -> new ArrayList<>()).add(recovery);
+        }
+
+        private @Nullable FrontendParseRecovery find(@NotNull Node anchor, @NotNull String code) {
+            var range = anchor.range();
+            var candidates = byBoundary.get(new RecoveryBoundary(code, range.startByte()));
+            if (candidates == null) {
+                return null;
+            }
+            FrontendParseRecovery closest = null;
+            var closestDistance = Integer.MAX_VALUE;
+            for (var candidate : candidates) {
+                var recoveryRange = Objects.requireNonNull(candidate.range());
+                if (!(anchor instanceof MissingAttributeStep) && recoveryRange.endByte() != range.endByte()) {
+                    continue;
+                }
+                var distances = distancesByOwner.computeIfAbsent(Objects.requireNonNull(candidate.owner()), owner -> {
+                    var found = new IdentityHashMap<Node, Integer>();
+                    indexDistances(owner, 0, found);
+                    return found;
+                });
+                var distance = distances.get(anchor);
+                if (distance == null) {
+                    continue;
+                }
+                if (distance < closestDistance) {
+                    closest = candidate;
+                    closestDistance = distance;
+                } else if (distance == closestDistance) {
+                    // Two equally close links are not enough evidence to claim either.
+                    closest = null;
+                }
+            }
+            return closest;
+        }
+
+        private static void indexDistances(
+                @NotNull Node node, int depth, @NotNull IdentityHashMap<Node, Integer> distances
+        ) {
+            distances.put(node, depth);
+            for (var child : node.getChildren()) {
+                indexDistances(child, depth + 1, distances);
+            }
+        }
+    }
+
+    /// @param dependency the exact selected value failure; absent only for a root-owned outcome
+    private record ValueFailurePath(
+            @NotNull Expression expression,
+            @NotNull FrontendExpressionType type,
+            @Nullable ValueFailurePath dependency
+    ) {
+    }
+
+    private record ValueFailureObservation(@NotNull Expression operand, boolean preview) {
+    }
+
+    private final class BodyExpressionResolver {
         private final @NotNull FrontendSuiteContext context;
         // Procedure-local transient caches back bounded retry without joining the typed overlay.
         // Only explicit owner publication below can move final facts into pending/committed state.
@@ -2083,6 +2286,11 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Expression, Boolean> reportedExpressionDiagnostics =
                 new IdentityHashMap<>();
+        private @Nullable IdentityHashMap<Expression, ValueFailurePath> writeReceiverFailurePaths;
+        private final @NotNull Set<LiteralExpression> claimedLongMinOperands = new IdentityHashSet<>();
+        private final @NotNull Set<Expression> superChainHeadExpressions = new IdentityHashSet<>();
+        private final @NotNull Set<AttributeExpression> previewOriginChains = new IdentityHashSet<>();
+        private final @NotNull Set<AttributeExpression> finalizedOriginChains = new IdentityHashSet<>();
         private final @NotNull FrontendChainReductionFacade chainReduction;
         private final @NotNull FrontendAssignmentSemanticSupport.Context assignmentSemanticContext;
         private final @NotNull FrontendExpressionSemanticSupport expressionSemanticSupport;
@@ -2210,15 +2418,11 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 @Nullable GdType expectedType
         ) {
             return switch (expression) {
-                case LiteralExpression literalExpression -> expressionSemanticSupport
-                        .resolveLiteralExpressionType(literalExpression)
-                        .expressionType();
+                case LiteralExpression literalExpression -> resolveLiteralExpressionType(literalExpression);
                 case SelfExpression selfExpression -> expressionSemanticSupport
                         .resolveSelfExpressionType(selfExpression)
                         .expressionType();
-                case IdentifierExpression identifierExpression -> expressionSemanticSupport
-                        .resolveIdentifierExpressionType(identifierExpression)
-                        .expressionType();
+                case IdentifierExpression identifierExpression -> resolveIdentifierExpressionType(identifierExpression);
                 case AttributeExpression attributeExpression ->
                         resolveAttributeExpressionType(attributeExpression, finalizeWindow);
                 case AssignmentExpression assignmentExpression -> resolveAssignmentExpressionType(
@@ -2226,13 +2430,12 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         finalizeWindow
                 );
                 case CallExpression callExpression -> resolveCallExpressionType(callExpression, finalizeWindow);
-                case SubscriptExpression subscriptExpression -> expressionSemanticSupport
-                        .resolveSubscriptExpressionType(
-                                subscriptExpression,
-                                this::resolveExpressionType,
-                                finalizeWindow
+                case SubscriptExpression subscriptExpression -> withSelectedDependency(
+                        subscriptExpression,
+                        lookup -> expressionSemanticSupport.resolveSubscriptExpressionType(
+                                subscriptExpression, lookup::resolve, finalizeWindow
                         )
-                        .expressionType();
+                ).expressionType();
                 case LambdaExpression lambdaExpression -> expressionSemanticSupport
                         .resolveLambdaExpressionType(
                                 lambdaExpression,
@@ -2244,20 +2447,13 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                                         .containsCallableOwner(lambdaExpression)
                         )
                         .expressionType();
-                case UnaryExpression unaryExpression -> expressionSemanticSupport
-                        .resolveUnaryExpressionType(
-                                unaryExpression,
-                                this::resolveExpressionType,
-                                finalizeWindow
+                case UnaryExpression unaryExpression -> resolveUnaryExpressionType(unaryExpression, finalizeWindow);
+                case BinaryExpression binaryExpression -> withSelectedDependency(
+                        binaryExpression,
+                        lookup -> expressionSemanticSupport.resolveBinaryExpressionType(
+                                binaryExpression, lookup::resolve, finalizeWindow
                         )
-                        .expressionType();
-                case BinaryExpression binaryExpression -> expressionSemanticSupport
-                        .resolveBinaryExpressionType(
-                                binaryExpression,
-                                this::resolveExpressionType,
-                                finalizeWindow
-                        )
-                        .expressionType();
+                ).expressionType();
                 case TypeTestExpression typeTestExpression ->
                         resolveTypeTestExpressionType(typeTestExpression, finalizeWindow);
                 case CastExpression castExpression -> resolveCastExpressionType(castExpression, finalizeWindow);
@@ -2268,16 +2464,192 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 case DictionaryExpression dictionaryExpression ->
                         resolveDictionaryExpressionType(dictionaryExpression, finalizeWindow, expectedType);
                 case AwaitExpression awaitExpression -> resolveAwaitExpressionType(awaitExpression, finalizeWindow);
-                case GetNodeExpression _ -> resolveGetNodeExpressionType();
-                default -> expressionSemanticSupport
-                        .resolveRemainingExplicitExpressionType(
-                                expression,
-                                this::resolveExpressionType,
-                                true,
-                                finalizeWindow
-                        )
-                        .expressionType();
+                case PreloadExpression preloadExpression -> {
+                    var result = expressionSemanticSupport.resolveRemainingExplicitExpressionType(
+                            preloadExpression, this::resolveExpressionType, true, finalizeWindow
+                    );
+                    // The path is preload's only dependency. A path syntax error belongs to
+                    // preload itself, but a failure selected from the path keeps its own anchor.
+                    recordValueOperandFailure(preloadExpression, preloadExpression.path(), result);
+                    yield result.expressionType();
+                }
+                case GetNodeExpression getNodeExpression -> {
+                    var type = resolveGetNodeExpressionType();
+                    // There is no operand from which a get-node failure could propagate.
+                    rememberValueFailurePath(getNodeExpression, type, true, null);
+                    yield type;
+                }
+                default -> {
+                    var result = expressionSemanticSupport.resolveRemainingExplicitExpressionType(
+                            expression, this::resolveExpressionType, true, finalizeWindow
+                    );
+                    var type = result.expressionType();
+                    // Do not promote a child failure whose source this fallback does not track.
+                    rememberValueFailurePath(expression, type, result.rootOwnsOutcome(), null);
+                    yield type;
+                }
             };
+        }
+
+        private @NotNull FrontendExpressionType resolveLiteralExpressionType(@NotNull LiteralExpression literal) {
+            if (claimedLongMinOperands.contains(literal)) {
+                return FrontendExpressionType.resolved(GdIntType.INT);
+            }
+            var result = expressionSemanticSupport.resolveLiteralExpressionType(literal);
+            if (result.rootOwnsOutcome() && result.expressionType().status() == FrontendExpressionTypeStatus.FAILED) {
+                // The literal support owns only malformed or overflowing integers.
+                context.analysisData().recordPropagatedFailureOrigin(literal, literal, null);
+            }
+            return result.expressionType();
+        }
+
+        private @NotNull FrontendExpressionType resolveIdentifierExpressionType(
+                @NotNull IdentifierExpression identifier
+        ) {
+            var type = expressionSemanticSupport.resolveIdentifierExpressionType(identifier).expressionType();
+            if (type.status() != FrontendExpressionTypeStatus.RESOLVED
+                    || superChainHeadExpressions.contains(identifier)
+                    || !isSuperBinding(identifier)) {
+                return type;
+            }
+            // Bare super call resolution bypasses the identifier value path altogether.
+            var recovery = findRecovery(context, identifier, DiagnosticCodes.SUPER_MISSING_ACCESS);
+            context.analysisData().recordPropagatedFailureOrigin(identifier, identifier, recovery);
+            if (recovery != null) {
+                var active = FrontendParseRecovery.findActiveCoveringDiagnostic(
+                        recovery, context.analysisData(), context.diagnosticManager(),
+                        FrontendDiagnostic.sourcePathText(context.sourcePath())
+                );
+                if (active != null) {
+                    context.analysisData().claimParseRecovery(recovery, active);
+                    rootOwnsExpressionDiagnostics.put(identifier, Boolean.FALSE);
+                }
+            }
+            return FrontendExpressionType.failed("'super' must be followed by a method call");
+        }
+
+        private @NotNull FrontendExpressionType resolveUnaryExpressionType(
+                @NotNull UnaryExpression unaryExpression,
+                boolean finalizeWindow
+        ) {
+            if (StringUtil.isGdLongMinUnary(unaryExpression)
+                    && unaryExpression.operand() instanceof LiteralExpression magnitude) {
+                // The magnitude is only legal as the direct operand of this signed literal.
+                claimedLongMinOperands.add(magnitude);
+                resolveExpressionType(magnitude, finalizeWindow);
+                return FrontendExpressionType.resolved(GdIntType.INT);
+            }
+            return withSelectedDependency(
+                    unaryExpression,
+                    lookup -> expressionSemanticSupport.resolveUnaryExpressionType(
+                            unaryExpression, lookup::resolve, finalizeWindow
+                    )
+            ).expressionType();
+        }
+
+        /// These support operations return the selected dependency's exact outcome instance.
+        /// Track only values observed by this invocation, including both arms of a final retry.
+        private @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult withSelectedDependency(
+                @NotNull Expression expression,
+                @NotNull Function<DependencyOriginLookup, FrontendExpressionSemanticSupport.ExpressionSemanticResult> resolve
+        ) {
+            var lookup = new DependencyOriginLookup();
+            var result = resolve.apply(lookup);
+            var type = result.expressionType();
+            if (!result.rootOwnsOutcome() && type.status() == FrontendExpressionTypeStatus.FAILED) {
+                inheritFailureOrigin(expression, lookup.originOrNull(type));
+            }
+            rememberValueFailurePath(expression, type, result.rootOwnsOutcome(), lookup.failurePathOrNull(type));
+            return result;
+        }
+
+        private final class DependencyOriginLookup {
+            private @Nullable IdentityHashMap<FrontendExpressionType, FrontendPropagatedFailureOrigin> failures;
+            private @Nullable IdentityHashMap<FrontendExpressionType, ValueFailureObservation> observedValueFailures;
+
+            private @NotNull FrontendExpressionType resolve(@NotNull Expression expression, boolean finalizeWindow) {
+                return resolve(expression, finalizeWindow, null);
+            }
+
+            private @NotNull FrontendExpressionType resolve(
+                    @NotNull Expression expression,
+                    boolean finalizeWindow,
+                    @Nullable GdType expectedType
+            ) {
+                var type = resolveExpressionTypeExpected(expression, finalizeWindow, expectedType);
+                if (type.status() == FrontendExpressionTypeStatus.FAILED) {
+                    var origin = failureOrigin(expression);
+                    if (failures == null) {
+                        failures = new IdentityHashMap<>();
+                    }
+                    if (!failures.containsKey(type)) {
+                        failures.put(type, origin);
+                    } else {
+                        var prior = failures.get(type);
+                        if (prior != null && (origin == null || prior.primaryAnchor() != origin.primaryAnchor()
+                                || prior.originRecovery() != origin.originRecovery())) {
+                            failures.put(type, null);
+                        }
+                    }
+                    if (writeReceiverFailurePaths != null) {
+                        if (observedValueFailures == null) {
+                            observedValueFailures = new IdentityHashMap<>();
+                        }
+                        if (!observedValueFailures.containsKey(type)) {
+                            observedValueFailures.put(type, new ValueFailureObservation(expression, !finalizeWindow));
+                        } else {
+                            var prior = observedValueFailures.get(type);
+                            if (prior != null && prior.operand() != expression) {
+                                // A shared outcome instance cannot identify one of two operands.
+                                observedValueFailures.put(type, null);
+                            }
+                        }
+                    }
+                }
+                return type;
+            }
+
+            private @Nullable FrontendPropagatedFailureOrigin originOrNull(@NotNull FrontendExpressionType type) {
+                return failures == null ? null : failures.get(type);
+            }
+
+            private @Nullable ValueFailurePath failurePathOrNull(@NotNull FrontendExpressionType type) {
+                var observation = observedValueFailures == null ? null : observedValueFailures.get(type);
+                if (observation == null) {
+                    return null;
+                }
+                var operand = observation.operand();
+                var path = valueFailurePath(operand, type);
+                if (path != null || !observation.preview()) {
+                    return path;
+                }
+                // Bare calls can return the preliminary issue after finalizing the arguments.
+                // Only the selected operand's actual final failure in this receiver can replace
+                // the missing preview path; a later argument cannot supply it.
+                return valueFailurePath(operand, finalizedExpressionTypes.get(operand));
+            }
+        }
+
+        private void rememberValueFailurePath(
+                @NotNull Expression expression,
+                @NotNull FrontendExpressionType type,
+                boolean rootOwnsOutcome,
+                @Nullable ValueFailurePath dependency
+        ) {
+            if (writeReceiverFailurePaths != null && type.status() == FrontendExpressionTypeStatus.FAILED
+                    && (rootOwnsOutcome || dependency != null)) {
+                writeReceiverFailurePaths.put(
+                        expression,
+                        new ValueFailurePath(expression, type, rootOwnsOutcome ? null : dependency)
+                );
+            }
+        }
+
+        private @Nullable ValueFailurePath valueFailurePath(
+                @NotNull Expression expression, @Nullable FrontendExpressionType type
+        ) {
+            var path = writeReceiverFailurePaths == null ? null : writeReceiverFailurePaths.get(expression);
+            return path != null && path.type() == type ? path : null;
         }
 
         private @NotNull FrontendExpressionType resolveTypeTestExpressionType(
@@ -2289,7 +2661,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     this::resolveExpressionType,
                     finalizeWindow
             );
-            rootOwnsExpressionDiagnostics.put(typeTestExpression, result.rootOwnsOutcome());
+            recordValueOperandOutcome(typeTestExpression, typeTestExpression.value(), result);
             if (result.publishedTypeTestTargetOrNull() != null) {
                 typeTestTargets.put(typeTestExpression, result.publishedTypeTestTargetOrNull());
             }
@@ -2305,9 +2677,31 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     this::resolveExpressionTypeExpected,
                     finalizeWindow
             );
-            // Propagated value-operand failures keep the upstream diagnostic owner.
-            rootOwnsExpressionDiagnostics.put(castExpression, result.rootOwnsOutcome());
+            recordValueOperandOutcome(castExpression, castExpression.value(), result);
             return result.expressionType();
+        }
+
+        private void recordValueOperandOutcome(
+                @NotNull Expression expression,
+                @NotNull Expression value,
+                @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult result
+        ) {
+            rootOwnsExpressionDiagnostics.put(expression, result.rootOwnsOutcome());
+            recordValueOperandFailure(expression, value, result);
+        }
+
+        private void recordValueOperandFailure(
+                @NotNull Expression expression,
+                @NotNull Expression value,
+                @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult result
+        ) {
+            var type = result.expressionType();
+            // For these single-operand operations only the value can propagate a failure;
+            // a failure resolved by the operation itself does not come from the operand.
+            if (!result.rootOwnsOutcome() && type.status() == FrontendExpressionTypeStatus.FAILED) {
+                inheritFailureOrigin(expression, failureOrigin(value));
+            }
+            rememberValueFailurePath(expression, type, result.rootOwnsOutcome(), valueFailurePath(value, type));
         }
 
         private @NotNull FrontendExpressionType resolveConditionalExpressionType(
@@ -2317,11 +2711,11 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         ) {
             // Binary-style root re-ownership: no rootOwnsExpressionDiagnostics entry is recorded, so
             // the conditional root stays root-owned (default true) and re-emits propagated outcomes.
-            return expressionSemanticSupport.resolveConditionalExpressionType(
+            return withSelectedDependency(
                     conditionalExpression,
-                    this::resolveExpressionTypeExpected,
-                    finalizeWindow,
-                    expectedType
+                    lookup -> expressionSemanticSupport.resolveConditionalExpressionType(
+                            conditionalExpression, lookup::resolve, finalizeWindow, expectedType
+                    )
             ).expressionType();
         }
 
@@ -2330,11 +2724,13 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 boolean finalizeWindow,
                 @Nullable GdType expectedType
         ) {
-            var result = expressionSemanticSupport.resolveArrayExpressionType(
+            var result = withSelectedDependency(
                     arrayExpression,
-                    this::resolveExpressionTypeExpected,
-                    finalizeWindow,
-                    expectedType
+                    lookup -> expressionSemanticSupport.resolveArrayExpressionType(
+                            arrayExpression,
+                            (FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver) lookup::resolve,
+                            finalizeWindow, expectedType
+                    )
             );
             rootOwnsExpressionDiagnostics.put(arrayExpression, result.rootOwnsOutcome());
             // Only finalized resolutions publish plans; speculative previews must not enter this map.
@@ -2349,11 +2745,13 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 boolean finalizeWindow,
                 @Nullable GdType expectedType
         ) {
-            var result = expressionSemanticSupport.resolveDictionaryExpressionType(
+            var result = withSelectedDependency(
                     dictionaryExpression,
-                    this::resolveExpressionTypeExpected,
-                    finalizeWindow,
-                    expectedType
+                    lookup -> expressionSemanticSupport.resolveDictionaryExpressionType(
+                            dictionaryExpression,
+                            (FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver) lookup::resolve,
+                            finalizeWindow, expectedType
+                    )
             );
             rootOwnsExpressionDiagnostics.put(dictionaryExpression, result.rootOwnsOutcome());
             if (finalizeWindow && result.publishedContainerLiteralPlanOrNull() != null) {
@@ -2386,6 +2784,9 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             if (boundaryReason != null && context.isParameterDefaultIsland()) {
                 return FrontendExpressionType.blocked(null, boundaryReason);
             }
+            var type = result.expressionType();
+            rememberValueFailurePath(awaitExpression, type, result.rootOwnsOutcome(),
+                    valueFailurePath(awaitExpression.value(), type));
             switch (result.route()) {
                 case SIGNAL, DYNAMIC -> context.analysisData()
                         .markCoroutineOwner(requireAwaitCoroutineOwner());
@@ -2399,7 +2800,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 case NONE -> {
                 }
             }
-            return result.expressionType();
+            return type;
         }
 
         /// Fail-closed boundary: property initializers and parameter defaults reject await. Lambda
@@ -2591,7 +2992,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 @NotNull AssignmentExpression assignmentExpression,
                 boolean finalizeWindow
         ) {
-            var result = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+            var result = FrontendAssignmentSemanticSupport.resolveAssignmentExpression(
                     assignmentSemanticContext,
                     assignmentExpression,
                     assignmentUsages.getOrDefault(
@@ -2600,11 +3001,75 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     ),
                     this::resolveExpressionTypeExpected,
                     finalizeWindow
-            ).expressionType();
+            );
+            var left = assignmentExpression.left();
+            var dependency = result.selectedDependency();
+            var targetOperand = result.selectedTargetOperand();
+            var outcome = result.outcome();
+            ValueFailurePath receiverFailurePath = null;
             if (finalizeWindow) {
-                finalizeAssignmentTargetExpressionTypes(assignmentExpression.left());
+                if (dependency == left && targetOperand != null && left instanceof SubscriptExpression subscript
+                        && subscript.base() == targetOperand && isOrdinaryValueReceiver(targetOperand)) {
+                    receiverFailurePath = finalizeSelectedSubscriptReceiver(subscript, targetOperand);
+                } else {
+                    finalizeAssignmentTargetExpressionTypes(left);
+                }
             }
-            return result;
+            rootOwnsExpressionDiagnostics.put(assignmentExpression, outcome.rootOwnsOutcome());
+            if (dependency == left && targetOperand != null) {
+                var origin = selectedFailureOrigin(targetOperand, finalizeWindow);
+                if (origin == null && receiverFailurePath != null) {
+                    origin = publishSelectedValueFailure(receiverFailurePath);
+                }
+                inheritFailureOrigin(left, origin);
+                inheritFailureOrigin(assignmentExpression, origin);
+            } else if (dependency != null && (dependency != left || !outcome.rootOwnsOutcome())) {
+                inheritFailureOrigin(assignmentExpression, selectedFailureOrigin(dependency, finalizeWindow));
+            }
+            return outcome.expressionType();
+        }
+
+        private static boolean isOrdinaryValueReceiver(@NotNull Expression expression) {
+            return switch (expression) {
+                case IdentifierExpression _, SelfExpression _, LiteralExpression _, AttributeExpression _ -> false;
+                default -> true;
+            };
+        }
+
+        private @Nullable ValueFailurePath finalizeSelectedSubscriptReceiver(
+                @NotNull SubscriptExpression subscript, @NotNull Expression receiver
+        ) {
+            var previousPaths = writeReceiverFailurePaths;
+            ValueFailurePath path;
+            // Record only this receiver's final evaluation. No path survives into another
+            // window or borrows an independently finalized index or RHS as its source.
+            writeReceiverFailurePaths = new IdentityHashMap<>(4);
+            try {
+                finalizeAssignmentTargetValueExpression(receiver);
+                path = valueFailurePath(receiver, finalizedExpressionTypes.get(receiver));
+            } finally {
+                writeReceiverFailurePaths = previousPaths;
+            }
+            finalizeSubscriptArguments(subscript);
+            return path;
+        }
+
+        private @NotNull FrontendPropagatedFailureOrigin publishSelectedValueFailure(@NotNull ValueFailurePath path) {
+            // Restore the actual value error hidden by prefix publication, not a dependent
+            // wrapper or a later index. Mark only the selected path as consequences.
+            var primary = path;
+            while (primary.dependency() != null) {
+                primary = primary.dependency();
+            }
+            var anchor = primary.expression();
+            context.analysisData().recordPropagatedFailureOrigin(anchor, anchor, null);
+            rootOwnsExpressionDiagnostics.put(anchor, Boolean.TRUE);
+            var origin = Objects.requireNonNull(failureOrigin(anchor));
+            for (var dependent = path; dependent != primary;
+                 dependent = Objects.requireNonNull(dependent.dependency())) {
+                inheritFailureOrigin(dependent.expression(), origin);
+            }
+            return origin;
         }
 
         private void finalizeAssignmentTargetExpressionTypes(@NotNull Expression targetExpression) {
@@ -2632,6 +3097,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 @NotNull AttributeExpression attributeExpression,
                 boolean publishRootExpression
         ) {
+            registerAttributeChainHeadIfNeeded(attributeExpression.base());
             // Mirror `resolveAttributeExpressionType`: a type-meta chain head (`Worker.values[i] = v`,
             // `Worker.shared = v`) is never consumed as an ordinary value, so its failed ordinary-value
             // type must stay unpublished exactly like on the read path.
@@ -2648,7 +3114,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     }
                 }
             }
-            var reduction = reduceAttributeExpression(attributeExpression);
+            var reduction = reduceAttributeExpression(attributeExpression, true);
             if (reduction != null) {
                 assignmentTargetReductions.put(attributeExpression, reduction);
             }
@@ -2662,11 +3128,15 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 boolean publishRootExpression
         ) {
             finalizeAssignmentTargetValueExpression(subscriptExpression.base());
-            for (var argument : subscriptExpression.arguments()) {
-                resolveExpressionType(argument, true);
-            }
+            finalizeSubscriptArguments(subscriptExpression);
             if (publishRootExpression) {
                 markAndResolveAssignmentTargetPrefixExpression(subscriptExpression);
+            }
+        }
+
+        private void finalizeSubscriptArguments(@NotNull SubscriptExpression subscriptExpression) {
+            for (var argument : subscriptExpression.arguments()) {
+                resolveExpressionType(argument, true);
             }
         }
 
@@ -2687,13 +3157,16 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             if (callExpression.callee() instanceof IdentifierExpression bareCallee) {
                 var bareBinding = context.typedEnvironment().symbolBinding(bareCallee);
                 if (bareBinding != null && bareBinding.kind() == FrontendBindingKind.SUPER) {
-                    var superResult = expressionSemanticSupport.resolveBareSuperCallExpression(
-                            bareCallee,
-                            superImplicitMethodNameOrNull(),
-                            context.staticContext(),
-                            callExpression.arguments(),
-                            this::resolveExpressionTypeExpected,
-                            finalizeWindow
+                    var superResult = withSelectedDependency(
+                            callExpression,
+                            lookup -> expressionSemanticSupport.resolveBareSuperCallExpression(
+                                    bareCallee,
+                                    superImplicitMethodNameOrNull(),
+                                    context.staticContext(),
+                                    callExpression.arguments(),
+                                    lookup::resolve,
+                                    finalizeWindow
+                            )
                     );
                     if (superResult.publishedCallOrNull() != null) {
                         resolvedCalls.put(callExpression, superResult.publishedCallOrNull());
@@ -2701,11 +3174,13 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     return superResult.expressionType();
                 }
             }
-            var result = expressionSemanticSupport.resolveCallExpressionType(
+            var result = withSelectedDependency(
                     callExpression,
-                    this::resolveExpressionTypeExpected,
-                    true,
-                    finalizeWindow
+                    lookup -> expressionSemanticSupport.resolveCallExpressionType(
+                            callExpression,
+                            (FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver) lookup::resolve,
+                            true, finalizeWindow
+                    )
             );
             if (result.publishedCallOrNull() != null) {
                 resolvedCalls.put(callExpression, result.publishedCallOrNull());
@@ -2728,6 +3203,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 @NotNull AttributeExpression attributeExpression,
                 boolean finalizeWindow
         ) {
+            registerAttributeChainHeadIfNeeded(attributeExpression.base());
             if (isTypeMetaRouteHead(attributeExpression.base())) {
                 routeHeadOnlyTypeMetaExpressions.put(attributeExpression.base(), Boolean.TRUE);
             }
@@ -2743,20 +3219,28 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     }
                 }
             }
-            var reduced = reduceAttributeExpression(attributeExpression);
+            var reduced = reduceAttributeExpression(attributeExpression, finalizeWindow);
             if (reduced == null) {
                 return FrontendExpressionType.unsupported(
                         "Nested chain expression is inside an unsupported or skipped subtree"
                 );
             }
-            // A chain ending in a missing member name keeps its FAILED fact for downstream readers,
-            // but the parser already owns the user-facing diagnostic (`Missing identifier` via
-            // `parse.lowering`), so the root expression reporter must stay silent here.
-            var steps = attributeExpression.steps();
-            if (!steps.isEmpty() && steps.getLast() instanceof MissingAttributeStep) {
+            if (!attributeExpression.steps().isEmpty()
+                    && attributeExpression.steps().getLast() instanceof MissingAttributeStep) {
                 rootOwnsExpressionDiagnostics.put(attributeExpression, Boolean.FALSE);
             }
             return FrontendChainStatusBridge.toPublishedExpressionType(reduced);
+        }
+
+        private void registerAttributeChainHeadIfNeeded(@NotNull Expression base) {
+            if (base instanceof IdentifierExpression identifier && isSuperBinding(identifier)) {
+                superChainHeadExpressions.add(base);
+            }
+        }
+
+        private boolean isSuperBinding(@NotNull IdentifierExpression identifierExpression) {
+            var binding = context.typedEnvironment().symbolBinding(identifierExpression);
+            return binding != null && binding.kind() == FrontendBindingKind.SUPER;
         }
 
         /// Exact selected calls finalize container-literal arguments with fixed parameter types.
@@ -2779,9 +3263,84 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         }
 
         private @Nullable FrontendChainReductionHelper.ReductionResult reduceAttributeExpression(
-                @NotNull AttributeExpression attributeExpression
+                @NotNull AttributeExpression attributeExpression,
+                boolean finalizeWindow
         ) {
-            return chainReduction.reduce(attributeExpression).result();
+            var base = attributeExpression.base();
+            registerAttributeChainHeadIfNeeded(base);
+            var result = chainReduction.reduce(attributeExpression).result();
+            var processed = finalizeWindow ? finalizedOriginChains : previewOriginChains;
+            if (result == null || !processed.add(attributeExpression)) {
+                return result;
+            }
+
+            // A cached facade result may have reduced the inner chain without visiting its owner.
+            // Process that receiver and each selected operand before exposing any outer trace.
+            selectedFailureOrigin(base, finalizeWindow);
+            var traces = result.stepTraces();
+            for (var trace : traces) {
+                if (trace.dependencyOperand() != null) {
+                    inheritFailureOrigin(trace.step(), selectedFailureOrigin(trace.dependencyOperand(), finalizeWindow));
+                } else if (trace.upstreamCause() != null) {
+                    var sourceIndex = trace.upstreamCause().sourceStepIndex();
+                    var source = sourceIndex.isPresent() ? traces.get(sourceIndex.getAsInt()).step() : base;
+                    inheritFailureOrigin(trace.step(), failureOrigin(source));
+                } else if (trace.status() == FrontendChainReductionHelper.Status.FAILED) {
+                    registerChainFailureAnchor(trace, superChainHeadExpressions.contains(base));
+                }
+            }
+            if (result.finalReceiver().status() == FrontendChainReductionHelper.Status.FAILED
+                    && result.recoveryRoot() != null) {
+                inheritFailureOrigin(attributeExpression, failureOrigin(result.recoveryRoot()));
+            }
+            return result;
+        }
+
+        private void registerChainFailureAnchor(
+                @NotNull FrontendChainReductionHelper.StepTrace trace,
+                boolean superHead
+        ) {
+            String code;
+            if (trace.step() instanceof MissingAttributeStep) {
+                code = superHead && trace.stepIndex() == 0
+                        ? DiagnosticCodes.SUPER_MISSING_NAME : DiagnosticCodes.ATTRIBUTE_MISSING_NAME;
+            } else if (trace.stepIndex() == 0
+                    && trace.routeKind() == FrontendChainReductionHelper.RouteKind.SUPER_METHOD
+                    && !(trace.step() instanceof AttributeCallStep)) {
+                code = DiagnosticCodes.SUPER_MISSING_CALL;
+            } else {
+                return;
+            }
+            var step = trace.step();
+            context.analysisData().recordPropagatedFailureOrigin(step, step, findRecovery(context, step, code));
+        }
+
+        private @Nullable FrontendPropagatedFailureOrigin selectedFailureOrigin(
+                @NotNull Expression expression,
+                boolean finalizeWindow
+        ) {
+            if (expression instanceof AttributeExpression attributeExpression) {
+                reduceAttributeExpression(attributeExpression, finalizeWindow);
+            }
+            return failureOrigin(expression);
+        }
+
+        private @Nullable FrontendPropagatedFailureOrigin failureOrigin(@NotNull Node node) {
+            return context.analysisData().propagatedFailureOrigins().get(node);
+        }
+
+        private boolean isPrimaryFailureAnchor(@NotNull Expression expression) {
+            var origin = failureOrigin(expression);
+            return origin != null && origin.primaryAnchor() == expression;
+        }
+
+        private void inheritFailureOrigin(@NotNull Node node, @Nullable FrontendPropagatedFailureOrigin origin) {
+            if (origin != null) {
+                context.analysisData().recordPropagatedFailureOrigin(node, origin.primaryAnchor(), origin.originRecovery());
+                if (node instanceof Expression expression) {
+                    rootOwnsExpressionDiagnostics.put(expression, Boolean.FALSE);
+                }
+            }
         }
 
         private @Nullable FrontendChainReductionHelper.ReductionResult assignmentTargetReduction(

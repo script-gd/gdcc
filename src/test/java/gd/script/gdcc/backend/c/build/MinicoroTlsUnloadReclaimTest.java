@@ -99,6 +99,9 @@ class MinicoroTlsUnloadReclaimTest {
         command.add("-D_DEFAULT_SOURCE");
         command.add("-I" + RuntimeProbeToolchain.GDCC_INCLUDE_DIR);
         command.add("-shared");
+        if (host == TargetPlatform.LINUX_X86_64) {
+            command.add("-Wl,-z,noexecstack");
+        }
         command.add(dsoSource.toString());
         command.add("-lpthread");
         command.add("-o");

@@ -5,7 +5,9 @@ import java.util.*;
 import java.util.function.Predicate;
 
 import org.jetbrains.annotations.NotNull;
+
 import static org.junit.jupiter.api.Assertions.*;
+
 import org.junit.jupiter.api.Test;
 
 import dev.superice.gdparser.frontend.ast.*;
@@ -17,6 +19,68 @@ import gd.script.gdcc.scope.*;
 import gd.script.gdcc.type.*;
 
 class FrontendBodyOwnerProceduresChainBindingTest {
+    @Test
+    void attributeCallFailureUsesOnlyItsSelectedArgumentAndKeepsTheCallRoute() throws Exception {
+        var analyzed = analyze("chain_selected_arguments.gd", """
+                extends Node
+
+                func take(_first: int, _second: int) -> void:
+                    pass
+
+                func probe() -> void:
+                    self.take(0, +9223372036854775808)
+                    self.take(missing_identifier, +99999999999999999999)
+                """);
+        var data = analyzed.analysisData();
+        var probe = findFunction(analyzed.unit().ast(), "probe");
+        var calls = findNodes(probe, AttributeCallStep.class, step -> step.name().equals("take"));
+        assertEquals(2, calls.size());
+        var successBeforeOverflow = calls.getFirst();
+        var overflowAfterMissing = calls.getLast();
+        for (var step : calls) {
+            var call = data.resolvedCalls().get(step);
+            assertNotNull(call);
+            assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, call.callKind());
+            assertEquals(FrontendCallResolutionStatus.FAILED, call.status());
+        }
+        var firstOverflow = assertInstanceOf(UnaryExpression.class, successBeforeOverflow.arguments().getLast());
+        assertSame(firstOverflow.operand(), data.propagatedFailureOrigins().get(successBeforeOverflow).primaryAnchor());
+        assertNull(data.propagatedFailureOrigins().get(overflowAfterMissing));
+        var secondOverflow = assertInstanceOf(UnaryExpression.class, overflowAfterMissing.arguments().getLast());
+        var callErrors = diagnosticsByCategory(data, "sema.call_resolution");
+        assertEquals(1, callErrors.size(), callErrors::toString);
+        assertEquals(FrontendRange.fromAstRange(overflowAfterMissing.range()), callErrors.getFirst().range());
+        for (var overflow : List.of(firstOverflow, secondOverflow)) {
+            assertTrue(diagnosticsByCategory(data, "sema.expression_resolution").stream().anyMatch(diagnostic ->
+                    FrontendRange.fromAstRange(overflow.operand().range()).equals(diagnostic.range())));
+        }
+    }
+
+    @Test
+    void attributeSubscriptMissingPropertyDoesNotTakeTheIndexOrigin() throws Exception {
+        var analyzed = analyze("subscript_property_before_index.gd", """
+                extends Node
+                var items: Array[int] = [0]
+
+                func probe() -> void:
+                    self.items[+9223372036854775808]
+                    self.missing_items[+99999999999999999999]
+                """);
+        var data = analyzed.analysisData();
+        var probe = findFunction(analyzed.unit().ast(), "probe");
+        var steps = findNodes(probe, AttributeSubscriptStep.class, _ -> true);
+        assertEquals(2, steps.size());
+        var validProperty = steps.getFirst();
+        var missingProperty = steps.getLast();
+        var validIndex = assertInstanceOf(UnaryExpression.class, validProperty.arguments().getFirst());
+        var missingIndex = assertInstanceOf(UnaryExpression.class, missingProperty.arguments().getFirst());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(validProperty).status());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(missingProperty).status());
+        assertSame(validIndex.operand(), data.propagatedFailureOrigins().get(validProperty).primaryAnchor());
+        assertNull(data.propagatedFailureOrigins().get(missingProperty));
+        assertSame(missingIndex.operand(), data.propagatedFailureOrigins().get(missingIndex).primaryAnchor());
+    }
+
     @Test
     void analyzePublishesResolvedMemberAndStaticCallFactsForSupportedRoutes() throws Exception {
         var analyzed = analyze(
@@ -1937,54 +2001,45 @@ class FrontendBodyOwnerProceduresChainBindingTest {
 
         assertAll(
                 () -> {
-                    var publishedIntType = intType;
-                    assertNotNull(publishedIntType);
-                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, publishedIntType.status());
-                    var publishedIntCall = resolvedInt;
-                    assertNotNull(publishedIntCall);
-                    assertEquals(FrontendCallResolutionStatus.RESOLVED, publishedIntCall.status());
-                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, publishedIntCall.callKind());
-                    assertEquals(FrontendReceiverKind.TYPE_META, publishedIntCall.receiverKind());
-                    assertEquals(List.of(GdVariantType.VARIANT), publishedIntCall.argumentTypes());
+                    assertNotNull(intType);
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, intType.status());
+                    assertNotNull(resolvedInt);
+                    assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedInt.status());
+                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedInt.callKind());
+                    assertEquals(FrontendReceiverKind.TYPE_META, resolvedInt.receiverKind());
+                    assertEquals(List.of(GdVariantType.VARIANT), resolvedInt.argumentTypes());
                 },
                 () -> {
-                    var publishedStringType = stringType;
-                    assertNotNull(publishedStringType);
-                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, publishedStringType.status());
-                    var publishedStringCall = resolvedString;
-                    assertNotNull(publishedStringCall);
-                    assertEquals(FrontendCallResolutionStatus.RESOLVED, publishedStringCall.status());
-                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, publishedStringCall.callKind());
-                    assertEquals(FrontendReceiverKind.TYPE_META, publishedStringCall.receiverKind());
-                    assertEquals(List.of(GdVariantType.VARIANT), publishedStringCall.argumentTypes());
+                    assertNotNull(stringType);
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, stringType.status());
+                    assertNotNull(resolvedString);
+                    assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedString.status());
+                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedString.callKind());
+                    assertEquals(FrontendReceiverKind.TYPE_META, resolvedString.receiverKind());
+                    assertEquals(List.of(GdVariantType.VARIANT), resolvedString.argumentTypes());
                 },
                 () -> {
-                    var publishedArrayType = arrayType;
-                    assertNotNull(publishedArrayType);
-                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, publishedArrayType.status());
-                    var publishedArrayCall = resolvedArray;
-                    assertNotNull(publishedArrayCall);
-                    assertEquals(FrontendCallResolutionStatus.RESOLVED, publishedArrayCall.status());
-                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, publishedArrayCall.callKind());
-                    assertEquals(FrontendReceiverKind.TYPE_META, publishedArrayCall.receiverKind());
-                    assertEquals(List.of(GdVariantType.VARIANT), publishedArrayCall.argumentTypes());
+                    assertNotNull(arrayType);
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, arrayType.status());
+                    assertNotNull(resolvedArray);
+                    assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedArray.status());
+                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedArray.callKind());
+                    assertEquals(FrontendReceiverKind.TYPE_META, resolvedArray.receiverKind());
+                    assertEquals(List.of(GdVariantType.VARIANT), resolvedArray.argumentTypes());
                 },
                 () -> {
-                    var publishedDictionaryType = dictionaryType;
-                    assertNotNull(publishedDictionaryType);
-                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, publishedDictionaryType.status());
-                    var publishedDictionaryCall = resolvedDictionary;
-                    assertNotNull(publishedDictionaryCall);
-                    assertEquals(FrontendCallResolutionStatus.RESOLVED, publishedDictionaryCall.status());
-                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, publishedDictionaryCall.callKind());
-                    assertEquals(FrontendReceiverKind.TYPE_META, publishedDictionaryCall.receiverKind());
-                    assertEquals(List.of(GdVariantType.VARIANT), publishedDictionaryCall.argumentTypes());
+                    assertNotNull(dictionaryType);
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, dictionaryType.status());
+                    assertNotNull(resolvedDictionary);
+                    assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedDictionary.status());
+                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedDictionary.callKind());
+                    assertEquals(FrontendReceiverKind.TYPE_META, resolvedDictionary.receiverKind());
+                    assertEquals(List.of(GdVariantType.VARIANT), resolvedDictionary.argumentTypes());
                 },
                 () -> {
-                    var publishedNodeType = nodeType;
-                    assertNotNull(publishedNodeType);
-                    assertEquals(FrontendExpressionTypeStatus.FAILED, publishedNodeType.status());
-                    var detailReason = publishedNodeType.detailReason();
+                    assertNotNull(nodeType);
+                    assertEquals(FrontendExpressionTypeStatus.FAILED, nodeType.status());
+                    var detailReason = nodeType.detailReason();
                     assertNotNull(detailReason);
                     assertTrue(detailReason.contains("Node.new(...)"));
                     assertNull(failedNode);
@@ -2365,10 +2420,6 @@ class FrontendBodyOwnerProceduresChainBindingTest {
 
     @Test
     void analyzeKeepsValueRequiredNestedAssignmentFailClosedForDynamicTargets() throws Exception {
-        // gdparser maps the nested assignment in call-argument position to an `ErrorExpression`
-        // (assignment is not an expression in GDScript), so this scenario no longer reaches chain
-        // binding: the parser owns the single `parse.lowering` error and the enclosing statement is
-        // skipped wholesale through the skipped-subtree recovery contract.
         var analyzed = analyze(
                 "dynamic_assignment_argument_route.gd",
                 """
@@ -2386,16 +2437,34 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         var pingFunction = findFunction(analyzed.unit().ast(), "ping");
         var callStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
         var consumeStep = findNode(callStatement, AttributeCallStep.class, step -> step.name().equals("consume"));
+        var assignment = assertInstanceOf(AssignmentExpression.class, consumeStep.arguments().getFirst());
+        assertInstanceOf(SubscriptExpression.class, assignment.left());
 
-        assertTrue(analyzed.analysisData().skippedSubtreeRoots().containsKey(callStatement));
-        assertNull(analyzed.analysisData().resolvedCalls().get(consumeStep));
+        var data = analyzed.analysisData();
+        assertTrue(data.skippedSubtreeRoots().containsKey(callStatement));
+        assertNull(data.resolvedCalls().get(consumeStep));
+        assertNull(data.expressionTypes().get(consumeStep));
+        assertNull(data.expressionTypes().get(assignment));
+        assertNull(data.expressionTypes().get(callStatement.expression()));
 
-        var parseDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "parse.lowering");
-        assertEquals(1, parseDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.ERROR, parseDiagnostics.getFirst().severity());
-        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
-        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
-        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution").isEmpty());
+        var recoveries = analyzed.unit().parseRecoveries();
+        assertEquals(1, recoveries.size());
+        var recovery = recoveries.getFirst();
+        assertSame(callStatement, recovery.owner());
+        assertEquals("expression", recovery.facet());
+        assertEquals("parse.assignment.disallowed_in_expression", recovery.code());
+        var range = recovery.range();
+        assertNotNull(range);
+        var operatorOffset = analyzed.unit().source().indexOf(" = 1") + 1;
+        assertEquals(operatorOffset, range.startByte());
+        assertEquals(operatorOffset + 1, range.endByte());
+        var errors = data.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                .toList();
+        assertEquals(1, errors.size(), errors::toString);
+        assertEquals(recovery.code(), errors.getFirst().category());
+        assertEquals(range, errors.getFirst().range());
+        assertTrue(diagnosticsByCategory(data, "sema.deferred_chain_resolution").isEmpty());
     }
 
     @Test
@@ -2461,7 +2530,7 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         var chainStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
         var lengthStep = findNode(chainStatement, AttributePropertyStep.class, step -> step.name().equals("length"));
 
-        assertTrue(analyzed.analysisData().resolvedMembers().get(lengthStep) == null);
+        assertNull(analyzed.analysisData().resolvedMembers().get(lengthStep));
 
         var unsupportedDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route");
         assertEquals(1, unsupportedDiagnostics.size());
@@ -3265,7 +3334,7 @@ class FrontendBodyOwnerProceduresChainBindingTest {
             @NotNull String fileName,
             @NotNull String source,
             @NotNull ClassRegistry registry
-    ) throws Exception {
+    ) {
         return analyze(fileName, source, registry, Map.of());
     }
 

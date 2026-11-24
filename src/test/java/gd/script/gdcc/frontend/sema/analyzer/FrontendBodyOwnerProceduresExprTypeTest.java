@@ -9,6 +9,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import org.junit.jupiter.api.Test;
 
 import dev.superice.gdparser.frontend.ast.*;
+import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.constant.GdConstantValue;
 import gd.script.gdcc.frontend.diagnostic.*;
 import gd.script.gdcc.frontend.parse.*;
 import gd.script.gdcc.frontend.scope.BlockScope;
@@ -19,6 +21,552 @@ import gd.script.gdcc.type.*;
 
 @SuppressWarnings("DataFlowIssue")
 class FrontendBodyOwnerProceduresExprTypeTest {
+    @Test
+    void integerOverflowFailuresKeepOnlyTheirLiteralAnchorsInBothModes() throws Exception {
+        for (var compileMode : List.of(false, true)) {
+            var analyzed = analyzeIntegerFixture("overflow_anchors.gd", """
+                    extends Node
+                    var items: Array[int] = [0]
+
+                    func take(_value: int) -> void:
+                        pass
+
+                    func probe() -> void:
+                        self.take(+9223372036854775808)
+                        take(+9223372036854775808)
+                        (9223372036854775808).member = 1
+                        items[+9223372036854775808] = 1
+                        self.items[+9223372036854775808] = 1
+                        items[0] = +9223372036854775808
+                        const BAD = +9223372036854775808
+                    """, compileMode);
+            var probe = findFunction(analyzed.ast(), "probe");
+            var data = analyzed.analysisData();
+            var literalAnchors = findNodes(probe, LiteralExpression.class,
+                    literal -> literal.sourceText().equals("9223372036854775808"));
+            assertEquals(7, literalAnchors.size());
+            var errors = data.diagnostics().asList().stream()
+                    .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                    .toList();
+            assertEquals(literalAnchors.size(), errors.size(), errors::toString);
+            for (var anchor : literalAnchors) {
+                var exactRange = FrontendRange.fromAstRange(anchor.range());
+                assertEquals(1, errors.stream().filter(diagnostic ->
+                        diagnostic.category().equals("sema.expression_resolution")
+                                && exactRange.equals(diagnostic.range())).count(), errors::toString);
+                assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(anchor).status());
+                assertSame(anchor, data.propagatedFailureOrigins().get(anchor).primaryAnchor());
+            }
+            for (var statement : probe.body().statements()) {
+                var root = statement instanceof ExpressionStatement expressionStatement
+                        ? expressionStatement.expression()
+                        : assertInstanceOf(VariableDeclaration.class, statement).value();
+                var anchor = findNode(root, LiteralExpression.class,
+                        literal -> literal.sourceText().equals("9223372036854775808"));
+                assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(root).status());
+                assertSame(anchor, data.propagatedFailureOrigins().get(root).primaryAnchor());
+            }
+        }
+    }
+
+    @Test
+    void minimumSignedIntegerPublishesDirectOperandAndConstFactsInBothModes() throws Exception {
+        for (var compileMode : List.of(false, true)) {
+            var analyzed = analyzeIntegerFixture("minimum_literal.gd", """
+                    extends Node
+
+                    func take(_value: int) -> void:
+                        pass
+
+                    func probe() -> void:
+                        const MINIMUM = -9223372036854775808
+                        self.take(-0x8000000000000000)
+                        self.take(MINIMUM)
+                    """, compileMode);
+            var data = analyzed.analysisData();
+            assertFalse(data.diagnostics().hasErrors(), data.diagnostics().asList()::toString);
+            var probe = findFunction(analyzed.ast(), "probe");
+            var minimum = findNode(probe, VariableDeclaration.class, decl -> decl.name().equals("MINIMUM"));
+            var folded = assertInstanceOf(Evaluation.Resolved.class, data.constantFacts().get(minimum));
+            assertEquals(new GdConstantValue.IntValue(Long.MIN_VALUE), folded.value());
+            var signedLiterals = findNodes(probe, UnaryExpression.class, _ -> true);
+            assertEquals(2, signedLiterals.size());
+            for (var unary : signedLiterals) {
+                var magnitude = assertInstanceOf(LiteralExpression.class, unary.operand());
+                assertSame(GdIntType.INT, data.expressionTypes().get(unary).publishedType());
+                assertSame(GdIntType.INT, data.expressionTypes().get(magnitude).publishedType());
+                assertNull(data.propagatedFailureOrigins().get(magnitude));
+            }
+            var takeSteps = findNodes(probe, AttributeCallStep.class, step -> step.name().equals("take"));
+            assertEquals(2, takeSteps.size());
+            for (var step : takeSteps) {
+                assertEquals(FrontendCallResolutionStatus.RESOLVED, data.resolvedCalls().get(step).status());
+            }
+        }
+    }
+
+    @Test
+    void assignmentFailureSelectsLeftDependencyAndStillReportsTheRightFailure() throws Exception {
+        var analyzed = analyze("assignment_selected_operands.gd", """
+                extends Node
+                var items: Array[int] = [0]
+
+                func probe() -> void:
+                    items[+9223372036854775808] = +99999999999999999999
+                """);
+        var assignment = findNode(analyzed.ast(), AssignmentExpression.class, _ -> true);
+        var left = assertInstanceOf(SubscriptExpression.class, assignment.left());
+        var leftIndex = assertInstanceOf(UnaryExpression.class, left.arguments().getFirst());
+        var right = assertInstanceOf(UnaryExpression.class, assignment.right());
+        var data = analyzed.analysisData();
+        assertNull(data.expressionTypes().get(left), "A subscript write target is not typed as a read");
+        assertSame(leftIndex.operand(), data.propagatedFailureOrigins().get(left).primaryAnchor());
+        assertSame(leftIndex.operand(), data.propagatedFailureOrigins().get(assignment).primaryAnchor());
+        assertSame(right.operand(), data.propagatedFailureOrigins().get(right).primaryAnchor());
+        var errors = data.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                .toList();
+        assertEquals(2, errors.size(), errors::toString);
+        for (var operand : List.of(leftIndex.operand(), right.operand())) {
+            assertTrue(errors.stream().anyMatch(error ->
+                    error.category().equals("sema.expression_resolution")
+                            && FrontendRange.fromAstRange(operand.range()).equals(error.range())), errors::toString);
+        }
+    }
+
+    @Test
+    void subscriptWriteKeepsSelectedBaseErrorAndIndependentOperandErrorsInBothModes() throws Exception {
+        for (var compileMode : List.of(false, true)) {
+            var analyzed = analyzeIntegerFixture("subscript_selected_base_error.gd", """
+                    extends Node
+                    var items: Array[int] = [0]
+
+                    func probe() -> void:
+                        (1 + "x")[0] = 1
+                        (1 + "x")[0] = 1 + "y"
+                        (1 + "x")[+9223372036854775808] = 1
+                        items[0] = 1
+                    """, compileMode);
+            var data = analyzed.analysisData();
+            var probe = findFunction(analyzed.ast(), "probe");
+            var assignments = findNodes(probe, AssignmentExpression.class, _ -> true);
+            assertEquals(4, assignments.size());
+            var expectedAnchors = new ArrayList<Expression>();
+            for (var assignment : assignments.subList(0, 3)) {
+                var left = assertInstanceOf(SubscriptExpression.class, assignment.left());
+                var base = assertInstanceOf(BinaryExpression.class, left.base());
+                expectedAnchors.add(base);
+                assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(base).status());
+                assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(assignment).status());
+                assertNull(data.expressionTypes().get(left));
+                assertSame(base, data.propagatedFailureOrigins().get(left).primaryAnchor());
+                assertSame(base, data.propagatedFailureOrigins().get(assignment).primaryAnchor());
+            }
+            var independentRight = assertInstanceOf(BinaryExpression.class, assignments.get(1).right());
+            expectedAnchors.add(independentRight);
+            var index = findNode(assignments.get(2).left(), UnaryExpression.class, _ -> true);
+            expectedAnchors.add(index.operand());
+            assertSame(index.operand(), data.propagatedFailureOrigins().get(index).primaryAnchor());
+            var healthy = assignments.getLast();
+            assertSame(GdVoidType.VOID, data.expressionTypes().get(healthy).publishedType());
+            assertNull(data.propagatedFailureOrigins().get(healthy));
+
+            var errors = data.diagnostics().asList().stream()
+                    .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                    .toList();
+            assertEquals(expectedAnchors.size(), errors.size(), errors::toString);
+            for (var anchor : expectedAnchors) {
+                assertEquals(1, errors.stream().filter(diagnostic ->
+                        diagnostic.category().equals("sema.expression_resolution")
+                                && FrontendRange.fromAstRange(anchor.range()).equals(diagnostic.range())
+                ).count(), errors::toString);
+            }
+        }
+    }
+
+    @Test
+    void subscriptWriteKeepsActualFailureOwnerThroughNestedValueReceiversInBothModes() throws Exception {
+        for (var compileMode : List.of(false, true)) {
+            var analyzed = analyzeIntegerFixture("subscript_nested_receiver_error.gd", """
+                    extends Node
+
+                    func probe() -> void:
+                        ((1 + "x") + 2)[0] = 1
+                        (-(1 + "x"))[0] = 1 + "y"
+                        ([1 + "x"])[+9223372036854775808] = 1
+                        ((1 + "x") if true else [1])[0] = 1
+                        ((1 + "x") as Array[int])[0] = 1
+                        ((1 + "x")[0])[0] = 1
+                        ({"key": -(1 + "x")})[0] = 1
+                        (await (1 + "x"))[0] = 1
+                    """, compileMode);
+            var data = analyzed.analysisData();
+            var probe = findFunction(analyzed.ast(), "probe");
+            var assignments = findNodes(probe, AssignmentExpression.class, _ -> true);
+            var receiverKinds = List.of(
+                    BinaryExpression.class, UnaryExpression.class, ArrayExpression.class,
+                    ConditionalExpression.class, CastExpression.class, SubscriptExpression.class,
+                    DictionaryExpression.class, AwaitExpression.class
+            );
+            assertEquals(receiverKinds.size(), assignments.size());
+            var expectedAnchors = new ArrayList<Expression>();
+            for (var i = 0; i < assignments.size(); i++) {
+                var assignment = assignments.get(i);
+                var left = assertInstanceOf(SubscriptExpression.class, assignment.left());
+                var receiver = assertInstanceOf(receiverKinds.get(i), left.base());
+                var anchor = findNode(receiver, BinaryExpression.class, binary ->
+                        binary.left() instanceof LiteralExpression && binary.right() instanceof LiteralExpression);
+                expectedAnchors.add(anchor);
+                for (var expression : List.of(anchor, receiver, assignment)) {
+                    var type = data.expressionTypes().get(expression);
+                    assertNotNull(type);
+                    assertEquals(FrontendExpressionTypeStatus.FAILED, type.status());
+                    assertNull(type.publishedType());
+                }
+                assertNull(data.expressionTypes().get(left));
+                for (var expression : List.of(anchor, receiver, left, assignment)) {
+                    var origin = data.propagatedFailureOrigins().get(expression);
+                    assertNotNull(origin, () -> "Missing origin at " + expression.range());
+                    assertSame(anchor, origin.primaryAnchor());
+                    assertNull(origin.originRecovery());
+                }
+            }
+            var independentRight = assertInstanceOf(BinaryExpression.class, assignments.get(1).right());
+            assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(independentRight).status());
+            assertNull(data.propagatedFailureOrigins().get(independentRight));
+            expectedAnchors.add(independentRight);
+            var independentIndex = findNode(assignments.get(2).left(), UnaryExpression.class, _ -> true);
+            assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(independentIndex).status());
+            assertSame(independentIndex.operand(), data.propagatedFailureOrigins().get(independentIndex).primaryAnchor());
+            expectedAnchors.add(independentIndex.operand());
+
+            var errors = data.diagnostics().asList().stream()
+                    .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                    .toList();
+            assertEquals(expectedAnchors.size(), errors.size(), errors::toString);
+            for (var anchor : expectedAnchors) {
+                assertEquals(1, errors.stream().filter(diagnostic ->
+                        diagnostic.category().equals("sema.expression_resolution")
+                                && FrontendRange.fromAstRange(anchor.range()).equals(diagnostic.range())
+                ).count(), errors::toString);
+            }
+        }
+    }
+
+    @Test
+    void subscriptWriteReportsOwnedGetNodeAndPreloadFailuresInBothModes() throws Exception {
+        for (var compileMode : List.of(false, true)) {
+            for (var receiverText : List.of("$Child", "-$Child", "preload(1)")) {
+                var analyzed = analyzeIntegerFixture("subscript_owned_value_leaf.gd", """
+                        extends RefCounted
+                        func probe():
+                            (%s)[0] = 1
+                        """.formatted(receiverText), compileMode);
+                var data = analyzed.analysisData();
+                var assignment = findNode(analyzed.ast(), AssignmentExpression.class, _ -> true);
+                var left = assertInstanceOf(SubscriptExpression.class, assignment.left());
+                var receiver = left.base();
+                var anchor = switch (receiverText) {
+                    case "$Child" -> assertInstanceOf(GetNodeExpression.class, receiver);
+                    case "-$Child" -> assertInstanceOf(
+                            GetNodeExpression.class, assertInstanceOf(UnaryExpression.class, receiver).operand()
+                    );
+                    default -> assertInstanceOf(PreloadExpression.class, receiver);
+                };
+                for (var expression : List.of(anchor, receiver, assignment)) {
+                    var type = data.expressionTypes().get(expression);
+                    assertNotNull(type);
+                    assertEquals(FrontendExpressionTypeStatus.FAILED, type.status());
+                    assertNull(type.publishedType());
+                }
+                assertNull(data.expressionTypes().get(left));
+                for (var expression : List.of(anchor, receiver, left, assignment)) {
+                    var origin = data.propagatedFailureOrigins().get(expression);
+                    assertNotNull(origin, () -> "Missing origin at " + expression.range());
+                    assertSame(anchor, origin.primaryAnchor());
+                    assertNull(origin.originRecovery());
+                }
+                var errors = data.diagnostics().asList().stream()
+                        .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                        .toList();
+                assertEquals(1, errors.size(), errors::toString);
+                var error = errors.getFirst();
+                assertEquals("sema.expression_resolution", error.category());
+                assertEquals(FrontendRange.fromAstRange(anchor.range()), error.range());
+                assertTrue(error.message().contains(anchor instanceof GetNodeExpression
+                        ? "inherits from Node"
+                        : "path must be a string literal"), error::message);
+            }
+        }
+    }
+
+    @Test
+    void subscriptWriteKeepsResolvedGetNodeValuesAndTheirOwnAssignmentOutcomeInBothModes() throws Exception {
+        for (var compileMode : List.of(false, true)) {
+            var analyzed = analyzeIntegerFixture("subscript_resolved_get_node.gd", """
+                    extends Node
+                    func probe():
+                        ($Child)[0] = 1
+                        var nodes: Array[Node] = [null]
+                        nodes[0] = $Child
+                    """, compileMode);
+            var data = analyzed.analysisData();
+            var assignments = findNodes(analyzed.ast(), AssignmentExpression.class, _ -> true);
+            assertEquals(2, assignments.size());
+            var rejected = assignments.getFirst();
+            var left = assertInstanceOf(SubscriptExpression.class, rejected.left());
+            var receiver = assertInstanceOf(GetNodeExpression.class, left.base());
+            var accepted = assignments.getLast();
+            var rightValue = assertInstanceOf(GetNodeExpression.class, accepted.right());
+            for (var getNode : List.of(receiver, rightValue)) {
+                var type = data.expressionTypes().get(getNode);
+                assertEquals(FrontendExpressionTypeStatus.RESOLVED, type.status());
+                assertEquals("Node", type.publishedType().getTypeName());
+                assertNull(data.propagatedFailureOrigins().get(getNode));
+            }
+            assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(rejected).status());
+            assertNull(data.expressionTypes().get(left));
+            assertNull(data.propagatedFailureOrigins().get(left));
+            assertNull(data.propagatedFailureOrigins().get(rejected));
+            assertSame(GdVoidType.VOID, data.expressionTypes().get(accepted).publishedType());
+            assertNull(data.propagatedFailureOrigins().get(accepted));
+
+            var errors = data.diagnostics().asList().stream()
+                    .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                    .toList();
+            assertEquals(1, errors.size(), errors::toString);
+            var error = errors.getFirst();
+            assertEquals("sema.expression_resolution", error.category());
+            assertEquals(FrontendRange.fromAstRange(rejected.range()), error.range());
+            assertTrue(error.message().contains("Receiver type 'Node' does not support subscript assignment target"),
+                    error::message);
+        }
+    }
+
+    @Test
+    void preloadKeepsItsSelectedPathFailureInReadAndWritePositionsInBothModes() throws Exception {
+        for (var compileMode : List.of(false, true)) {
+            var analyzed = analyzeIntegerFixture("preload_selected_path.gd", """
+                    extends RefCounted
+                    func probe():
+                        var preloaded = preload(9223372036854775808)
+                        (preload(9223372036854775808))[0] = 1
+                        (preload(1))[0] = 1
+                        var healthy: Resource = preload("res://example.gd")
+                    """, compileMode);
+            var data = analyzed.analysisData();
+            var preloads = findNodes(analyzed.ast(), PreloadExpression.class, _ -> true);
+            var assignments = findNodes(analyzed.ast(), AssignmentExpression.class, _ -> true);
+            assertEquals(4, preloads.size());
+            assertEquals(2, assignments.size());
+            var expectedAnchors = new ArrayList<Expression>();
+            for (var preload : preloads.subList(0, 2)) {
+                var path = assertInstanceOf(LiteralExpression.class, preload.path());
+                expectedAnchors.add(path);
+                assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(path).status());
+                assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(preload).status());
+                assertNull(data.expressionTypes().get(preload).publishedType());
+                assertSame(path, data.propagatedFailureOrigins().get(preload).primaryAnchor());
+                assertNull(data.propagatedFailureOrigins().get(preload).originRecovery());
+            }
+            var badShape = preloads.get(2);
+            assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(badShape).status());
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, data.expressionTypes().get(badShape.path()).status());
+            assertSame(badShape, data.propagatedFailureOrigins().get(badShape).primaryAnchor());
+            expectedAnchors.add(badShape);
+            for (var i = 0; i < assignments.size(); i++) {
+                var assignment = assignments.get(i);
+                var left = assertInstanceOf(SubscriptExpression.class, assignment.left());
+                assertSame(preloads.get(i + 1), left.base());
+                assertNull(data.expressionTypes().get(left));
+                assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(assignment).status());
+                assertSame(expectedAnchors.get(i + 1), data.propagatedFailureOrigins().get(left).primaryAnchor());
+                assertSame(expectedAnchors.get(i + 1), data.propagatedFailureOrigins().get(assignment).primaryAnchor());
+            }
+            var healthy = preloads.getLast();
+            assertEquals("Resource", data.expressionTypes().get(healthy).publishedType().getTypeName());
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, data.expressionTypes().get(healthy).status());
+            assertNull(data.propagatedFailureOrigins().get(healthy));
+            assertOnlyExpressionErrors(data, expectedAnchors);
+        }
+    }
+
+    @Test
+    void subscriptWriteCallRetryKeepsTheSelectedOriginalArgumentInBothModes() throws Exception {
+        for (var compileMode : List.of(false, true)) {
+            var analyzed = analyzeIntegerFixture("subscript_call_retry.gd", """
+                    extends RefCounted
+                    func values(x: Variant) -> Array[int]:
+                        return [0]
+                    func probe():
+                        (range($Child))[0] = 1
+                        (range($Child, 9223372036854775808))[+9223372036854775809] = 1 + "y"
+                        (Array($Child))[0] = 1
+                        (super($Child))[0] = 1
+                        (values($Child))[0] = 1
+                        (range(3))[0] = 1
+                        (values(0))[0] = 1
+                    """, compileMode);
+            var data = analyzed.analysisData();
+            var assignments = findNodes(findFunction(analyzed.ast(), "probe"), AssignmentExpression.class, _ -> true);
+            assertEquals(7, assignments.size());
+            var expectedAnchors = new ArrayList<Expression>();
+            for (var assignment : assignments.subList(0, 5)) {
+                var left = assertInstanceOf(SubscriptExpression.class, assignment.left());
+                var call = assertInstanceOf(CallExpression.class, left.base());
+                var anchor = assertInstanceOf(GetNodeExpression.class, call.arguments().getFirst());
+                expectedAnchors.add(anchor);
+                for (var expression : List.of(anchor, call, assignment)) {
+                    assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(expression).status());
+                    assertNull(data.expressionTypes().get(expression).publishedType());
+                }
+                assertNull(data.expressionTypes().get(left));
+                assertNull(data.resolvedCalls().get(call));
+                for (var expression : List.of(anchor, call, left, assignment)) {
+                    var origin = data.propagatedFailureOrigins().get(expression);
+                    assertNotNull(origin, () -> "Missing origin at " + expression.range());
+                    assertSame(anchor, origin.primaryAnchor());
+                    assertNull(origin.originRecovery());
+                }
+            }
+            var mixed = assignments.get(1);
+            var mixedTarget = assertInstanceOf(SubscriptExpression.class, mixed.left());
+            var mixedCall = assertInstanceOf(CallExpression.class, mixedTarget.base());
+            var laterArgument = assertInstanceOf(LiteralExpression.class, mixedCall.arguments().getLast());
+            var index = assertInstanceOf(UnaryExpression.class, mixedTarget.arguments().getFirst());
+            var rhs = assertInstanceOf(BinaryExpression.class, mixed.right());
+            assertSame(laterArgument, data.propagatedFailureOrigins().get(laterArgument).primaryAnchor());
+            assertSame(index.operand(), data.propagatedFailureOrigins().get(index).primaryAnchor());
+            assertNull(data.propagatedFailureOrigins().get(rhs));
+            expectedAnchors.addAll(List.of(laterArgument, index.operand(), rhs));
+            for (var assignment : assignments.subList(5, 7)) {
+                var left = assertInstanceOf(SubscriptExpression.class, assignment.left());
+                var call = assertInstanceOf(CallExpression.class, left.base());
+                assertEquals(FrontendExpressionTypeStatus.RESOLVED, data.expressionTypes().get(call).status());
+                assertEquals(FrontendCallResolutionStatus.RESOLVED, data.resolvedCalls().get(call).status());
+                assertSame(GdVoidType.VOID, data.expressionTypes().get(assignment).publishedType());
+                assertNull(data.propagatedFailureOrigins().get(call));
+                assertNull(data.propagatedFailureOrigins().get(assignment));
+            }
+            assertOnlyExpressionErrors(data, expectedAnchors);
+        }
+    }
+
+    @Test
+    void subscriptWriteCallRetryDoesNotBorrowALaterArgumentsFailureInBothModes() throws Exception {
+        for (var compileMode : List.of(false, true)) {
+            var analyzed = analyzeIntegerFixture("subscript_call_retry_unanchored.gd", """
+                    extends RefCounted
+                    func probe():
+                        (range(missing, 9223372036854775808))[0] = 1
+                    """, compileMode);
+            var data = analyzed.analysisData();
+            var assignment = findNode(analyzed.ast(), AssignmentExpression.class, _ -> true);
+            var left = assertInstanceOf(SubscriptExpression.class, assignment.left());
+            var call = assertInstanceOf(CallExpression.class, left.base());
+            var first = assertInstanceOf(IdentifierExpression.class, call.arguments().getFirst());
+            var later = assertInstanceOf(LiteralExpression.class, call.arguments().getLast());
+            assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(call).status());
+            assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(assignment).status());
+            for (var expression : List.of(first, call, left, assignment)) {
+                assertNull(data.propagatedFailureOrigins().get(expression));
+            }
+            assertSame(later, data.propagatedFailureOrigins().get(later).primaryAnchor());
+            var errors = data.diagnostics().asList().stream()
+                    .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                    .toList();
+            assertTrue(errors.stream().anyMatch(error -> error.category().equals("sema.binding")
+                    && error.range().equals(FrontendRange.fromAstRange(first.range()))), errors::toString);
+            assertEquals(1, errors.stream().filter(error -> error.category().equals("sema.expression_resolution")
+                    && error.range().equals(FrontendRange.fromAstRange(later.range()))).count(), errors::toString);
+        }
+    }
+
+    private static void assertOnlyExpressionErrors(
+            @NotNull FrontendAnalysisData data, @NotNull List<? extends Expression> expectedAnchors
+    ) {
+        var errors = data.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                .toList();
+        assertEquals(expectedAnchors.size(), errors.size(), errors::toString);
+        for (var anchor : expectedAnchors) {
+            assertEquals(1, errors.stream().filter(error -> error.category().equals("sema.expression_resolution")
+                    && error.range().equals(FrontendRange.fromAstRange(anchor.range()))).count(), errors::toString);
+        }
+    }
+
+    @Test
+    void castAndTypeTestPassSelectedValueOriginToChainBeforeItsReportsInBothModes() throws Exception {
+        for (var compileMode : List.of(false, true)) {
+            var analyzed = analyzeIntegerFixture("cast_and_is_operand_origins.gd", """
+                    extends Node
+                    func take(_value):
+                        pass
+                    func probe() -> void:
+                        self.take(9223372036854775808 is int)
+                        self.take(9223372036854775808 as int)
+                    """, compileMode);
+            var data = analyzed.analysisData();
+            var errors = data.diagnostics().asList().stream()
+                    .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                    .toList();
+            assertEquals(2, errors.size(), errors::toString);
+            var statements = findFunction(analyzed.ast(), "probe").body().statements();
+            assertEquals(2, statements.size());
+            for (var statement : statements) {
+                var chain = assertInstanceOf(AttributeExpression.class,
+                        assertInstanceOf(ExpressionStatement.class, statement).expression());
+                var step = assertInstanceOf(AttributeCallStep.class, chain.steps().getFirst());
+                var wrapper = step.arguments().getFirst();
+                var literal = wrapper instanceof TypeTestExpression typeTest
+                        ? typeTest.value() : assertInstanceOf(CastExpression.class, wrapper).value();
+                assertInstanceOf(LiteralExpression.class, literal);
+                for (var dependent : List.of(wrapper, step, chain)) {
+                    assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(dependent).status());
+                    assertSame(literal, data.propagatedFailureOrigins().get(dependent).primaryAnchor());
+                }
+                assertEquals(FrontendCallResolutionStatus.FAILED, data.resolvedCalls().get(step).status());
+                assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, data.resolvedCalls().get(step).callKind());
+                assertNull(data.typeTestTargets().get(wrapper));
+                assertEquals(1, errors.stream().filter(diagnostic ->
+                        diagnostic.category().equals("sema.expression_resolution")
+                                && FrontendRange.fromAstRange(literal.range()).equals(diagnostic.range())
+                ).count(), errors::toString);
+            }
+        }
+    }
+
+    @Test
+    void castAndTypeTestKeepUnsupportedDeclaredTargetsAsRootOwnedFailures() throws Exception {
+        for (var compileMode : List.of(false, true)) {
+            var analyzed = analyzeIntegerFixture("cast_and_is_target_origins.gd", """
+                    extends Node
+                    func probe() -> void:
+                        var bad_cast = 9223372036854775808 as Array[FutureEnemy]
+                        var bad_test = 1 is Array[FutureEnemy]
+                    """, compileMode);
+            var data = analyzed.analysisData();
+            var probe = findFunction(analyzed.ast(), "probe");
+            var cast = findNode(probe, CastExpression.class, _ -> true);
+            var typeTest = findNode(probe, TypeTestExpression.class, _ -> true);
+            assertNull(data.expressionTypes().get(cast.value()), "An invalid cast target is rejected before its operand");
+            assertSame(GdIntType.INT, data.expressionTypes().get(typeTest.value()).publishedType());
+            var errors = data.diagnostics().asList().stream()
+                    .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                    .toList();
+            assertEquals(2, errors.size(), errors::toString);
+            for (var root : List.of(cast, typeTest)) {
+                assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(root).status());
+                assertNull(data.propagatedFailureOrigins().get(root));
+                assertEquals(1, errors.stream().filter(diagnostic ->
+                        diagnostic.category().equals("sema.expression_resolution")
+                                && FrontendRange.fromAstRange(root.range()).equals(diagnostic.range())
+                                && diagnostic.message().contains("Array[FutureEnemy]")
+                ).count(), errors::toString);
+            }
+        }
+    }
+
     @Test
     void analyzePublishesResolvedAtomicAndChainExpressionTypes() throws Exception {
         var analyzed = analyze(
@@ -1109,8 +1657,6 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         var subscriptBind = assertInstanceOf(AttributeExpression.class, assertInstanceOf(ExpressionStatement.class, statements.get(3)).expression());
         var callableCall = assertInstanceOf(AttributeExpression.class, assertInstanceOf(ExpressionStatement.class, statements.get(4)).expression());
         var consumeCall = assertInstanceOf(CallExpression.class, assertInstanceOf(ExpressionStatement.class, statements.get(5)).expression());
-        var bareBindInvoke = assertInstanceOf(CallExpression.class, assertInstanceOf(ExpressionStatement.class, statements.get(6)).expression());
-        var selfBindInvoke = assertInstanceOf(CallExpression.class, assertInstanceOf(ExpressionStatement.class, statements.get(7)).expression());
 
         for (var callableExpression : List.of(bareBind, selfBind, staticBind, subscriptBind, consumeCall)) {
             var expressionType = analyzed.analysisData().expressionTypes().get(callableExpression);
@@ -1124,21 +1670,13 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, callableCallType.status());
         assertEquals(GdVariantType.VARIANT, callableCallType.publishedType());
 
-        for (var unsupportedInvoke : List.of(bareBindInvoke, selfBindInvoke)) {
-            var expressionType = analyzed.analysisData().expressionTypes().get(unsupportedInvoke);
-            assertNotNull(expressionType);
-            assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, expressionType.status());
-            assertTrue(expressionType.detailReason().contains("Direct invocation of callable values"));
-        }
-
-        var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
-        assertEquals(2, unsupportedDiagnostics.size());
-        assertTrue(unsupportedDiagnostics.stream().allMatch(diagnostic ->
-                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-        ));
-        assertTrue(unsupportedDiagnostics.stream().allMatch(
-                diagnostic -> diagnostic.message().contains("Direct invocation of callable values")
-        ));
+        assertInvalidDirectCallIsSkipped(analyzed, assertInstanceOf(ExpressionStatement.class, statements.get(6)));
+        assertInvalidDirectCallIsSkipped(analyzed, assertInstanceOf(ExpressionStatement.class, statements.get(7)));
+        var errors = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                .toList();
+        assertEquals(2, errors.size(), errors::toString);
+        assertTrue(errors.stream().allMatch(error -> error.category().equals("parse.call.invalid_callee")));
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
     }
 
@@ -2609,27 +3147,139 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                 CallExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
         );
-        var unsupportedDirectCall = assertInstanceOf(
-                CallExpression.class,
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
-        );
+        var invalidDirectCall = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
 
         var mismatchedBareCallType = analyzed.analysisData().expressionTypes().get(mismatchedBareCall);
         assertNotNull(mismatchedBareCallType);
         assertEquals(FrontendExpressionTypeStatus.FAILED, mismatchedBareCallType.status());
 
-        var unsupportedDirectCallType = analyzed.analysisData().expressionTypes().get(unsupportedDirectCall);
-        assertNotNull(unsupportedDirectCallType);
-        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, unsupportedDirectCallType.status());
+        var mismatchedCall = analyzed.analysisData().resolvedCalls().get(mismatchedBareCall);
+        assertNotNull(mismatchedCall);
+        assertEquals(FrontendCallResolutionStatus.FAILED, mismatchedCall.status());
+        assertInvalidDirectCallIsSkipped(analyzed, invalidDirectCall);
 
         var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
         assertEquals(1, expressionDiagnostics.size());
         assertTrue(expressionDiagnostics.getFirst().message().contains("No applicable overload"));
+        assertEquals(FrontendRange.fromAstRange(mismatchedBareCall.range()), expressionDiagnostics.getFirst().range());
 
-        var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
-        assertEquals(1, unsupportedDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.ERROR, unsupportedDiagnostics.getFirst().severity());
-        assertTrue(unsupportedDiagnostics.getFirst().message().contains("Direct invocation of callable values"));
+        var errors = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                .toList();
+        assertEquals(2, errors.size(), errors::toString);
+    }
+
+    @Test
+    void handBuiltCallsPreserveValueRequiredAssignmentAndDirectCallableRejections() throws Exception {
+        var parserDiagnostics = new DiagnosticManager();
+        var parsed = new GdScriptParserService().parseUnit(Path.of("tmp", "semantic_call_boundaries.gd"), """
+                extends RefCounted
+
+                func helper() -> int:
+                    return 1
+                func make_cb() -> Callable:
+                    return helper
+                func consume(value: int) -> int:
+                    return value
+                func ping(dynamic_value):
+                    self.consume(dynamic_value[0], 1)
+                    self.make_cb()
+                """, parserDiagnostics);
+        assertTrue(parserDiagnostics.isEmpty(), parserDiagnostics.snapshot().asList()::toString);
+        var ast = parsed.ast();
+        var ping = findFunction(ast, "ping");
+        var consumeStatement = assertInstanceOf(ExpressionStatement.class, ping.body().statements().getFirst());
+        var originalChain = assertInstanceOf(AttributeExpression.class, consumeStatement.expression());
+        var originalStep = assertInstanceOf(AttributeCallStep.class, originalChain.steps().getFirst());
+        var left = assertInstanceOf(SubscriptExpression.class, originalStep.arguments().getFirst());
+        var right = originalStep.arguments().getLast();
+        var assignment = new AssignmentExpression("=", left, right, new Range(
+                left.range().startByte(), right.range().endByte(), left.range().startPoint(), right.range().endPoint()
+        ));
+        var consumeStep = new AttributeCallStep(originalStep.name(), List.of(assignment), originalStep.range());
+        var chain = new AttributeExpression(originalChain.base(), List.of(consumeStep), originalChain.range());
+        var callableStatement = assertInstanceOf(ExpressionStatement.class, ping.body().statements().getLast());
+        var callable = assertInstanceOf(AttributeExpression.class, callableStatement.expression());
+        var directCall = new CallExpression(callable, List.of(), callableStatement.range());
+        var nestedAssignmentStatement = new ExpressionStatement(chain, consumeStatement.range());
+        var directCallStatement = new ExpressionStatement(directCall, callableStatement.range());
+        var manualBody = new Block(List.of(nestedAssignmentStatement, directCallStatement), ping.body().range());
+        var manualPing = new FunctionDeclaration(
+                ping.name(), ping.parameters(), ping.returnType(), ping.isStatic(), manualBody, ping.range()
+        );
+        var sourceStatements = new ArrayList<>(ast.statements());
+        assertSame(ping, sourceStatements.getLast());
+        sourceStatements.set(sourceStatements.size() - 1, manualPing);
+        var unit = new FrontendSourceUnit(parsed.path(), parsed.source(), new SourceFile(sourceStatements, ast.range()));
+        assertTrue(unit.parseRecoveries().isEmpty());
+
+        for (var compileMode : List.of(false, true)) {
+            var diagnostics = new DiagnosticManager();
+            var module = new FrontendModule("test_module", List.of(unit));
+            var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+            var analyzer = new FrontendSemanticAnalyzer();
+            var data = compileMode
+                    ? analyzer.analyzeForCompile(module, registry, diagnostics)
+                    : analyzer.analyze(module, registry, diagnostics);
+            assertFalse(data.skippedSubtreeRoots().containsKey(nestedAssignmentStatement));
+            assertFalse(data.skippedSubtreeRoots().containsKey(directCallStatement));
+            var assignmentType = data.expressionTypes().get(assignment);
+            assertNotNull(assignmentType);
+            assertEquals(FrontendExpressionTypeStatus.FAILED, assignmentType.status());
+            assertTrue(assignmentType.detailReason().contains("Assignment expressions do not produce an ordinary value"));
+            assertEquals(FrontendCallResolutionStatus.FAILED, data.resolvedCalls().get(consumeStep).status());
+            var assignmentRange = FrontendRange.fromAstRange(assignment.range());
+            var reported = diagnostics.snapshot().asList();
+            assertEquals(1, reported.stream().filter(diagnostic ->
+                    diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                            && diagnostic.category().equals("sema.expression_resolution")
+                            && assignmentRange.equals(diagnostic.range())
+                            && diagnostic.message().contains("Assignment expressions do not produce an ordinary value")
+            ).count());
+
+            var callableType = data.expressionTypes().get(callable);
+            assertNotNull(callableType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, callableType.status());
+            assertInstanceOf(GdCallableType.class, callableType.publishedType());
+            var directCallType = data.expressionTypes().get(directCall);
+            assertNotNull(directCallType);
+            assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, directCallType.status());
+            assertTrue(directCallType.detailReason().contains("Direct invocation of callable values"));
+            var unsupported = reported.stream().filter(diagnostic ->
+                    diagnostic.category().equals("sema.unsupported_expression_route")
+            ).toList();
+            assertEquals(1, unsupported.size(), unsupported::toString);
+            assertEquals(FrontendDiagnosticSeverity.ERROR, unsupported.getFirst().severity());
+            assertEquals(FrontendRange.fromAstRange(directCall.range()), unsupported.getFirst().range());
+            assertTrue(unsupported.getFirst().message().contains("Direct invocation of callable values"));
+        }
+    }
+
+    private static void assertInvalidDirectCallIsSkipped(
+            @NotNull AnalyzedScript analyzed, @NotNull ExpressionStatement statement
+    ) {
+        var call = assertInstanceOf(CallExpression.class, statement.expression());
+        var callee = assertInstanceOf(AttributeExpression.class, call.callee());
+        var data = analyzed.analysisData();
+        assertTrue(data.skippedSubtreeRoots().containsKey(statement));
+        assertNull(data.expressionTypes().get(call));
+        assertNull(data.resolvedCalls().get(call));
+        assertNull(data.expressionTypes().get(callee));
+        var innerCall = assertInstanceOf(AttributeCallStep.class, callee.steps().getLast());
+        assertNull(data.expressionTypes().get(innerCall));
+        assertNull(data.resolvedCalls().get(innerCall));
+        var recoveries = data.parseRecoveriesByOwner().get(statement);
+        assertNotNull(recoveries);
+        assertEquals(1, recoveries.size());
+        var recovery = recoveries.getFirst();
+        assertSame(statement, recovery.owner());
+        assertEquals("expression", recovery.facet());
+        assertEquals("parse.call.invalid_callee", recovery.code());
+        var calleeRange = FrontendRange.fromAstRange(callee.range());
+        assertEquals(calleeRange, recovery.range());
+        assertEquals(1, diagnosticsByCategory(analyzed, "parse.call.invalid_callee").stream().filter(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR && calleeRange.equals(diagnostic.range())
+        ).count());
     }
 
     @Test
@@ -3555,6 +4205,23 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         assertNotNull(resolvedCall);
         assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status());
         assertEquals("Array[int]", resolvedCall.argumentTypes().getFirst().getTypeName());
+    }
+
+    private static @NotNull AnalyzedScript analyzeIntegerFixture(
+            @NotNull String fileName,
+            @NotNull String source,
+            boolean compileMode
+    ) throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", fileName), source, diagnostics);
+        assertTrue(diagnostics.isEmpty(), diagnostics.snapshot().asList()::toString);
+        var module = new FrontendModule("test_module", List.of(unit));
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analyzer = new FrontendSemanticAnalyzer();
+        var data = compileMode
+                ? analyzer.analyzeForCompile(module, registry, diagnostics)
+                : analyzer.analyze(module, registry, diagnostics);
+        return new AnalyzedScript(unit.ast(), data);
     }
 
     private static @NotNull AnalyzedScript analyze(

@@ -2,12 +2,14 @@ package gd.script.gdcc.frontend.parse;
 
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.DictionaryExpression;
+import dev.superice.gdparser.frontend.ast.ErrorExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import org.junit.jupiter.api.Test;
@@ -17,13 +19,15 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Freezes gdparser container-literal AST contracts required by
 /// `frontend_container_literal_implementation.md`.
 ///
 /// Scope is parser shape only: element counts, trailing comma vs `openEnded`,
-/// Python/Lua dictionary styles, and `parse.lowering` error mapping. Semantic
+/// Python/Lua dictionary styles, and parser diagnostic attribution. Semantic
 /// typing and lowering stay out of this suite.
 class FrontendContainerLiteralParseBehaviorTest {
     private final GdScriptParserService parserService = new GdScriptParserService();
@@ -71,16 +75,18 @@ class FrontendContainerLiteralParseBehaviorTest {
     }
 
     @Test
-    void patternOpenEndingSetsArrayOpenEnded() {
-        // `openEnded` is only the `..` pattern opening, never a trailing comma.
-        var unit = parse("array_open_ended.gd", """
+    void arrayValueRejectsPatternRest() {
+        var unit = parseWithReturnError("array_open_ended.gd", """
                 func probe():
                     return [1, 2, ..]
-                """);
+                """, DiagnosticCodes.SLOT_ARRAY_ELEMENT, 30, 31);
 
         var array = arrayFromReturn(unit, "probe");
-        assertTrue(array.openEnded());
-        assertEquals(2, array.elements().size());
+        assertFalse(array.openEnded());
+        assertEquals(3, array.elements().size());
+        assertIntegerLiteral(array.elements().getFirst(), "1");
+        assertIntegerLiteral(array.elements().get(1), "2");
+        assertInstanceOf(ErrorExpression.class, array.elements().getLast());
     }
 
     @Test
@@ -157,15 +163,18 @@ class FrontendContainerLiteralParseBehaviorTest {
     }
 
     @Test
-    void patternOpenEndingSetsDictionaryOpenEnded() {
-        var unit = parse("dict_open_ended.gd", """
+    void dictionaryValueRejectsPatternRest() {
+        var unit = parseWithReturnError("dict_open_ended.gd", """
                 func probe():
                     return {"x": 1, ..}
-                """);
+                """, DiagnosticCodes.SLOT_DICTIONARY_KEY, 32, 33);
 
         var dictionary = dictionaryFromReturn(unit, "probe");
-        assertTrue(dictionary.openEnded());
+        assertFalse(dictionary.openEnded());
         assertEquals(1, dictionary.entries().size());
+        var entry = dictionary.entries().getFirst();
+        assertStringLiteral(entry.key(), "\"x\"");
+        assertIntegerLiteral(entry.value(), "1");
     }
 
     @Test
@@ -222,39 +231,53 @@ class FrontendContainerLiteralParseBehaviorTest {
     }
 
     @Test
-    void mixedDictionaryStylesProduceParseLoweringError() {
-        // `{x: 1, y = 2}` must fail at parse, not lower as two entries.
-        assertParseLoweringError("dict_mixed_styles.gd", """
+    void mixedDictionaryStylesProduceSpecificParseError() {
+        var unit = parseWithReturnError("dict_mixed_styles.gd", """
                 func probe():
                     return {x: 1, y = 2}
-                """);
+                """, DiagnosticCodes.DICTIONARY_MIXED_STYLE, 34, 35);
+
+        var dictionary = dictionaryFromReturn(unit, "probe");
+        assertEquals(2, dictionary.entries().size());
+        assertEquals("x", assertInstanceOf(IdentifierExpression.class, dictionary.entries().getFirst().key()).name());
+        assertEquals("y", assertInstanceOf(IdentifierExpression.class, dictionary.entries().getLast().key()).name());
     }
 
     @Test
-    void invalidLuaStyleNonStringKeyProducesParseLoweringError() {
-        // `{1 = "x"}` is not a legal Lua-style key.
-        assertParseLoweringError("dict_invalid_lua_key.gd", """
+    void invalidLuaStyleNonStringKeyProducesSpecificParseError() {
+        var unit = parseWithReturnError("dict_invalid_lua_key.gd", """
                 func probe():
                     return {1 = "x"}
-                """);
+                """, DiagnosticCodes.DICTIONARY_INVALID_LUA_KEY, 28, 29);
+
+        var dictionary = dictionaryFromReturn(unit, "probe");
+        assertEquals(1, dictionary.entries().size());
+        var entry = dictionary.entries().getFirst();
+        assertIntegerLiteral(entry.key(), "1");
+        assertStringLiteral(entry.value(), "\"x\"");
     }
 
     @Test
-    void parserErrorsMapToParseLoweringWithoutThrowing() {
-        // Same invalid form, but also freeze diagnostic category/severity/message prefix.
-        var diagnostics = new DiagnosticManager();
-        var unit = parserService.parseUnit(Path.of("tmp", "dict_parse_lowering.gd"), """
+    void invalidDictionaryKeyDiagnosticPreservesRangeAndSiblingFunction() {
+        var unit = parseWithReturnError("dict_parse_recovery.gd", """
                 func probe():
                     return {1 = "x"}
-                """, diagnostics);
 
-        assertFalse(diagnostics.snapshot().isEmpty());
-        assertTrue(diagnostics.snapshot().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("parse.lowering")
-                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && diagnostic.message().startsWith("CST structural issue:")
-                        && diagnostic.range() != null
-        ));
+                func after():
+                    return 2
+                """, DiagnosticCodes.DICTIONARY_INVALID_LUA_KEY, 28, 29);
+
+        var recovery = unit.parseRecoveries().getFirst();
+        assertTrue(recovery.message().startsWith("Expected identifier or string as Lua-style dictionary key"));
+        var range = recovery.range();
+        assertNotNull(range);
+        assertEquals("=", unit.source().substring(range.startByte(), range.endByte()));
+
+        assertEquals(2, unit.ast().statements().size());
+        var after = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getLast());
+        assertEquals("after", after.name());
+        var returnStatement = assertInstanceOf(ReturnStatement.class, after.body().statements().getFirst());
+        assertIntegerLiteral(returnStatement.value(), "2");
     }
 
     @Test
@@ -294,30 +317,48 @@ class FrontendContainerLiteralParseBehaviorTest {
         return unit;
     }
 
-    private void assertParseLoweringError(String fileName, String source) {
+    private FrontendSourceUnit parseWithReturnError(
+            String fileName,
+            String source,
+            String expectedCode,
+            int expectedStartByte,
+            int expectedEndByte
+    ) {
         var diagnostics = new DiagnosticManager();
-        parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
-        assertFalse(diagnostics.snapshot().isEmpty(), "expected parse diagnostics");
-        assertTrue(diagnostics.snapshot().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("parse.lowering")
-                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && diagnostic.range() != null
-        ), () -> "expected parse.lowering ERROR, got: " + diagnostics.snapshot().asList());
+        var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
+        assertFalse(unit.parseFailed());
+        var errors = diagnostics.snapshot().asList();
+        assertEquals(1, errors.size(), errors::toString);
+        var error = errors.getFirst();
+        assertEquals(expectedCode, error.category());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
+        var expectedPath = "tmp/" + fileName;
+        assertEquals(expectedPath, error.sourcePath());
+        var range = error.range();
+        assertNotNull(range);
+        assertEquals(expectedStartByte, range.startByte());
+        assertEquals(expectedEndByte, range.endByte());
+
+        assertEquals(1, unit.parseRecoveries().size());
+        var recovery = unit.parseRecoveries().getFirst();
+        assertEquals(error, recovery.toDiagnostic(expectedPath));
+        assertSame(returnFromFunction(unit, "probe"), recovery.owner());
+        assertEquals("return.value", recovery.facet());
+        return unit;
     }
 
     private static ArrayExpression arrayFromReturn(FrontendSourceUnit unit, String functionName) {
-        return assertInstanceOf(ArrayExpression.class, expressionFromReturn(unit, functionName));
+        return assertInstanceOf(ArrayExpression.class, returnFromFunction(unit, functionName).value());
     }
 
     private static DictionaryExpression dictionaryFromReturn(FrontendSourceUnit unit, String functionName) {
-        return assertInstanceOf(DictionaryExpression.class, expressionFromReturn(unit, functionName));
+        return assertInstanceOf(DictionaryExpression.class, returnFromFunction(unit, functionName).value());
     }
 
-    private static Expression expressionFromReturn(FrontendSourceUnit unit, String functionName) {
+    private static ReturnStatement returnFromFunction(FrontendSourceUnit unit, String functionName) {
         var function = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getFirst());
         assertEquals(functionName, function.name());
-        var returnStatement = assertInstanceOf(ReturnStatement.class, function.body().statements().getFirst());
-        return returnStatement.value();
+        return assertInstanceOf(ReturnStatement.class, function.body().statements().getFirst());
     }
 
     private static void assertIntegerLiteral(Expression expression, String sourceText) {

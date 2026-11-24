@@ -2,7 +2,11 @@ package gd.script.gdcc.api;
 
 import dev.superice.gdparser.frontend.ast.EnumDeclaration;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IfStatement;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
+import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
@@ -14,16 +18,19 @@ import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
+import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /// Runner-level coverage for the fault-tolerance contract
 /// (`frontend_lsp_foundation_implementation.md` §2.2): parse errors no longer starve semantic
@@ -58,7 +65,7 @@ class AnalysisRunnerRecoveryTest {
         assertAll(
                 () -> assertEquals(AnalysisResult.Outcome.COMPLETED, result.outcome()),
                 () -> assertEquals(AnalysisResult.LoweringStatus.NOT_REQUESTED, result.loweringStatus()),
-                () -> assertTrue(hasError(result.diagnostics(), "parse.lowering")),
+                () -> assertMissingIfCondition(runResult),
                 () -> assertTrue(categories(result.diagnostics()).noneMatch("sema.compile_check"::equals)),
                 () -> assertHealthyPayload(runResult)
         );
@@ -66,13 +73,18 @@ class AnalysisRunnerRecoveryTest {
 
     @Test
     void parseErrorsSkipLoweringButKeepSemanticPayload() {
-        var runResult = newRunner().analyzeRich(frozenRequest(BROKEN_SOURCE), loweringOptions());
+        var runner = new AnalysisRunner(
+                new GdScriptParserService(),
+                new FrontendSemanticAnalyzer()::analyze,
+                (_, _, _) -> fail("parser errors must prevent lowering verification")
+        );
+        var runResult = runner.analyzeRich(frozenRequest(BROKEN_SOURCE), loweringOptions());
 
         var result = runResult.result();
         assertAll(
                 () -> assertEquals(AnalysisResult.Outcome.COMPLETED, result.outcome()),
                 () -> assertEquals(AnalysisResult.LoweringStatus.FAILED, result.loweringStatus()),
-                () -> assertTrue(hasError(result.diagnostics(), "parse.lowering")),
+                () -> assertMissingIfCondition(runResult),
                 () -> assertTrue(categories(result.diagnostics()).noneMatch("sema.compile_check"::equals),
                         "parse-error runs must not surface compile-only diagnostics"),
                 () -> assertTrue(categories(payload(runResult).snapshotDiagnostics())
@@ -101,7 +113,7 @@ class AnalysisRunnerRecoveryTest {
                         .count()),
                 () -> assertEquals(
                         result.diagnostics().asList().stream().map(AnalysisRunnerRecoveryTest::diagnosticKey).distinct().count(),
-                        (long) result.diagnostics().asList().size(),
+                        result.diagnostics().asList().size(),
                         "lowering rerun must not duplicate shared semantic diagnostics"
                 )
         );
@@ -165,23 +177,17 @@ class AnalysisRunnerRecoveryTest {
 
     @Test
     void blankMatchBindingNameNeverEscapesIntoVariableInventory() {
-        // gdparser maps `var :` to a blank-named PatternBindingExpression (not an error node); the
-        // annotator must mark the enclosing match damaged so the run stays COMPLETED instead of
-        // collapsing into INTERNAL_FAILED on the blank name.
         var runResult = newRunner().analyzeRich(frozenRequest(HEADER + """
                 func f():
                     match 1:
                         var :
                             pass
+                        _:
+                            var kept = 3
                     var y = 2
                 """), AnalyzeOptions.defaults());
 
-        var result = runResult.result();
-        assertAll(
-                () -> assertEquals(AnalysisResult.Outcome.COMPLETED, result.outcome()),
-                () -> assertTrue(hasError(result.diagnostics(), "parse.lowering")),
-                () -> assertHealthyPayload(runResult)
-        );
+        assertRecoveredMatch(runResult);
     }
 
     @Test
@@ -191,15 +197,12 @@ class AnalysisRunnerRecoveryTest {
                     match {0: 1}:
                         {0: var }:
                             pass
+                        _:
+                            var kept = 3
                     var y = 2
                 """), AnalyzeOptions.defaults());
 
-        var result = runResult.result();
-        assertAll(
-                () -> assertEquals(AnalysisResult.Outcome.COMPLETED, result.outcome()),
-                () -> assertTrue(hasError(result.diagnostics(), "parse.lowering")),
-                () -> assertHealthyPayload(runResult)
-        );
+        assertRecoveredMatch(runResult);
     }
 
     @Test
@@ -251,27 +254,93 @@ class AnalysisRunnerRecoveryTest {
     /// (`var y = 2` in `f`) even when another statement is parser-damaged.
     private static void assertHealthyPayload(@NotNull AnalysisRunResult runResult) {
         var payload = payload(runResult);
-        var function = payload.module().units().getFirst().ast().statements().stream()
+        var function = functionF(payload);
+        var bodyScope = assertInstanceOf(BlockScope.class, payload.analysisData().scopesByAst().get(function.body()));
+        var declaration = function.body().statements().stream()
+                .filter(VariableDeclaration.class::isInstance)
+                .map(VariableDeclaration.class::cast)
+                .filter(candidate -> candidate.name().equals("y"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("local 'y' not found"));
+        var binding = bodyScope.resolveValueHere("y");
+        assertNotNull(binding, "healthy sibling local must be bound");
+        assertSame(declaration, binding.declaration());
+    }
+
+    private static @NotNull FunctionDeclaration functionF(@NotNull AnalysisRunResult.Payload payload) {
+        return payload.module().units().getFirst().ast().statements().stream()
                 .filter(FunctionDeclaration.class::isInstance)
                 .map(FunctionDeclaration.class::cast)
                 .filter(candidate -> candidate.name().equals("f"))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("function 'f' not found"));
-        var bodyScope = assertInstanceOf(
-                BlockScope.class,
-                payload.analysisData().scopesByAst().get(function.body())
-        );
-        assertNotNull(bodyScope.resolveValueHere("y"), "healthy sibling local must be bound");
+    }
+
+    private static void assertMissingIfCondition(@NotNull AnalysisRunResult runResult) {
+        var payload = payload(runResult);
+        var branch = assertInstanceOf(IfStatement.class, functionF(payload).body().statements().getFirst());
+        var source = payload.module().units().getFirst().source();
+        var start = source.indexOf("if :");
+        assertSingleRecovery(runResult, DiagnosticCodes.SLOT_IF_CONDITION, branch, "if.condition", start, start + 2);
+        assertNull(payload.analysisData().scopesByAst().get(branch));
+    }
+
+    private static void assertRecoveredMatch(@NotNull AnalysisRunResult runResult) {
+        assertEquals(AnalysisResult.Outcome.COMPLETED, runResult.result().outcome());
+        assertEquals(AnalysisResult.LoweringStatus.NOT_REQUESTED, runResult.result().loweringStatus());
+        var payload = payload(runResult);
+        var match = assertInstanceOf(MatchStatement.class, functionF(payload).body().statements().getFirst());
+        assertEquals(2, match.sections().size());
+        var damaged = match.sections().getFirst();
+        var healthy = match.sections().getLast();
+        var source = payload.module().units().getFirst().source();
+        var start = source.indexOf("var ");
+        assertSingleRecovery(runResult, DiagnosticCodes.MATCH_BIND_MISSING_NAME, damaged, "match.pattern", start, start + 3);
+        var analysis = payload.analysisData();
+        assertFalse(analysis.skippedSubtreeRoots().containsKey(match));
+        assertNull(analysis.scopesByAst().get(damaged));
+        assertNull(analysis.scopesByAst().get(damaged.body()));
+        var plan = analysis.matchPlans().get(match);
+        assertNotNull(plan);
+        assertEquals(1, plan.sections().size());
+        assertSame(healthy, plan.sections().getFirst().section());
+        var healthyScope = assertInstanceOf(BlockScope.class, analysis.scopesByAst().get(healthy));
+        var binding = healthyScope.resolveValueHere("kept");
+        assertNotNull(binding, "healthy match section must bind its local");
+        assertSame(healthy.body().statements().getFirst(), binding.declaration());
+        assertHealthyPayload(runResult);
+    }
+
+    private static void assertSingleRecovery(
+            @NotNull AnalysisRunResult runResult,
+            @NotNull String category,
+            @NotNull Node owner,
+            @NotNull String facet,
+            int startByte,
+            int endByte
+    ) {
+        var payload = payload(runResult);
+        var unit = payload.module().units().getFirst();
+        assertFalse(unit.parseFailed());
+        assertEquals(1, unit.parseRecoveries().size());
+        var recovery = unit.parseRecoveries().getFirst();
+        assertEquals(category, recovery.code());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, recovery.severity());
+        assertSame(owner, recovery.owner());
+        assertEquals(facet, recovery.facet());
+        assertTrue(payload.analysisData().skippedSubtreeRoots().containsKey(owner));
+        var range = recovery.range();
+        assertNotNull(range);
+        assertEquals(startByte, range.startByte());
+        assertEquals(endByte, range.endByte());
+        var diagnostics = List.of(FrontendDiagnostic.error(category, recovery.message(), "/main.gd", range));
+        assertEquals(List.of("/main.gd"), runResult.result().sourcePaths());
+        assertEquals(diagnostics, runResult.result().diagnostics().asList());
+        assertEquals(diagnostics, payload.snapshotDiagnostics().asList());
     }
 
     private static AnalysisRunResult.@NotNull Payload payload(@NotNull AnalysisRunResult runResult) {
         return Objects.requireNonNull(runResult.payload(), "expected a semantic payload");
-    }
-
-    private static boolean hasError(@NotNull DiagnosticSnapshot diagnostics, @NotNull String category) {
-        return diagnostics.asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals(category)
-                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR);
     }
 
     private static Stream<String> categories(@NotNull DiagnosticSnapshot diagnostics) {

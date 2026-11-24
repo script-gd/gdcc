@@ -1,6 +1,9 @@
 package gd.script.gdcc.api;
 
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.api.task.CompileTaskHooks;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -12,6 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ApiCompileDiagnosticsTest {
@@ -21,32 +25,46 @@ class ApiCompileDiagnosticsTest {
         var api = ApiCompileTestSupport.newApi(compiler);
 
         api.createModule("demo", "Broken Parse Demo");
-        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("parse-project")));
-        api.putFile("demo", "/src/broken.gd", """
+        var projectPath = tempDir.resolve("parse-project");
+        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(projectPath));
+        var source = """
                 class_name Broken
                 extends Node
-                
+
                 func _ready(
                     pass
-                """, "shown broken.gd");
+                """;
+        var displayPath = "shown broken.gd";
+        api.putFile("demo", "/src/broken.gd", source, displayPath);
 
         var result = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
-        var parseDiagnostic = result.diagnostics().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals("parse.lowering"))
-                .findFirst()
-                .orElseThrow();
 
         assertEquals(CompileResult.Outcome.FRONTEND_FAILED, result.outcome());
         assertFalse(result.success());
         assertEquals("Frontend diagnostics blocked compilation", result.failureMessage());
         assertTrue(result.diagnostics().hasErrors());
-        assertEquals("shown broken.gd", parseDiagnostic.sourcePath());
-        assertTrue(parseDiagnostic.message().contains("CST structural issue"));
-        assertEquals(List.of("shown broken.gd"), result.sourcePaths());
+        var diagnostics = result.diagnostics().asList();
+        assertEquals(List.of(DiagnosticCodes.MISSING_CLOSER_PARAMETER_LIST, DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN),
+                diagnostics.stream().map(FrontendDiagnostic::category).toList());
+        for (var diagnostic : diagnostics) {
+            assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());
+            assertEquals(displayPath, diagnostic.sourcePath());
+        }
+        var missingCloser = source.indexOf('(') + 1;
+        var closerRange = diagnostics.getFirst().range();
+        assertNotNull(closerRange);
+        assertEquals(missingCloser, closerRange.startByte());
+        assertEquals(missingCloser, closerRange.endByte());
+        var indentRange = diagnostics.getLast().range();
+        assertNotNull(indentRange);
+        assertEquals(missingCloser + 1, indentRange.startByte());
+        assertEquals(source.indexOf("pass"), indentRange.endByte());
+        assertEquals(List.of(displayPath), result.sourcePaths());
         assertTrue(result.generatedFiles().isEmpty());
         assertTrue(result.artifacts().isEmpty());
         assertTrue(result.outputLinks().isEmpty());
         assertEquals(0, compiler.invocationCount());
+        assertFalse(Files.exists(projectPath), "parse errors must stop before creating the build project");
     }
 
     @Test

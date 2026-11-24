@@ -929,6 +929,11 @@ static void asm_parse_directive(TCCState *s1, int global)
                     next();
                 }
             }
+#ifdef TCC_GDCC_NOEXECSTACK
+            /* Observe the directive even if a same-named section already exists. */
+            if ((flags & SHF_EXECINSTR) && !strcmp(sname, ".note.GNU-stack"))
+                s1->requires_execstack = 1;
+#endif
             last_text_section = cur_text_section;
 	    if (tok1 == TOK_ASMDIR_section)
 	        use_section(s1, sname);

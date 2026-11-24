@@ -1,9 +1,13 @@
 package gd.script.gdcc.api.analysis;
 
+import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.api.API;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.type.GdFloatVectorType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
@@ -11,6 +15,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 
 import static gd.script.gdcc.api.analysis.QueryTestSupport.file;
@@ -21,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -471,17 +477,62 @@ class CompletionServiceTest {
                     ).no
                 """;
         var triviaSnapshot = QueryTestSupport.analyze(api, "completion_receiver_trivia", files(file(path, source)));
-        for (var occurrence = 0; occurrence < 6; occurrence++) {
+        var analysis = triviaSnapshot.analysisData();
+        var unitIndex = triviaSnapshot.astIndex().forDisplayPath(path);
+        assertNotNull(unitIndex);
+        var parserDiagnostics = triviaSnapshot.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().startsWith("parse."))
+                .toList();
+        assertEquals(1, parserDiagnostics.size(), parserDiagnostics::toString);
+        var strayCr = parserDiagnostics.getFirst();
+        assertEquals("parse.lexical.error", strayCr.category());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, strayCr.severity());
+        assertEquals("Stray carriage return character in source code.", strayCr.message());
+        var crOffset = offset(source, "\r).no", 0);
+        assertEquals(crOffset, strayCr.range().startByte());
+        assertEquals(crOffset + 1, strayCr.range().endByte());
+
+        var cases = List.of("single", "lf", "crlf", "cr", "comment", "continuation");
+        for (var occurrence = 0; occurrence < cases.size(); occurrence++) {
+            var name = cases.get(occurrence);
             var cursor = endOf(source, ").no", occurrence);
             var result = FrontendSnapshotCompletionService.completionCandidatesAt(triviaSnapshot, path, cursor);
-            assertEquals(CompletionContextKind.MEMBER_ACCESS, result.contextKind());
-            assertNotNull(result.replaceableRange());
-            assertEquals(cursor - 2, result.replaceableRange().startByte());
-            assertEquals(cursor, result.replaceableRange().endByte());
-            if (occurrence < 4) {
-                assertHas(result, "x", CompletionCandidateKind.PROPERTY);
+            assertEquals(CompletionContextKind.MEMBER_ACCESS, result.contextKind(), name);
+            assertNotNull(result.replaceableRange(), name);
+            assertEquals(cursor - 2, result.replaceableRange().startByte(), name);
+            assertEquals(cursor, result.replaceableRange().endByte(), name);
+
+            var expression = assertInstanceOf(AttributeExpression.class, unitIndex.parentOf(unitIndex.nodeAt(cursor - 1)));
+            var declaration = assertInstanceOf(VariableDeclaration.class, unitIndex.parentOf(expression));
+            assertEquals(name, declaration.name());
+            var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
+            assertEquals("v", receiver.name());
+            if (name.equals("cr")) {
+                // A standalone CR is a lexical error, not a whitespace case for the receiver scan.
+                var recoveries = analysis.parseRecoveriesByOwner().get(declaration);
+                assertNotNull(recoveries);
+                assertEquals(1, recoveries.size());
+                var recovery = recoveries.getFirst();
+                assertSame(declaration, recovery.owner());
+                assertEquals("variable.initializer", recovery.facet());
+                assertEquals(strayCr.category(), recovery.code());
+                assertEquals(strayCr.range(), recovery.range());
+                assertTrue(analysis.skippedSubtreeRoots().containsKey(declaration));
+                assertNull(analysis.expressionTypes().get(receiver));
+                assertTrue(result.candidates().isEmpty(), name);
+                continue;
+            }
+
+            // The comment and continuation cases must reach the scanner with a usable receiver.
+            assertFalse(analysis.skippedSubtreeRoots().containsKey(declaration), name);
+            var receiverType = analysis.expressionTypes().get(receiver);
+            assertNotNull(receiverType, name);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, receiverType.status(), name);
+            assertEquals(GdFloatVectorType.VECTOR2, receiverType.publishedType(), name);
+            if (name.equals("comment") || name.equals("continuation")) {
+                assertTrue(result.candidates().isEmpty(), name);
             } else {
-                assertTrue(result.candidates().isEmpty(), "comment and continuation are not whitespace");
+                assertHas(result, "x", CompletionCandidateKind.PROPERTY);
             }
         }
     }

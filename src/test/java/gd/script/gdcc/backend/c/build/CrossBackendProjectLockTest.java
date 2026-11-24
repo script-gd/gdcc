@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -55,8 +56,8 @@ class CrossBackendProjectLockTest {
                 NativeArtifactInspector.EXPORT_MACRO_DEFINITION
                         + "GDCC_TEST_EXPORT int gdextension_entry(void) { return 1; }\n");
 
-        var probe = new BlockingNativeProbe();
-        var tccCompiler = new TinyCcCompiler(() -> projectDir, (root, platform, arena) -> {
+        var probe = new BlockingNativeProbe(host);
+        var tccCompiler = new TinyCcCompiler(() -> projectDir, (_, _, _) -> {
             probe.factoryCalls.incrementAndGet();
             return probe;
         });
@@ -125,9 +126,9 @@ class CrossBackendProjectLockTest {
                 NativeArtifactInspector.EXPORT_MACRO_DEFINITION + "GDCC_TEST_EXPORT int gdextension_entry(void) { return 1; }\n");
         var factoryCalls = new AtomicInteger();
         var resultRef = new AtomicReference<@Nullable CCompileResult>();
-        var compiler = new TinyCcCompiler(() -> projectDir, (root, platform, arena) -> {
+        var compiler = new TinyCcCompiler(() -> projectDir, (_, platform, _) -> {
             factoryCalls.incrementAndGet();
-            return new WritingFakeNative();
+            return new WritingFakeNative(platform);
         });
 
         // Holding the shared per-project lock directly simulates ANY in-flight round (a zig round
@@ -210,9 +211,14 @@ class CrossBackendProjectLockTest {
         final CountDownLatch insideAddFile = new CountDownLatch(1);
         final CountDownLatch release = new CountDownLatch(1);
         final AtomicInteger factoryCalls = new AtomicInteger();
+        private final TargetPlatform targetPlatform;
+
+        BlockingNativeProbe(@NotNull TargetPlatform targetPlatform) {
+            this.targetPlatform = targetPlatform;
+        }
 
         @Override
-        public @Nullable MemorySegment newState() {
+        public @NotNull MemorySegment newState() {
             return MemorySegment.ofAddress(1);
         }
 
@@ -255,7 +261,7 @@ class CrossBackendProjectLockTest {
 
         @Override
         public int outputFile(@NotNull MemorySegment state, @NotNull String file) {
-            WritingFakeNative.writeArtifact(file);
+            WritingFakeNative.writeArtifact(file, targetPlatform);
             return 0;
         }
 
@@ -270,17 +276,17 @@ class CrossBackendProjectLockTest {
     }
 
     /// Minimal fake that succeeds and writes a marker artifact at output time.
-    private static final class WritingFakeNative implements TinyCcNative {
-        static void writeArtifact(@NotNull String file) {
+    private record WritingFakeNative(@NotNull TargetPlatform targetPlatform) implements TinyCcNative {
+        static void writeArtifact(@NotNull String file, @NotNull TargetPlatform targetPlatform) {
             try {
-                Files.writeString(Path.of(file), "fake shared object");
+                TinyCcElfTestFixtures.writeLockTestArtifact(file, targetPlatform);
             } catch (IOException e) {
-                throw new java.io.UncheckedIOException(e);
+                throw new UncheckedIOException(e);
             }
         }
 
         @Override
-        public @Nullable MemorySegment newState() {
+        public @NotNull MemorySegment newState() {
             return MemorySegment.ofAddress(1);
         }
 
@@ -314,7 +320,7 @@ class CrossBackendProjectLockTest {
 
         @Override
         public int outputFile(@NotNull MemorySegment state, @NotNull String file) {
-            writeArtifact(file);
+            writeArtifact(file, targetPlatform);
             return 0;
         }
 

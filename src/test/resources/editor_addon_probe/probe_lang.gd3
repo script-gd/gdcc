@@ -83,7 +83,7 @@ func _has_named_classes() -> bool:
 func _find_function(function: String, code: String) -> int:
     return code.find("func " + function)
 
-func _make_function(class_name: String, function_name: String, function_args: PackedStringArray) -> String:
+func _make_function(script_class_name: String, function_name: String, function_args: PackedStringArray) -> String:
     return "func " + function_name + "():\n    pass\n"
 
 func _can_make_function() -> bool:

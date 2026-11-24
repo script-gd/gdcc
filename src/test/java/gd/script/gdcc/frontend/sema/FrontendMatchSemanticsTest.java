@@ -4,6 +4,7 @@ import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.DictionaryExpression;
+import dev.superice.gdparser.frontend.ast.ErrorExpression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
@@ -12,9 +13,12 @@ import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import gd.script.gdcc.frontend.constant.Evaluation;
+import gd.script.gdcc.frontend.constant.GdConstantValue;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
@@ -236,7 +240,123 @@ class FrontendMatchSemanticsTest {
         assertEquals(1, typeCheck.size(), typeCheck::toString);
         assertEquals(FrontendRange.fromAstRange(key.range()), typeCheck.getFirst().range());
         assertEquals("Expression in dictionary pattern key must be a constant.", typeCheck.getFirst().message());
+        assertInstanceOf(Evaluation.Rejected.class, analyzed.analysisData().constantFacts().get(key));
+        var goodPattern = assertInstanceOf(
+                DictionaryExpression.class, matchStatement.sections().getLast().patterns().getFirst()
+        );
+        var goodKey = goodPattern.entries().getFirst().key();
+        assertEquals(new GdConstantValue.StringValue("ok"),
+                FrontendMatchSupport.resolvedDictionaryPatternKeyOrNull(analyzed.analysisData(), goodKey));
+        assertTrue(diagnosticsByCategory(analyzed.diagnostics(), "sema.constant_resolution").isEmpty());
         assertEquals(GdIntType.INT, analyzed.analysisData().slotTypes().get(later));
+    }
+
+    @Test
+    void dictionaryPatternKeysPublishEvaluatedValuesAtTheirOwnAstNodes() {
+        var compiled = analyzeForCompile("match_const_keys.gd", """
+                extends Node
+
+                func ping(payload):
+                    const BEFORE = 40
+                    match payload:
+                        [{BEFORE + 2: _, &"name": _, ^"a/b": _, null: _, Vector2.AXIS_X + 1: _}]:
+                            pass
+                """);
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics().asList()::toString);
+        var function = findFunction(compiled.unit().ast(), "ping");
+        var dictionary = findNode(function.body(), DictionaryExpression.class, _ -> true);
+        var expected = List.of(
+                new GdConstantValue.IntValue(42),
+                new GdConstantValue.StringNameValue("name"),
+                new GdConstantValue.NodePathValue("a/b"),
+                new GdConstantValue.NullValue(),
+                new GdConstantValue.IntValue(1)
+        );
+        var facts = compiled.analysisData().constantFacts();
+        assertEquals(expected.size(), dictionary.entries().size());
+        for (var i = 0; i < expected.size(); i++) {
+            var key = dictionary.entries().get(i).key();
+            var fact = assertInstanceOf(Evaluation.Resolved.class, facts.get(key));
+            assertEquals(expected.get(i), fact.value());
+        }
+        assertNull(facts.get(dictionary));
+    }
+
+    @Test
+    void dictionaryPatternKeyDoesNotSeeLaterLocalConstant() {
+        var analyzed = analyze("match_later_const.gd", """
+                extends Node
+
+                func ping(payload):
+                    match payload:
+                        {LATER: _}:
+                            pass
+                    const LATER = 7
+                """);
+        var function = findFunction(analyzed.unit().ast(), "ping");
+        var pattern = findNode(function.body(), DictionaryExpression.class, _ -> true);
+        var key = pattern.entries().getFirst().key();
+        var declaration = findNode(function.body(), VariableDeclaration.class, decl -> decl.name().equals("LATER"));
+        assertInstanceOf(Evaluation.Rejected.class, analyzed.analysisData().constantFacts().get(key));
+        assertNull(FrontendMatchSupport.resolvedDictionaryPatternKeyOrNull(analyzed.analysisData(), key));
+        var later = assertInstanceOf(Evaluation.Resolved.class, analyzed.analysisData().constantFacts().get(declaration));
+        assertEquals(new GdConstantValue.IntValue(7), later.value());
+        assertTrue(diagnosticsByCategory(analyzed.diagnostics(), "sema.constant_resolution").isEmpty());
+    }
+
+    @Test
+    void skipTableOmitsDamagedSectionButPublishesTheHealthyDictionaryKey() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "match_recovery_keys.gd"), """
+                extends Node
+                func ping(value):
+                    match value:
+                        {"damaged": _} when : pass
+                        {"healthy": _}: pass
+                """, diagnostics);
+        var statement = findNode(unit.ast(), MatchStatement.class, _ -> true);
+        assertEquals(2, statement.sections().size());
+        var damaged = statement.sections().getFirst();
+        var healthy = statement.sections().getLast();
+        assertInstanceOf(ErrorExpression.class, damaged.guard());
+        assertTrue(diagnostics.snapshot().hasErrors());
+
+        var data = new FrontendSemanticAnalyzer().analyze(
+                new FrontendModule("test_module", List.of(unit)),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        assertTrue(data.skippedSubtreeRoots().containsKey(damaged));
+        assertFalse(data.skippedSubtreeRoots().containsKey(healthy));
+        var plan = data.matchPlans().get(statement);
+        assertNotNull(plan);
+        assertEquals(1, plan.sections().size());
+        assertSame(healthy, plan.sections().getFirst().section());
+        var damagedPattern = assertInstanceOf(DictionaryExpression.class, damaged.patterns().getFirst());
+        var healthyPattern = assertInstanceOf(DictionaryExpression.class, healthy.patterns().getFirst());
+        assertNull(data.constantFacts().get(damagedPattern.entries().getFirst().key()));
+        assertEquals(new GdConstantValue.StringValue("healthy"), FrontendMatchSupport.resolvedDictionaryPatternKeyOrNull(
+                data, healthyPattern.entries().getFirst().key()
+        ));
+    }
+
+    @Test
+    void invalidIntegerDictionaryKeyKeepsTheUpstreamLiteralErrorOnly() {
+        var compiled = analyzeForCompile("match_overflow_key.gd", """
+                extends Node
+                func ping(value):
+                    match value:
+                        {9223372036854775808: _}: pass
+                """);
+        var pattern = findNode(compiled.unit().ast(), DictionaryExpression.class, _ -> true);
+        var key = pattern.entries().getFirst().key();
+        assertInstanceOf(Evaluation.Rejected.class, compiled.analysisData().constantFacts().get(key));
+        var errors = compiled.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                .toList();
+        assertEquals(1, errors.size(), errors::toString);
+        assertEquals("sema.expression_resolution", errors.getFirst().category());
+        assertEquals(FrontendRange.fromAstRange(key.range()), errors.getFirst().range());
     }
 
     @Test

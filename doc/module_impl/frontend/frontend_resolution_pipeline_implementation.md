@@ -159,7 +159,7 @@ Shared semantic pipeline 分成三层加一个 diagnostics-only 层。
 基础结构层：
 
 1. skeleton
-2. error-subtree annotation（`FrontendErrorSubtreeAnnotator`：skeleton 发布后、scope 之前，把 parser 错误节点提升到最小 enclosing statement/declaration 根写入 `skippedSubtreeRoots()`；参数默认值 island 的根是默认值表达式自身；不发诊断，parser 已持有）
+2. error-subtree annotation（`FrontendErrorSubtreeAnalyzer`：skeleton 发布后、scope 之前，把 parser 错误节点提升到最小 enclosing statement/declaration 根写入 `skippedSubtreeRoots()`；参数默认值 island 的根是默认值表达式自身；不发诊断，parser 已持有）
 3. scope graph
 4. baseline inventory
 

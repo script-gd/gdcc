@@ -312,9 +312,9 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_type_test_invalid_target.gd", """
                 class_name CompileCheckTypeTestInvalidTarget
                 extends RefCounted
-                
+
                 func probe(value: int) -> bool:
-                    return value is null
+                    return value is Array[FutureEnemy]
                 """);
         var probeFunction = findFunction(compiled.unit().ast().statements(), "probe");
         var typeTestExpression = findNode(probeFunction, TypeTestExpression.class, _ -> true);
@@ -323,10 +323,13 @@ class FrontendCompileCheckAnalyzerTest {
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
         assertTrue(compiled.diagnostics().hasErrors());
-        assertFalse(expressionDiagnostics.isEmpty());
+        assertEquals(1, expressionDiagnostics.size(), expressionDiagnostics::toString);
+        assertEquals(FrontendDiagnosticSeverity.ERROR, expressionDiagnostics.getFirst().severity());
         assertEquals(FrontendRange.fromAstRange(typeTestExpression.range()), expressionDiagnostics.getFirst().range());
         assertTrue(
-                expressionDiagnostics.getFirst().message().contains("null"),
+                expressionDiagnostics.getFirst().message().contains(
+                        "Type-test target type 'Array[FutureEnemy]' is not a supported declared type"
+                ),
                 () -> "expected invalid type-test target diagnostic: " + expressionDiagnostics
         );
         assertTrue(
@@ -877,51 +880,65 @@ class FrontendCompileCheckAnalyzerTest {
     @Test
     void analyzeForCompileKeepsDedicatedGuardForResolvedParameterizedGdccConstructorRegression() throws Exception {
         var preparedInput = prepareCompileCheckInput("compile_check_parameterized_gdcc_constructor_regression.gd", """
-                        class_name CompileCheckParameterizedCtorRegression
-                        extends RefCounted
-                
-                        class Worker:
-                            func _init(value: int):
-                                pass
-                
-                        func build(seed):
-                            return Worker.new(seed)
+                class_name CompileCheckParameterizedCtorRegression
+                extends RefCounted
+
+                class Worker:
+                    func _init(value: int):
+                        pass
+
+                func build(seed):
+                    return Worker.new(seed)
                 """);
         var buildFunction = findFunction(preparedInput.unit().ast().statements(), "build");
         var newStep = findNode(buildFunction, AttributeCallStep.class, step -> step.name().equals("new"));
-        preparedInput.analysisData().expressionTypes().clear();
-        preparedInput.analysisData().resolvedCalls().clear();
-        preparedInput.analysisData().resolvedCalls().put(
+        var data = preparedInput.analysisData();
+        var sourceCall = data.resolvedCalls().get(newStep);
+        assertNotNull(sourceCall);
+        assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, sourceCall.callKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, sourceCall.receiverKind());
+        assertEquals(ScopeOwnerKind.GDCC, sourceCall.ownerKind());
+        assertEquals(List.of(GdVariantType.VARIANT), sourceCall.argumentTypes());
+        var receiver = assertInstanceOf(GdObjectType.class, sourceCall.receiverType());
+        assertEquals("CompileCheckParameterizedCtorRegression__sub__Worker", receiver.getTypeName());
+
+        // Simulate upstream accepting this real call, leaving only the dedicated compile guard.
+        data.expressionTypes().clear();
+        data.resolvedCalls().clear();
+        data.resolvedCalls().put(
                 newStep,
                 FrontendResolvedCall.resolved(
-                        "new",
-                        FrontendCallResolutionKind.CONSTRUCTOR,
-                        FrontendReceiverKind.TYPE_META,
-                        ScopeOwnerKind.GDCC,
-                        new GdObjectType("CompileCheckParameterizedCtorRegression__sub__Worker"),
-                        new GdObjectType("CompileCheckParameterizedCtorRegression__sub__Worker"),
-                        List.of(GdVariantType.VARIANT),
-                        new Object()
+                        sourceCall.callableName(),
+                        sourceCall.callKind(),
+                        sourceCall.receiverKind(),
+                        sourceCall.ownerKind(),
+                        receiver,
+                        receiver,
+                        sourceCall.argumentTypes(),
+                        sourceCall.declarationSite()
                 )
         );
-        preparedInput.analysisData().updateDiagnostics(new DiagnosticSnapshot(List.of()));
+        data.updateDiagnostics(new DiagnosticSnapshot(List.of()));
         var cleanDiagnosticManager = new DiagnosticManager();
+        var gateInput = new PreparedCompileCheckInput(preparedInput.unit(), data, cleanDiagnosticManager);
 
-        runCompileCheck(new PreparedCompileCheckInput(
-                preparedInput.unit(),
-                preparedInput.analysisData(),
-                cleanDiagnosticManager
-        ));
+        runCompileCheck(gateInput);
 
-        var compileDiagnostics = diagnosticsByCategory(
-                preparedInput.analysisData().diagnostics(),
-                "sema.compile_check"
-        );
-        assertEquals(1, compileDiagnostics.size());
+        var expected = cleanDiagnosticManager.snapshot();
+        assertEquals(1, expected.asList().size(), expected::toString);
+        var error = expected.asList().getFirst();
+        assertEquals("sema.compile_check", error.category());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
+        assertEquals(FrontendRange.fromAstRange(newStep.range()), error.range());
         assertTrue(
-                compileDiagnostics.getFirst().message().contains("supports only zero-argument custom object construction"),
-                compileDiagnostics.getFirst().message()
+                error.message().contains("supports only zero-argument custom object construction"), error::message
         );
+
+        runCompileCheck(gateInput);
+        assertEquals(expected, cleanDiagnosticManager.snapshot());
+        var freshDiagnosticManager = new DiagnosticManager();
+        runCompileCheck(new PreparedCompileCheckInput(preparedInput.unit(), data, freshDiagnosticManager));
+        assertEquals(expected, freshDiagnosticManager.snapshot());
     }
 
     @Test

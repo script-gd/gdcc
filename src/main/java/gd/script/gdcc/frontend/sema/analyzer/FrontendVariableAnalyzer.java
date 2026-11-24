@@ -47,12 +47,13 @@ import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
+import gd.script.gdcc.util.IdentityHashSet;
+import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -76,8 +77,6 @@ public class FrontendVariableAnalyzer {
     private static final @NotNull String VARIABLE_BINDING_CATEGORY = "sema.variable_binding";
     private static final @NotNull String UNSUPPORTED_PARAMETER_DEFAULT_VALUE_CATEGORY =
             "sema.unsupported_parameter_default_value";
-    private static final @NotNull String UNSUPPORTED_VARIABLE_INVENTORY_SUBTREE_CATEGORY =
-            "sema.unsupported_variable_inventory_subtree";
 
     /// Runs variable analysis against the shared analysis carrier.
     ///
@@ -109,8 +108,7 @@ public class FrontendVariableAnalyzer {
             new AstWalkerVariableBinder(
                     sourceClassRelation.unit().path(),
                     moduleSkeleton,
-                    scopesByAst,
-                    analysisData.constantFacts(),
+                    analysisData,
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
         }
@@ -131,6 +129,7 @@ public class FrontendVariableAnalyzer {
     private static final class AstWalkerVariableBinder implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
         private final @NotNull FrontendModuleSkeleton moduleSkeleton;
+        private final @NotNull FrontendAnalysisData analysisData;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull FrontendAstSideTable<Evaluation> constantFacts;
         private final @NotNull DiagnosticManager diagnosticManager;
@@ -149,8 +148,7 @@ public class FrontendVariableAnalyzer {
                 new IdentityHashMap<>();
         /// Idempotency guard: both the declaration walk and the boundary reporter can reach the same lambda,
         /// but parameters/captures must be bound exactly once.
-        private final @NotNull Set<LambdaExpression> processedLambdas =
-                Collections.newSetFromMap(new IdentityHashMap<>());
+        private final @NotNull Set<LambdaExpression> processedLambdas = new IdentityHashSet<>();
         /// Counts how many supported executable-block boundaries the walker is currently inside.
         ///
         /// The counter acts as a narrow capability flag rather than a generic nesting metric:
@@ -167,21 +165,17 @@ public class FrontendVariableAnalyzer {
         private AstWalkerVariableBinder(
                 @NotNull Path sourcePath,
                 @NotNull FrontendModuleSkeleton moduleSkeleton,
-                @NotNull FrontendAstSideTable<Scope> scopesByAst,
-                @NotNull FrontendAstSideTable<Evaluation> constantFacts,
+                @NotNull FrontendAnalysisData analysisData,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath");
             this.moduleSkeleton = Objects.requireNonNull(moduleSkeleton, "moduleSkeleton");
-            this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst");
-            this.constantFacts = Objects.requireNonNull(constantFacts, "constantFacts");
+            this.analysisData = Objects.requireNonNull(analysisData, "analysisData");
+            this.scopesByAst = analysisData.scopesByAst();
+            this.constantFacts = analysisData.constantFacts();
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager");
             this.astWalker = new ASTWalker(this);
-            unsupportedBoundaryReporter = new UnsupportedVariableBoundaryReporter(
-                    sourcePath,
-                    diagnosticManager,
-                    this::bindLambdaInventory
-            );
+            unsupportedBoundaryReporter = new UnsupportedVariableBoundaryReporter(this::bindLambdaInventory);
         }
 
         private void walk(@NotNull SourceFile sourceFile) {
@@ -328,6 +322,9 @@ public class FrontendVariableAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             for (var section : matchStatement.sections()) {
+                if (isNotPublished(section)) {
+                    continue;
+                }
                 bindMatchSectionBindings(section);
                 walkSupportedExecutableBlock(section.body());
             }
@@ -402,7 +399,7 @@ public class FrontendVariableAnalyzer {
                 @NotNull CallableScope lambdaScope,
                 @NotNull BlockScope lambdaBodyScope
         ) {
-            var scanner = new LambdaCaptureSourceScanner(scopesByAst);
+            var scanner = new LambdaCaptureSourceScanner(scopesByAst, analysisData.skippedSubtreeRoots());
             scanner.scan(lambdaExpression.body());
             var capturesByName = new LinkedHashMap<String, LambdaCaptureEntry>();
             var needsSelf = scanner.usesExplicitSelf;
@@ -638,7 +635,10 @@ public class FrontendVariableAnalyzer {
                     callableScope,
                     moduleSkeleton.topLevelCanonicalNameMap(),
                     sourcePath,
-                    diagnosticManager
+                    diagnosticManager,
+                    analysisData,
+                    parameter,
+                    "parameter.type"
             );
             var existingBinding = callableScope.resolveValueHere(parameterName);
             if (existingBinding != null) {
@@ -755,17 +755,16 @@ public class FrontendVariableAnalyzer {
                     moduleSkeleton.topLevelCanonicalNameMap()
             )) {
                 case FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.NoAnnotation _ -> GdVariantType.VARIANT;
-                case FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.Resolved resolved ->
-                        resolved.declaredType();
-                case FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.Rejected rejected -> {
+                case FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.Resolved(var declaredType) -> declaredType;
+                case FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.Rejected(var reason) -> {
                     reportBindingError(
                             variableDeclaration,
                             "Constant '" + variableName + "' has an invalid declared type: "
-                                    + rejected.reason()
+                                    + reason
                     );
                     constantFacts.put(
                             variableDeclaration,
-                            new Evaluation.Rejected(rejected.reason(), variableDeclaration.type())
+                            new Evaluation.Rejected(reason, variableDeclaration.type())
                     );
                     yield GdVariantType.VARIANT;
                 }
@@ -781,7 +780,10 @@ public class FrontendVariableAnalyzer {
         }
 
         private void bindForIterator(@NotNull ForStatement forStatement) {
-            var iteratorName = forStatement.iterator().trim();
+            var iteratorName = StringUtil.trimToNull(forStatement.iterator());
+            if (iteratorName == null) {
+                return;
+            }
             var targetScope = scopesByAst.get(forStatement.body());
             if (!(targetScope instanceof BlockScope blockScope)
                     || !FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind())) {
@@ -1005,18 +1007,10 @@ public class FrontendVariableAnalyzer {
     /// Block-local `const` subtrees stay sealed for lambda inventory: the const-resolution owner
     /// rejects any lambda inside an initializer, so nothing in the subtree may bind one here.
     private static final class UnsupportedVariableBoundaryReporter implements ASTNodeHandler {
-        private final @NotNull Path sourcePath;
-        private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull Consumer<LambdaExpression> lambdaInventoryBinder;
         private final @NotNull ASTWalker astWalker;
 
-        private UnsupportedVariableBoundaryReporter(
-                @NotNull Path sourcePath,
-                @NotNull DiagnosticManager diagnosticManager,
-                @NotNull Consumer<LambdaExpression> lambdaInventoryBinder
-        ) {
-            this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath");
-            this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager");
+        private UnsupportedVariableBoundaryReporter(@NotNull Consumer<LambdaExpression> lambdaInventoryBinder) {
             this.lambdaInventoryBinder = Objects.requireNonNull(lambdaInventoryBinder, "lambdaInventoryBinder");
             astWalker = new ASTWalker(this);
         }
@@ -1093,7 +1087,7 @@ public class FrontendVariableAnalyzer {
     /// in capture planning. Explicit `self` expressions and get-node expressions (`$` / `%`) are
     /// flagged separately because both need the enclosing instance receiver without being an
     /// identifier use.
-    private static final class LambdaCaptureSourceScanner implements ASTNodeHandler {
+    private static final class LambdaCaptureSourceScanner {
         /// One source-ordered capture-relevant event inside a lambda body.
         private sealed interface LambdaCaptureEvent {
         }
@@ -1109,53 +1103,46 @@ public class FrontendVariableAnalyzer {
         }
 
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
-        private final @NotNull ASTWalker astWalker;
+        private final @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots;
         private final @NotNull List<LambdaCaptureEvent> events = new ArrayList<>();
         private boolean usesExplicitSelf;
 
-        private LambdaCaptureSourceScanner(@NotNull FrontendAstSideTable<Scope> scopesByAst) {
+        private LambdaCaptureSourceScanner(
+                @NotNull FrontendAstSideTable<Scope> scopesByAst,
+                @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots
+        ) {
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst");
-            astWalker = new ASTWalker(this);
+            this.skippedSubtreeRoots = Objects.requireNonNull(skippedSubtreeRoots, "skippedSubtreeRoots");
         }
 
-        private void scan(@NotNull Block lambdaBody) {
-            astWalker.walk(lambdaBody);
-        }
-
-        @Override
-        public @NotNull FrontendASTTraversalDirective handleNode(@NotNull Node node) {
-            return FrontendASTTraversalDirective.CONTINUE;
-        }
-
-        @Override
-        public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
-            events.add(new NestedLambdaEvent(lambdaExpression));
-            return FrontendASTTraversalDirective.SKIP_CHILDREN;
-        }
-
-        /// Class-body enums are consumed by the skeleton enum pre-pass; either way identifiers
-        /// inside an enum subtree must never become capture events here.
-        @Override
-        public @NotNull FrontendASTTraversalDirective handleEnumDeclaration(@NotNull EnumDeclaration enumDeclaration) {
-            return FrontendASTTraversalDirective.SKIP_CHILDREN;
-        }
-
-        @Override
-        public @NotNull FrontendASTTraversalDirective handleVariableDeclaration(
-                @NotNull VariableDeclaration variableDeclaration
-        ) {
-            // The declaration name is a plain String, not an IdentifierExpression, so declaration
-            // sites never leak into uses; only the initializer of a supported `var` is scanned.
-            if (variableDeclaration.kind() == DeclarationKind.CONST) {
-                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        private void scan(@NotNull Node node) {
+            // Prune before recording any event: explicit receiver uses do not need a scope lookup.
+            if (skippedSubtreeRoots.containsKey(node)) {
+                return;
             }
-            return FrontendASTTraversalDirective.CONTINUE;
+            switch (node) {
+                case LambdaExpression lambda -> {
+                    events.add(new NestedLambdaEvent(lambda));
+                    return;
+                }
+                case EnumDeclaration _ -> {
+                    return;
+                }
+                case VariableDeclaration declaration when declaration.kind() == DeclarationKind.CONST -> {
+                    return;
+                }
+                // Get-node expressions desugar to `self.get_node(path)`.
+                case SelfExpression _, GetNodeExpression _ -> usesExplicitSelf = true;
+                case IdentifierExpression identifier -> recordIdentifier(identifier);
+                default -> {
+                }
+            }
+            for (var child : node.getChildren()) {
+                scan(child);
+            }
         }
 
-        @Override
-        public @NotNull FrontendASTTraversalDirective handleIdentifierExpression(
-                @NotNull IdentifierExpression identifierExpression
-        ) {
+        private void recordIdentifier(@NotNull IdentifierExpression identifierExpression) {
             // `super.m(...)` needs the enclosing instance receiver exactly like an explicit `self`
             // use: the super route resolves the target from the lexical superclass but still invokes
             // it on `self`, so the lambda must capture it.
@@ -1170,23 +1157,6 @@ public class FrontendVariableAnalyzer {
                         identifierExpression
                 )));
             }
-            return FrontendASTTraversalDirective.CONTINUE;
-        }
-
-        @Override
-        public @NotNull FrontendASTTraversalDirective handleSelfExpression(@NotNull SelfExpression selfExpression) {
-            usesExplicitSelf = true;
-            return FrontendASTTraversalDirective.CONTINUE;
-        }
-
-        @Override
-        public @NotNull FrontendASTTraversalDirective handleGetNodeExpression(@NotNull GetNodeExpression getNodeExpression) {
-            // Get-node (`$` / `%`) desugars to `self.get_node(path)`, so it needs the enclosing
-            // instance receiver exactly like an explicit `self` expression. The node is a leaf
-            // with no child expressions, and capture validity (static enclosing callable, class
-            // hierarchy) stays with `buildSelfCaptureEntry` and the body-typing phases.
-            usesExplicitSelf = true;
-            return FrontendASTTraversalDirective.CONTINUE;
         }
     }
 }

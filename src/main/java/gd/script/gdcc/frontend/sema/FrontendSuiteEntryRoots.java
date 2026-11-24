@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import gd.script.gdcc.util.IdentityHashSet;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -55,7 +56,7 @@ public record FrontendSuiteEntryRoots(
     }
 
     private static <T> @NotNull Set<T> identitySet(@NotNull List<T> values) {
-        var set = java.util.Collections.newSetFromMap(new IdentityHashMap<T, Boolean>());
+        var set = new IdentityHashSet<T>();
         set.addAll(values);
         return set;
     }

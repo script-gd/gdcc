@@ -16,6 +16,7 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
+import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.scope.*;
 import gd.script.gdcc.frontend.sema.*;
@@ -326,6 +327,7 @@ class FrontendExpressionSemanticSupportTest {
                         
                         func ping():
                             helper(1)
+                            self.make_cb()
                             self.make_cb()()
                         """
         );
@@ -336,9 +338,14 @@ class FrontendExpressionSemanticSupportTest {
                 CallExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
         );
-        var unsupportedDirectCall = assertInstanceOf(
-                CallExpression.class,
+        var callable = assertInstanceOf(
+                AttributeExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        var invalidStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getLast());
+        var invalidDirectCall = assertInstanceOf(
+                CallExpression.class,
+                invalidStatement.expression()
         );
         var blockedBareCall = assertInstanceOf(
                 CallExpression.class,
@@ -390,18 +397,47 @@ class FrontendExpressionSemanticSupportTest {
                 () -> assertNotNull(blockedCall.declarationSite())
         );
 
-        var unsupportedResult = unrestrictedSupport.resolveCallExpressionType(
-                unsupportedDirectCall,
-                publishedResolver,
-                true,
-                false
-        );
-        assertAll(
-                () -> assertTrue(unsupportedResult.rootOwnsOutcome()),
-                () -> assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, unsupportedResult.expressionType().status()),
-                () -> assertTrue(unsupportedResult.expressionType().detailReason().contains("Direct invocation of callable values")),
-                () -> assertNull(unsupportedResult.publishedCallOrNull())
-        );
+        var data = analyzed.analysisData();
+        var invalidCallee = assertInstanceOf(AttributeExpression.class, invalidDirectCall.callee());
+        var invalidStep = assertInstanceOf(AttributeCallStep.class, invalidCallee.steps().getLast());
+        assertTrue(data.skippedSubtreeRoots().containsKey(invalidStatement));
+        assertNull(data.expressionTypes().get(invalidDirectCall));
+        assertNull(data.expressionTypes().get(invalidCallee));
+        assertNull(data.expressionTypes().get(invalidStep));
+        assertNull(data.resolvedCalls().get(invalidDirectCall));
+        assertNull(data.resolvedCalls().get(invalidStep));
+        var recoveries = data.parseRecoveriesByOwner().get(invalidStatement);
+        assertNotNull(recoveries);
+        assertEquals(1, recoveries.size());
+        var recovery = recoveries.getFirst();
+        assertSame(invalidStatement, recovery.owner());
+        assertEquals("expression", recovery.facet());
+        assertEquals(DiagnosticCodes.CALL_INVALID_CALLEE, recovery.code());
+        var calleeRange = FrontendRange.fromAstRange(invalidCallee.range());
+        assertEquals(calleeRange, recovery.range());
+        var errors = data.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                .toList();
+        assertEquals(1, errors.size(), errors::toString);
+        assertEquals(recovery.code(), errors.getFirst().category());
+        assertEquals(calleeRange, errors.getFirst().range());
+
+        var callableType = data.expressionTypes().get(callable);
+        assertNotNull(callableType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, callableType.status());
+        assertInstanceOf(GdCallableType.class, callableType.publishedType());
+        var handBuiltCall = new CallExpression(callable, List.of(), callable.range());
+        for (var finalizeWindow : List.of(false, true)) {
+            var unsupportedResult = unrestrictedSupport.resolveCallExpressionType(
+                    handBuiltCall, publishedResolver, true, finalizeWindow
+            );
+            assertAll(
+                    () -> assertTrue(unsupportedResult.rootOwnsOutcome()),
+                    () -> assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, unsupportedResult.expressionType().status()),
+                    () -> assertTrue(unsupportedResult.expressionType().detailReason().contains("Direct invocation of callable values")),
+                    () -> assertNull(unsupportedResult.publishedCallOrNull())
+            );
+        }
     }
 
     @Test
@@ -2893,22 +2929,23 @@ class FrontendExpressionSemanticSupportTest {
 
     @Test
     void endToEndTypeTestPublishesExpressionTypeTargetAndUnresolvedLint() throws Exception {
-        var analyzed = analyze(
-                "type_test_expression_semantic.gd",
-                """
-                        class_name TypeTestExpressionSemantic
-                        extends RefCounted
-                        
-                        func probe(value):
-                            var known = value is int
-                            var is_not = value is not Node
-                            var unknown = value is FutureEnemy
-                            var nested = value is Array[Array[int]]
-                        """
-        );
-        var function = findFunction(analyzed.ast(), "probe");
+        var source = """
+                class_name TypeTestExpressionSemantic
+                extends RefCounted
+
+                func probe(value):
+                    var known = value is int
+                    var is_not = value is not Node
+                    var unknown = value is FutureEnemy
+                    var nested = value is Array[Array[int]]
+                    var typed_array = value is Array[int]
+                """;
+        var functionPath = Path.of("tmp", "type_test_expression_semantic.gd");
+        var parserDiagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(functionPath, source, parserDiagnostics);
+        var function = findFunction(unit.ast(), "probe");
         var typeTests = findNodes(function, TypeTestExpression.class, _ -> true);
-        assertEquals(4, typeTests.size());
+        assertEquals(5, typeTests.size());
 
         var known = typeTests.stream()
                 .filter(typeTest -> typeTest.targetType().sourceText().equals("int"))
@@ -2922,59 +2959,114 @@ class FrontendExpressionSemanticSupportTest {
                 .filter(typeTest -> typeTest.targetType().sourceText().equals("FutureEnemy"))
                 .findFirst()
                 .orElseThrow();
-        var nested = typeTests.stream()
-                .filter(typeTest -> typeTest.targetType().sourceText().equals("Array[Array[int]]"))
-                .findFirst()
-                .orElseThrow();
+        var damagedDeclaration = findNode(function, VariableDeclaration.class, variable -> variable.name().equals("nested"));
+        var nested = assertInstanceOf(TypeTestExpression.class, damagedDeclaration.value());
+        var typedArray = findNode(function, TypeTestExpression.class,
+                typeTest -> typeTest.targetType().sourceText().equals("Array[int]"));
+        assertEquals("Array[Array[int]]", nested.targetType().sourceText());
+        assertEquals(1, unit.parseRecoveries().size());
+        var recovery = unit.parseRecoveries().getFirst();
+        assertSame(damagedDeclaration, recovery.owner());
+        assertEquals("variable.initializer", recovery.facet());
+        assertEquals(DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN, recovery.code());
+        var innerCloser = source.indexOf("]]");
+        var recoveryRange = recovery.range();
+        assertNotNull(recoveryRange);
+        assertEquals(innerCloser, recoveryRange.startByte());
+        assertEquals(innerCloser + 1, recoveryRange.endByte());
 
-        var knownType = analyzed.analysisData().expressionTypes().get(known);
-        assertNotNull(knownType);
-        assertEquals(FrontendExpressionTypeStatus.RESOLVED, knownType.status());
-        assertEquals("bool", knownType.publishedType().getTypeName());
-        var knownTarget = assertInstanceOf(
-                FrontendTypeTestTarget.TargetKnown.class,
-                analyzed.analysisData().typeTestTargets().get(known)
+        var module = new FrontendModule("test_module", List.of(unit));
+        for (var diagnostics : List.of(parserDiagnostics, new DiagnosticManager())) {
+            var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+            var data = new FrontendSemanticAnalyzer().analyze(module, registry, diagnostics);
+            for (var healthy : List.of(known, isNot, unknown, typedArray)) {
+                var type = data.expressionTypes().get(healthy);
+                assertNotNull(type);
+                assertEquals(FrontendExpressionTypeStatus.RESOLVED, type.status());
+                assertSame(GdBoolType.BOOL, type.publishedType());
+            }
+            var knownTarget = assertInstanceOf(FrontendTypeTestTarget.TargetKnown.class, data.typeTestTargets().get(known));
+            assertEquals("int", knownTarget.type().getTypeName());
+            assertTrue(isNot.negated());
+            var negatedTarget = assertInstanceOf(FrontendTypeTestTarget.TargetKnown.class, data.typeTestTargets().get(isNot));
+            assertEquals("Node", negatedTarget.type().getTypeName());
+            var unresolvedTarget = assertInstanceOf(
+                    FrontendTypeTestTarget.TargetUnresolvedObject.class, data.typeTestTargets().get(unknown)
+            );
+            assertEquals("FutureEnemy", unresolvedTarget.typeName());
+            var arrayTarget = assertInstanceOf(FrontendTypeTestTarget.TargetKnown.class, data.typeTestTargets().get(typedArray));
+            assertEquals("Array[int]", arrayTarget.type().getTypeName());
+
+            assertTrue(data.skippedSubtreeRoots().containsKey(damagedDeclaration));
+            assertNull(data.scopesByAst().get(damagedDeclaration));
+            assertNull(data.expressionTypes().get(nested));
+            assertNull(data.typeTestTargets().get(nested));
+
+            var unresolvedDiagnostics = data.diagnostics().asList().stream()
+                    .filter(diagnostic -> diagnostic.category().equals("sema.type_test_unresolved_object"))
+                    .toList();
+            assertEquals(1, unresolvedDiagnostics.size());
+            assertEquals(FrontendDiagnosticSeverity.WARNING, unresolvedDiagnostics.getFirst().severity());
+            assertTrue(unresolvedDiagnostics.getFirst().message().contains("FutureEnemy"));
+            assertTrue(unresolvedDiagnostics.getFirst().message().contains("will be checked at runtime"));
+            var errors = data.diagnostics().asList().stream()
+                    .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                    .toList();
+            assertEquals(1, errors.size(), errors::toString);
+            assertEquals(recovery.code(), errors.getFirst().category());
+            assertEquals(recoveryRange, errors.getFirst().range());
+        }
+    }
+
+    @Test
+    void endToEndTypeTestRejectsUnsupportedArrayTargetsWithoutParserRecovery() throws Exception {
+        var parseDiagnostics = new DiagnosticManager();
+        var parsed = new GdScriptParserService().parseUnit(Path.of("tmp", "type_test_semantic_target.gd"), """
+                extends RefCounted
+                func probe(value):
+                    value is Array[FutureEnemy]
+                """, parseDiagnostics);
+        assertTrue(parseDiagnostics.isEmpty(), parseDiagnostics.snapshot().asList()::toString);
+        var probe = findFunction(parsed.ast(), "probe");
+        var statement = assertInstanceOf(ExpressionStatement.class, probe.body().statements().getFirst());
+        var sourceTypeTest = assertInstanceOf(TypeTestExpression.class, statement.expression());
+        var nestedTypeTest = new TypeTestExpression(
+                sourceTypeTest.value(), new TypeRef("Array[Array[int]]", sourceTypeTest.targetType().range()),
+                false, sourceTypeTest.range()
         );
-        assertEquals("int", knownTarget.type().getTypeName());
-
-        var isNotType = analyzed.analysisData().expressionTypes().get(isNot);
-        assertNotNull(isNotType);
-        assertEquals(FrontendExpressionTypeStatus.RESOLVED, isNotType.status());
-        assertEquals("bool", isNotType.publishedType().getTypeName());
-        assertTrue(isNot.negated());
-        assertInstanceOf(
-                FrontendTypeTestTarget.TargetKnown.class,
-                analyzed.analysisData().typeTestTargets().get(isNot)
+        var nestedStatement = new ExpressionStatement(nestedTypeTest, statement.range());
+        var body = new Block(List.of(nestedStatement), probe.body().range());
+        var syntheticProbe = new FunctionDeclaration(
+                probe.name(), probe.parameters(), probe.returnType(), probe.isStatic(), body, probe.range()
         );
-
-        var unknownType = analyzed.analysisData().expressionTypes().get(unknown);
-        assertNotNull(unknownType);
-        assertEquals(FrontendExpressionTypeStatus.RESOLVED, unknownType.status());
-        var unresolvedTarget = assertInstanceOf(
-                FrontendTypeTestTarget.TargetUnresolvedObject.class,
-                analyzed.analysisData().typeTestTargets().get(unknown)
+        var sourceStatements = new ArrayList<>(parsed.ast().statements());
+        assertSame(probe, sourceStatements.getLast());
+        sourceStatements.set(sourceStatements.size() - 1, syntheticProbe);
+        var synthetic = new FrontendSourceUnit(
+                parsed.path(), parsed.source(), new SourceFile(sourceStatements, parsed.ast().range())
         );
-        assertEquals("FutureEnemy", unresolvedTarget.typeName());
-
-        var nestedType = analyzed.analysisData().expressionTypes().get(nested);
-        assertNotNull(nestedType);
-        assertEquals(FrontendExpressionTypeStatus.FAILED, nestedType.status());
-        assertNull(analyzed.analysisData().typeTestTargets().get(nested));
-
-        var unresolvedDiagnostics = analyzed.analysisData().diagnostics().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals("sema.type_test_unresolved_object"))
-                .toList();
-        assertEquals(1, unresolvedDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.WARNING, unresolvedDiagnostics.getFirst().severity());
-        assertTrue(unresolvedDiagnostics.getFirst().message().contains("FutureEnemy"));
-        assertTrue(unresolvedDiagnostics.getFirst().message().contains("will be checked at runtime"));
-
-        var expressionErrors = analyzed.analysisData().diagnostics().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals("sema.expression_resolution"))
-                .filter(diagnostic -> diagnostic.message().contains("Array[Array[int]]"))
-                .toList();
-        assertEquals(1, expressionErrors.size());
-        assertEquals(FrontendDiagnosticSeverity.ERROR, expressionErrors.getFirst().severity());
+        for (var unit : List.of(parsed, synthetic)) {
+            assertTrue(unit.parseRecoveries().isEmpty());
+            var manager = new DiagnosticManager();
+            var data = new FrontendSemanticAnalyzer().analyze(
+                    new FrontendModule("test_module", List.of(unit)),
+                    new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                    manager
+            );
+            var typeTest = unit == parsed ? sourceTypeTest : nestedTypeTest;
+            assertFalse(data.skippedSubtreeRoots().containsKey(unit == parsed ? statement : nestedStatement));
+            var type = data.expressionTypes().get(typeTest);
+            assertNotNull(type);
+            assertEquals(FrontendExpressionTypeStatus.FAILED, type.status());
+            assertNull(data.typeTestTargets().get(typeTest));
+            var errors = data.diagnostics().asList().stream()
+                    .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                    .toList();
+            assertEquals(1, errors.size(), errors::toString);
+            assertEquals("sema.expression_resolution", errors.getFirst().category());
+            assertEquals(FrontendRange.fromAstRange(typeTest.range()), errors.getFirst().range());
+            assertTrue(errors.getFirst().message().contains(typeTest.targetType().sourceText()));
+        }
     }
 
     @Test

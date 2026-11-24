@@ -36,6 +36,7 @@ import gd.script.gdcc.frontend.sema.FrontendTypedLexicalBaseline;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValueKind;
+import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -61,7 +62,7 @@ public class FrontendInterfacePhase {
 
         var moduleSkeleton = analysisData.moduleSkeleton();
         analysisData.diagnostics();
-        var builder = new InterfaceSurfaceBuilder(analysisData.scopesByAst());
+        var builder = new InterfaceSurfaceBuilder(analysisData.scopesByAst(), analysisData.skippedSubtreeRoots());
         for (var relation : moduleSkeleton.sourceClassRelations()) {
             builder.walk(relation.unit().path(), relation.unit().ast());
         }
@@ -70,6 +71,7 @@ public class FrontendInterfacePhase {
 
     private static final class InterfaceSurfaceBuilder implements ASTNodeHandler {
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
+        private final @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull Map<Node, List<FrontendBodyLocalDeclaration>> declarationsByBodyRoot =
                 new IdentityHashMap<>();
@@ -83,8 +85,12 @@ public class FrontendInterfacePhase {
         private @NotNull Path currentSourcePath = Path.of("");
         private int supportedBodyDepth;
 
-        private InterfaceSurfaceBuilder(@NotNull FrontendAstSideTable<Scope> scopesByAst) {
+        private InterfaceSurfaceBuilder(
+                @NotNull FrontendAstSideTable<Scope> scopesByAst,
+                @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots
+        ) {
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst");
+            this.skippedSubtreeRoots = Objects.requireNonNull(skippedSubtreeRoots, "skippedSubtreeRoots");
             astWalker = new ASTWalker(this);
         }
 
@@ -167,7 +173,7 @@ public class FrontendInterfacePhase {
         public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
             // Lambdas inside supported executable bodies become suite entries of their own; class
             // level (property initializer) lambdas stay unpublished and fail-closed downstream.
-            if (supportedBodyDepth > 0) {
+            if (supportedBodyDepth > 0 && !skippedSubtreeRoots.containsKey(lambdaExpression)) {
                 recordCallable(lambdaExpression, lambdaExpression.parameters(), lambdaExpression.body());
             }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
@@ -392,7 +398,11 @@ public class FrontendInterfacePhase {
                 @NotNull ForStatement forStatement,
                 @NotNull BlockScope blockScope
         ) {
-            var binding = blockScope.resolveValueHere(forStatement.iterator().trim());
+            var iteratorName = StringUtil.trimToNull(forStatement.iterator());
+            if (iteratorName == null) {
+                return;
+            }
+            var binding = blockScope.resolveValueHere(iteratorName);
             if (binding == null || binding.declaration() != forStatement) {
                 return;
             }
@@ -467,7 +477,9 @@ public class FrontendInterfacePhase {
 
         private void walkStatements(@NotNull List<Statement> statements) {
             for (var statement : statements) {
-                astWalker.walk(statement);
+                if (!skippedSubtreeRoots.containsKey(statement)) {
+                    astWalker.walk(statement);
+                }
             }
         }
 

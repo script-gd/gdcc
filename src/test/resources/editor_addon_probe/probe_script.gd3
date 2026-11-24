@@ -65,7 +65,7 @@ func _has_method(method: StringName) -> bool:
 func _has_static_method(method: StringName) -> bool:
     return false
 
-func _has_script_signal(signal: StringName) -> bool:
+func _has_script_signal(signal_name: StringName) -> bool:
     return false
 
 func _has_property_default_value(property: StringName) -> bool:

@@ -1,5 +1,6 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
@@ -19,7 +20,9 @@ import java.util.List;
 import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -551,6 +554,40 @@ class FrontendLambdaIdentityAnalyzerTest {
     }
 
     // ----- pass self-consistency -----
+
+    @Test
+    void prunesMarkedBranchesAndLambdaBodiesBeforeConsumingOrdinals() throws Exception {
+        var result = analyzeRaw("""
+                func run():
+                    if true:
+                        var dropped = func():
+                            pass
+                    var parent = func():
+                        return func():
+                            pass
+                    var sibling = func():
+                        pass
+                """);
+        var analysis = result.analysisData();
+        var unit = analysis.moduleSkeleton().sourceClassRelations().getFirst().unit();
+        var function = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getLast());
+        var lambdas = new ArrayList<LambdaExpression>();
+        collectLambdas(function, lambdas);
+        assertEquals(4, lambdas.size());
+        assertEquals(List.of(0, 1, 2, 3),
+                lambdas.stream().map(lambda -> analysis.lambdaIdentities().get(lambda).ordinal()).toList());
+
+        analysis.skippedSubtreeRoots().put(function.body().statements().getFirst(), true);
+        analysis.skippedSubtreeRoots().put(lambdas.get(1).body(), true);
+        var identities = FrontendLambdaIdentityAnalyzer.analyze(analysis);
+        assertEquals(2, identities.size());
+        assertNull(identities.get(lambdas.getFirst()));
+        assertEquals(0, identities.get(lambdas.get(1)).ordinal());
+        assertNull(identities.get(lambdas.get(2)));
+        assertEquals(1, identities.get(lambdas.getLast()).ordinal());
+        assertEquals(analysis.lambdaIdentities().get(lambdas.getLast()).callSiteContext(),
+                identities.get(lambdas.getLast()).callSiteContext());
+    }
 
     @Test
     void analyzerCoversExactlyTheRecordedLambdaSet() throws Exception {

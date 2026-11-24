@@ -3,13 +3,17 @@ package gd.script.gdcc.frontend.parse;
 import dev.superice.gdparser.frontend.ast.AnnotationStatement;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
-import dev.superice.gdparser.frontend.ast.ErrorStatement;
+import dev.superice.gdparser.frontend.ast.ErrorExpression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -17,20 +21,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Locks the parser-expressible `const` shapes the const pipeline depends on. These probes
-/// anchor what gdparser 0.6.0 can express so later stages diagnose on
-/// real AST shapes instead of assumptions:
-///
-/// - plain / typed / inferred (`:=`) const at class and local level all produce
-///   `DeclarationKind.CONST` `VariableDeclaration` nodes;
-/// - `@export` / `@onready` const stay expressible as annotation+declaration pairs — placement
-///   rejection is a sema concern, not a parse error;
-/// - `static const` is already rejected at CST level: the `static` keyword reports a structural
-///   error and the surviving const recovers without the static flag, so no AST shape can carry
-///   a static const;
-/// - const without an initializer is a structural `ErrorStatement`, never a CONST declaration.
+/// Locks the parser-expressible `const` shapes the const pipeline depends on. Invalid modifier
+/// and annotation placement still leave the declaration available. A missing initializer
+/// leaves an explicitly damaged value slot instead of dropping the declaration.
 class FrontendConstParseBehaviorTest {
     private final GdScriptParserService parserService = new GdScriptParserService();
 
@@ -83,14 +79,15 @@ class FrontendConstParseBehaviorTest {
     }
 
     @Test
-    void parseAnnotatedConstStaysExpressibleForSemaRejection() {
-        // Placement rejection (@export/@onready on const) is owned by sema; the parser only
-        // needs to surface the annotation+declaration pair.
-        var unit = parse("const_annotated.gd", """
+    void parseAnnotatedConstRetainsDeclarationsAndReportsInvalidTargets() {
+        var source = """
                 @export const EXPORTED = 1
                 @onready const READY = 2
-                """);
+                """;
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "const_annotated.gd"), source, diagnostics);
 
+        assertEquals(4, unit.ast().statements().size());
         var exportAnnotation = assertInstanceOf(AnnotationStatement.class, unit.ast().statements().get(0));
         var exported = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().get(1));
         var onreadyAnnotation = assertInstanceOf(AnnotationStatement.class, unit.ast().statements().get(2));
@@ -101,45 +98,87 @@ class FrontendConstParseBehaviorTest {
                 () -> assertEquals("onready", onreadyAnnotation.name()),
                 () -> assertConstDecl(ready, "READY", null)
         );
+        assertEquals(2, unit.parseRecoveries().size());
+        assertEquals(2, diagnostics.snapshot().size());
+        var annotations = List.of(exportAnnotation, onreadyAnnotation);
+        var errors = diagnostics.snapshot().asList();
+        for (var index = 0; index < annotations.size(); index++) {
+            var annotation = annotations.get(index);
+            var recovery = unit.parseRecoveries().get(index);
+            var diagnostic = errors.get(index);
+            assertEquals(DiagnosticCodes.ANNOTATION_INVALID_TARGET, diagnostic.category());
+            assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());
+            assertEquals("@" + annotation.name(), source.substring(diagnostic.range().startByte(), diagnostic.range().endByte()));
+            assertEquals(diagnostic.category(), recovery.code());
+            assertEquals(diagnostic.range(), recovery.range());
+            assertSame(annotation, recovery.owner());
+            assertEquals("annotation.target", recovery.facet());
+        }
     }
 
     @Test
     void parseStaticConstReportsStructuralErrorAndDropsStaticFlag() {
-        // The grammar rejects `static const` at CST level: `static` becomes an error node and the
-        // const itself recovers as a plain non-static declaration — no AST shape expresses a
-        // static const for sema to diagnose.
+        var source = "static const X = 1\n";
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(
                 Path.of("tmp", "const_static.gd"),
-                "static const X = 1\n",
+                source,
                 diagnostics
         );
 
-        var errorStatement = assertInstanceOf(ErrorStatement.class, unit.ast().statements().get(0));
-        var recoveredConst = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().get(1));
+        assertEquals(1, unit.ast().statements().size());
+        var recoveredConst = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().getFirst());
+        var recovery = assertSingleRecovery(unit, diagnostics, DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN, source, "static");
         assertAll(
-                () -> assertEquals("static", errorStatement.sourceText()),
-                () -> assertTrue(diagnostics.snapshot().asList().stream().anyMatch(
-                        diagnostic -> diagnostic.category().equals("parse.lowering"))),
+                () -> assertEquals("Expected \"func\" or \"var\" after \"static\".", recovery.message()),
+                () -> assertNull(recovery.owner()),
+                () -> assertNull(recovery.facet()),
                 () -> assertConstDecl(recoveredConst, "X", null)
         );
     }
 
     @Test
-    void parseInitializerlessConstIsStructuralErrorWithoutDeclaration() {
-        // `const` must carry an initializer: both the untyped and typed initializerless forms
-        // surface as an ErrorStatement only — no CONST VariableDeclaration is produced at all.
-        for (var source : new String[]{"const X\n", "const X: int\n"}) {
+    void parseInitializerlessConstRetainsDeclarationWithDamagedValueSlot() {
+        for (var suffix : List.of("", ": int")) {
+            var source = "const X" + suffix + "\n";
             var diagnostics = new DiagnosticManager();
             var unit = parserService.parseUnit(Path.of("tmp", "const_no_init.gd"), source, diagnostics);
-
-            var errorStatement = assertInstanceOf(ErrorStatement.class, unit.ast().statements().getFirst());
+            assertEquals(1, unit.ast().statements().size());
+            var declaration = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().getFirst());
+            var recovery = assertSingleRecovery(
+                    unit, diagnostics, DiagnosticCodes.SLOT_CONSTANT_VALUE, source, suffix.isEmpty() ? "X" : "int");
             assertAll(
-                    () -> assertEquals(source.trim(), errorStatement.sourceText()),
-                    () -> assertTrue(diagnostics.snapshot().asList().stream().anyMatch(
-                            diagnostic -> diagnostic.category().equals("parse.lowering")))
+                    () -> assertConstDecl(declaration, "X", suffix.isEmpty() ? null : "int"),
+                    () -> assertInstanceOf(ErrorExpression.class, declaration.value()),
+                    () -> assertSame(declaration, recovery.owner()),
+                    () -> assertEquals("constant.value", recovery.facet())
             );
         }
+    }
+
+    @Test
+    void parseInferredConstAcrossExplicitLineContinuation() {
+        var unit = parse("const_continued_inference.gd", "const C : \\\n = 1\n");
+        assertEquals(1, unit.ast().statements().size());
+        var declaration = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().getFirst());
+        assertConstDecl(declaration, "C", ": \\\n =");
+        assertEquals("1", assertInstanceOf(LiteralExpression.class, declaration.value()).sourceText());
+    }
+
+    private static FrontendParseRecovery assertSingleRecovery(
+            FrontendSourceUnit unit, DiagnosticManager diagnostics, String code, String source, String anchor
+    ) {
+        var errors = diagnostics.snapshot().asList();
+        assertEquals(1, errors.size());
+        assertEquals(1, unit.parseRecoveries().size());
+        var diagnostic = errors.getFirst();
+        var recovery = unit.parseRecoveries().getFirst();
+        assertEquals(code, diagnostic.category());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());
+        assertEquals(anchor, source.substring(diagnostic.range().startByte(), diagnostic.range().endByte()));
+        assertEquals(code, recovery.code());
+        assertEquals(diagnostic.range(), recovery.range());
+        return recovery;
     }
 
     private static void assertConstDecl(

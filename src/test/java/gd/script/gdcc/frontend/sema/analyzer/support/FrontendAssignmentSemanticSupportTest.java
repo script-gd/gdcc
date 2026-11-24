@@ -19,16 +19,19 @@ import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.MissingAttributeStep;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
@@ -41,6 +44,7 @@ import java.util.function.Predicate;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendAssignmentSemanticSupportTest {
@@ -97,6 +101,80 @@ class FrontendAssignmentSemanticSupportTest {
             );
             assertEquals(FrontendExpressionTypeStatus.RESOLVED, result.expressionType().status());
             assertEquals(GdVoidType.VOID, result.expressionType().publishedType());
+        }
+    }
+
+    @Test
+    void resolveAssignmentExpressionReturnsTheSelectedOriginalAstDependencies() throws Exception {
+        var analyzed = analyze("assignment_selected_dependencies.gd", """
+                extends RefCounted
+                var stored: Array[int] = []
+                func ping(values: Array[int], object: RefCounted):
+                    (1 + "x")[+9223372036854775808] = 1 + "y"
+                    values[+9223372036854775808] = 1 + "y"
+                    self.stored[+9223372036854775808] = 1 + "y"
+                    values[0] = 1 + "y"
+                    object[0] = 1 + "y"
+                    values[0] = 1
+                    values[0] += 1
+                """);
+        var assignments = findNodes(findPingFunction(analyzed.ast()), AssignmentExpression.class, _ -> true);
+        assertEquals(7, assignments.size());
+
+        var baseFailure = assertInstanceOf(SubscriptExpression.class, assignments.get(0).left());
+        var indexFailure = assertInstanceOf(SubscriptExpression.class, assignments.get(1).left());
+        var attributeTarget = assertInstanceOf(AttributeExpression.class, assignments.get(2).left());
+        var attributeStep = assertInstanceOf(AttributeSubscriptStep.class, attributeTarget.steps().getLast());
+        record ExpectedSelection(
+                Expression side, Expression operand, boolean rootOwnsOutcome, GdType rightExpectedType
+        ) {
+        }
+        var expected = List.of(
+                new ExpectedSelection(baseFailure, baseFailure.base(), false, null),
+                new ExpectedSelection(indexFailure, indexFailure.arguments().getFirst(), false, null),
+                new ExpectedSelection(attributeTarget, attributeStep.arguments().getFirst(), false, null),
+                new ExpectedSelection(assignments.get(3).right(), null, false, GdIntType.INT),
+                new ExpectedSelection(assignments.get(4).left(), null, true, null),
+                new ExpectedSelection(null, null, false, GdIntType.INT),
+                new ExpectedSelection(null, null, false, null)
+        );
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext());
+        for (boolean finalizeWindow : List.of(false, true)) {
+            for (var i = 0; i < expected.size(); i++) {
+                var assignment = assignments.get(i);
+                var selection = expected.get(i);
+                var visited = new ArrayList<Expression>();
+                var result = FrontendAssignmentSemanticSupport.resolveAssignmentExpression(
+                        support,
+                        assignment,
+                        FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                        (expression, finalize, expectedType) -> {
+                            visited.add(expression);
+                            assertEquals(finalizeWindow, finalize);
+                            if (expression == assignment.right()) {
+                                assertSame(selection.rightExpectedType(), expectedType);
+                            }
+                            return publishedResolver.resolve(expression, finalize);
+                        },
+                        finalizeWindow
+                );
+                assertSame(assignment.right(), visited.getLast());
+                assertSame(selection.side(), result.selectedDependency());
+                assertSame(selection.operand(), result.selectedTargetOperand());
+                assertEquals(selection.rootOwnsOutcome(), result.outcome().rootOwnsOutcome());
+                var type = result.outcome().expressionType();
+                if (selection.side() == null) {
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, type.status());
+                    assertSame(GdVoidType.VOID, type.publishedType());
+                } else {
+                    assertEquals(FrontendExpressionTypeStatus.FAILED, type.status());
+                }
+                var target = FrontendAssignmentSemanticSupport.resolveAssignmentTarget(
+                        support, assignment.left(), publishedResolver, finalizeWindow
+                );
+                assertSame(selection.operand(), target.selectedOperand());
+            }
         }
     }
 

@@ -2,25 +2,33 @@ package gd.script.gdcc.frontend.sema.analyzer;
 
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
+import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
+import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
+import dev.superice.gdparser.frontend.ast.MissingAttributeStep;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
+import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
@@ -32,7 +40,10 @@ import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Semantic-level coverage for the `super` call route
@@ -199,14 +210,12 @@ class FrontendSuperCallSemanticsTest {
         var superStep = findNode(probe, AttributePropertyStep.class, step -> step.name().equals("payload"));
         var resolvedMember = analyzed.analysisData().resolvedMembers().get(superStep);
         assertNotNull(resolvedMember);
-        org.junit.jupiter.api.Assertions.assertAll(
-                () -> assertEquals(FrontendMemberResolutionStatus.FAILED, resolvedMember.status()),
-                () -> assertFalse(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
-        );
+        assertEquals(FrontendMemberResolutionStatus.FAILED, resolvedMember.status());
+        assertSinglePrimaryFailure(analyzed, superStep, "parse.super.missing_call", "parse.super.missing_call");
     }
 
     @Test
-    void bareSuperValueIsRejectedByCompileGate() throws Exception {
+    void bareSuperValuePublishesOneFailureAtTheKeyword() throws Exception {
         var analyzed = analyze(
                 "super_value.gd",
                 """
@@ -224,11 +233,7 @@ class FrontendSuperCallSemanticsTest {
                         """
         );
 
-        var compileDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.compile_check");
-        assertTrue(
-                compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("'super' must be followed by a method call")),
-                () -> "Expected a compile-gate diagnostic for value-position super, got: " + compileDiagnostics
-        );
+        assertBareSuperFailure(analyzed);
     }
 
     @Test
@@ -419,8 +424,6 @@ class FrontendSuperCallSemanticsTest {
 
     @Test
     void superAttributeSubscriptStepFails() throws Exception {
-        // `super.payload[0]` chains a subscript step onto the super head: the step-0 interception
-        // fail-closes with the subscript-specific message (not the generic compile position gate).
         var analyzed = analyze(
                 "super_subscript_step.gd",
                 """
@@ -436,21 +439,19 @@ class FrontendSuperCallSemanticsTest {
                         """
         );
 
-        var callDiagnostics = analyzed.analysisData().diagnostics().asList().stream()
-                .filter(diagnostic -> diagnostic.severity().name().equals("ERROR"))
-                .toList();
-        assertFalse(callDiagnostics.isEmpty(), "super subscript step must produce an error diagnostic");
-        assertTrue(
-                callDiagnostics.stream().anyMatch(diagnostic ->
-                        diagnostic.message().contains("'super' only supports method calls; subscript access is not allowed")),
-                () -> "expected the subscript-specific super message, got: " + callDiagnostics
-        );
+        var subscript = findNode(analyzed.unit().ast(), SubscriptExpression.class, _ -> true);
+        var base = assertInstanceOf(AttributeExpression.class, subscript.base());
+        var step = assertInstanceOf(AttributePropertyStep.class, base.steps().getFirst());
+        assertEquals("payload", step.name());
+        assertSinglePrimaryFailure(analyzed, step, "parse.super.missing_call", "parse.super.missing_call");
+        var data = analyzed.analysisData();
+        assertEquals(FrontendMemberResolutionStatus.FAILED, data.resolvedMembers().get(step).status());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(subscript).status());
+        assertSame(step, data.propagatedFailureOrigins().get(subscript).primaryAnchor());
     }
 
     @Test
-    void bareSuperSubscriptIsRejectedByCompileGate() throws Exception {
-        // `super[0]` is a SubscriptExpression whose base sits in value position: no chain step is
-        // involved, so the compile position gate owns the diagnostic.
+    void bareSuperSubscriptFailsAtTheKeywordWithoutASubscriptEcho() throws Exception {
         var analyzed = analyze(
                 "super_bare_subscript.gd",
                 """
@@ -466,15 +467,13 @@ class FrontendSuperCallSemanticsTest {
                         """
         );
 
-        var compileDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.compile_check");
-        assertTrue(
-                compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("'super' must be followed by a method call")),
-                () -> "Expected a compile-gate diagnostic for subscript-position super, got: " + compileDiagnostics
-        );
+        assertBareSuperFailure(analyzed);
+        var subscript = findNode(analyzed.unit().ast(), SubscriptExpression.class, _ -> true);
+        assertSame(subscript.base(), analyzed.analysisData().propagatedFailureOrigins().get(subscript).primaryAnchor());
     }
 
     @Test
-    void superAsCallArgumentIsRejectedByCompileGate() throws Exception {
+    void superAsCallArgumentFailsAtTheKeywordWithoutACallEcho() throws Exception {
         var analyzed = analyze(
                 "super_argument.gd",
                 """
@@ -493,11 +492,225 @@ class FrontendSuperCallSemanticsTest {
                         """
         );
 
-        var compileDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.compile_check");
-        assertTrue(
-                compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("'super' must be followed by a method call")),
-                () -> "Expected a compile-gate diagnostic for argument-position super, got: " + compileDiagnostics
-        );
+        assertBareSuperFailure(analyzed);
+        var call = findNode(analyzed.unit().ast(), CallExpression.class, _ -> true);
+        assertSame(call.arguments().getFirst(), analyzed.analysisData().propagatedFailureOrigins().get(call).primaryAnchor());
+    }
+
+    @Test
+    void bareSuperSubscriptWriteKeepsOneFailureAtTheKeywordInBothModes() throws Exception {
+        for (var compileMode : List.of(false, true)) {
+            for (var activeParse : List.of(false, true)) {
+                var analyzed = analyze("bare_super_subscript_write.gd", """
+                        extends Node
+                        func probe() -> void:
+                            super[0] = 1
+                        """, compileMode, activeParse);
+                var assignment = findNode(analyzed.unit().ast(), AssignmentExpression.class, _ -> true);
+                var left = assertInstanceOf(SubscriptExpression.class, assignment.left());
+                var keyword = assertInstanceOf(IdentifierExpression.class, left.base());
+                assertEquals("super", keyword.name());
+                assertSinglePrimaryFailure(analyzed, keyword, "parse.super.missing_access",
+                        activeParse ? "parse.super.missing_access" : "sema.expression_resolution");
+                var data = analyzed.analysisData();
+                assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(keyword).status());
+                assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(assignment).status());
+                assertNull(data.expressionTypes().get(left));
+                var origins = data.propagatedFailureOrigins();
+                var origin = origins.get(keyword);
+                assertSame(keyword, origins.get(left).primaryAnchor());
+                assertSame(keyword, origins.get(assignment).primaryAnchor());
+                assertSame(origin.originRecovery(), origins.get(left).originRecovery());
+                assertSame(origin.originRecovery(), origins.get(assignment).originRecovery());
+            }
+        }
+    }
+
+    @Test
+    void superCallReceiversRemainResolvedForPropertyAndSubscriptWrites() throws Exception {
+        var source = """
+                class_name SuperWriteChains
+                extends Node
+
+                class Target:
+                    var hp: int = 0
+
+                class Base:
+                    var target: Target
+                    var items: Array[int] = [0]
+                    func get_target() -> Target:
+                        return target
+                    func get_items() -> Array[int]:
+                        return items
+
+                class Child extends Base:
+                    func probe() -> void:
+                        items[0] = 1
+                        super.get_target().hp = 1
+                        super.get_items()[0] = 1
+                """;
+        for (var compileMode : List.of(false, true)) {
+            var analyzed = analyze("super_write_chains.gd", source, compileMode, true);
+            var data = analyzed.analysisData();
+            assertTrue(errors(analyzed).isEmpty(), () -> data.diagnostics().asList().toString());
+            var probe = findFunction(analyzed.unit().ast(), "probe");
+            var assignments = findNodes(probe, AssignmentExpression.class, _ -> true);
+            assertEquals(3, assignments.size());
+            for (var assignment : assignments) {
+                assertEquals(FrontendExpressionTypeStatus.RESOLVED, data.expressionTypes().get(assignment).status());
+                assertNull(data.propagatedFailureOrigins().get(assignment));
+            }
+            var heads = findNodes(probe, IdentifierExpression.class, id -> id.name().equals("super"));
+            assertEquals(2, heads.size());
+            for (var head : heads) {
+                var type = data.expressionTypes().get(head);
+                assertNotNull(type);
+                assertEquals(FrontendExpressionTypeStatus.RESOLVED, type.status());
+                assertEquals("SuperWriteChains__sub__Child", type.publishedType().getTypeName());
+            }
+        }
+    }
+
+    @Test
+    void outerSuperSuffixAndCallInheritTheInnerAnchorBeforeReporting() throws Exception {
+        for (var compileMode : List.of(false, true)) {
+            for (var activeParse : List.of(false, true)) {
+                for (var statement : List.of("return super.payload.hp", "return self.take(super.payload)")) {
+                    var analyzed = analyze("super_nested_recovery.gd", """
+                            extends Node
+                            func take(value):
+                                return value
+                            func probe():
+                                %s
+                            """.formatted(statement), compileMode, activeParse);
+                    var probe = findFunction(analyzed.unit().ast(), "probe");
+                    var owner = findNode(probe, AttributePropertyStep.class, step -> step.name().equals("payload"));
+                    assertSinglePrimaryFailure(analyzed, owner, "parse.super.missing_call",
+                            activeParse ? "parse.super.missing_call" : "sema.member_resolution");
+                    var root = assertInstanceOf(AttributeExpression.class,
+                            assertInstanceOf(ReturnStatement.class, probe.body().statements().getFirst()).value());
+                    var outerStep = root.steps().getLast();
+                    var data = analyzed.analysisData();
+                    assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(root).status());
+                    assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(outerStep).status());
+                    assertSame(owner, data.propagatedFailureOrigins().get(root).primaryAnchor());
+                    assertSame(owner, data.propagatedFailureOrigins().get(outerStep).primaryAnchor());
+                }
+            }
+        }
+    }
+
+    @Test
+    void missingSuperAndSelfMemberNamesKeepReceiverFactsInReadAndWritePositions() throws Exception {
+        for (var statement : List.of("return super.", "return self.", "self. = 2")) {
+            for (var activeParse : List.of(false, true)) {
+                var analyzed = analyze("missing_member_recovery.gd", """
+                        extends Node
+                        func probe():
+                            %s
+                        """.formatted(statement), true, activeParse);
+                var chain = findNode(analyzed.unit().ast(), AttributeExpression.class, _ -> true);
+                var missing = assertInstanceOf(MissingAttributeStep.class, chain.steps().getLast());
+                var parserCode = statement.contains("super") ? "parse.super.missing_name" : "parse.attribute.missing_name";
+                assertSinglePrimaryFailure(analyzed, missing, parserCode, activeParse ? parserCode : "sema.member_resolution");
+                var data = analyzed.analysisData();
+                assertEquals(FrontendExpressionTypeStatus.RESOLVED, data.expressionTypes().get(chain.base()).status());
+                assertEquals(FrontendExpressionTypeStatus.FAILED, data.expressionTypes().get(missing).status());
+            }
+        }
+    }
+
+    @Test
+    void superChainRecoveryKeepsTheIndependentLaterBinaryOrArrayError() throws Exception {
+        for (var expression : List.of("super.payload + (1 + \"a\")", "[super.payload, 1 + \"a\"]")) {
+            var analyzed = analyze("super_independent_error.gd", """
+                    extends Node
+                    func probe():
+                        return %s
+                    """.formatted(expression));
+            var probe = findFunction(analyzed.unit().ast(), "probe");
+            var main = findNode(probe, AttributePropertyStep.class, step -> step.name().equals("payload"));
+            var sibling = findNodes(probe, BinaryExpression.class, _ -> true).getLast();
+            var errors = errors(analyzed);
+            assertEquals(2, errors.size(), errors::toString);
+            assertTrue(errors.stream().anyMatch(error -> error.category().equals("parse.super.missing_call")
+                    && FrontendRange.fromAstRange(main.range()).equals(error.range())), errors::toString);
+            assertTrue(errors.stream().anyMatch(error -> error.category().equals("sema.expression_resolution")
+                    && FrontendRange.fromAstRange(sibling.range()).equals(error.range())), errors::toString);
+        }
+    }
+
+    @Test
+    void twoMissingNamesInTheSameRecoveryOwnerKeepDistinctClaimsAndAnIndependentError() throws Exception {
+        var analyzed = analyze("missing_name_siblings.gd", """
+                extends Node
+                func probe():
+                    return [self., self., 1 + "a"]
+                """, true, false);
+        var probe = findFunction(analyzed.unit().ast(), "probe");
+        var missing = findNodes(probe, MissingAttributeStep.class, _ -> true);
+        var sibling = findNode(probe, BinaryExpression.class, _ -> true);
+        var errors = errors(analyzed);
+        assertEquals(2, missing.size());
+        assertEquals(3, errors.size(), errors::toString);
+        for (var step : missing) {
+            var origin = analyzed.analysisData().propagatedFailureOrigins().get(step);
+            assertSame(step, origin.primaryAnchor());
+            var recovery = origin.originRecovery();
+            assertNotNull(recovery);
+            assertEquals("parse.attribute.missing_name", recovery.code());
+            assertEquals(step.range().startByte(), recovery.range().endByte());
+            var claim = analyzed.analysisData().claimedParseRecoveries().get(recovery);
+            assertNotNull(claim);
+            assertEquals(recovery.range(), claim.range());
+            assertEquals("sema.member_resolution", claim.category());
+            assertTrue(errors.contains(claim), errors::toString);
+        }
+        assertTrue(errors.stream().anyMatch(error -> error.category().equals("sema.expression_resolution")
+                && FrontendRange.fromAstRange(sibling.range()).equals(error.range())), errors::toString);
+    }
+
+    @Test
+    void recoveryLookupKeepsSameRangeClaimsInSeparateSourceFiles() throws Exception {
+        var source = """
+                extends Node
+                func probe():
+                    return self.
+                """;
+        for (var compileMode : List.of(false, true)) {
+            var manager = new DiagnosticManager();
+            var parser = new GdScriptParserService();
+            var active = parser.parseUnit(Path.of("tmp", "active_recovery.gd"), source, manager);
+            var inactive = parser.parseUnit(Path.of("tmp", "inactive_recovery.gd"), source, new DiagnosticManager());
+            var activeRecovery = active.parseRecoveries().getFirst();
+            var inactiveRecovery = inactive.parseRecoveries().getFirst();
+            assertEquals(activeRecovery.range(), inactiveRecovery.range());
+            assertEquals(activeRecovery.code(), inactiveRecovery.code());
+            var module = new FrontendModule("test_module", List.of(active, inactive));
+            var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+            var analyzer = new FrontendSemanticAnalyzer();
+            var data = compileMode
+                    ? analyzer.analyzeForCompile(module, registry, manager)
+                    : analyzer.analyze(module, registry, manager);
+            var reported = manager.snapshot().asList().stream()
+                    .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                    .toList();
+            assertEquals(2, reported.size(), reported::toString);
+            for (var unit : List.of(active, inactive)) {
+                var missing = findNode(unit.ast(), MissingAttributeStep.class, _ -> true);
+                var origin = data.propagatedFailureOrigins().get(missing);
+                assertNotNull(origin);
+                assertSame(missing, origin.primaryAnchor());
+                var recovery = unit.parseRecoveries().getFirst();
+                assertSame(recovery, origin.originRecovery());
+                var claim = data.claimedParseRecoveries().get(recovery);
+                assertNotNull(claim);
+                assertEquals(FrontendDiagnostic.sourcePathText(unit.path()), claim.sourcePath());
+                assertEquals(unit == active ? recovery.code() : "sema.member_resolution", claim.category());
+                assertEquals(recovery.range(), claim.range());
+                assertTrue(reported.contains(claim), reported::toString);
+            }
+        }
     }
 
     @Test
@@ -613,17 +826,54 @@ class FrontendSuperCallSemanticsTest {
             @NotNull String fileName,
             @NotNull String source
     ) throws Exception {
-        var diagnostics = new DiagnosticManager();
-        var parserService = new GdScriptParserService();
-        var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
-        // The compile-gate path is required: the super position gate lives in the compile-check
-        // analyzer, which the plain inspection-oriented analyze() entrypoint never runs.
-        var analysisData = new FrontendSemanticAnalyzer().analyzeForCompile(
-                new FrontendModule("test_module", List.of(unit), Map.of()),
-                new ClassRegistry(ExtensionApiLoader.loadDefault()),
-                diagnostics
-        );
+        return analyze(fileName, source, true, true);
+    }
+
+    private static @NotNull AnalyzedScript analyze(
+            @NotNull String fileName, @NotNull String source, boolean compileMode, boolean activeParse
+    ) throws Exception {
+        var parseDiagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", fileName), source, parseDiagnostics);
+        var diagnostics = activeParse ? parseDiagnostics : new DiagnosticManager();
+        var module = new FrontendModule("test_module", List.of(unit), Map.of());
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analyzer = new FrontendSemanticAnalyzer();
+        var analysisData = compileMode
+                ? analyzer.analyzeForCompile(module, registry, diagnostics)
+                : analyzer.analyze(module, registry, diagnostics);
         return new AnalyzedScript(unit, analysisData);
+    }
+
+    private static void assertBareSuperFailure(@NotNull AnalyzedScript analyzed) {
+        var keyword = findNode(analyzed.unit().ast(), IdentifierExpression.class, id -> id.name().equals("super"));
+        assertSinglePrimaryFailure(analyzed, keyword, "parse.super.missing_access", "parse.super.missing_access");
+        assertEquals(FrontendExpressionTypeStatus.FAILED, analyzed.analysisData().expressionTypes().get(keyword).status());
+    }
+
+    private static void assertSinglePrimaryFailure(
+            @NotNull AnalyzedScript analyzed, @NotNull Node anchor, @NotNull String recoveryCode, @NotNull String category
+    ) {
+        var errors = errors(analyzed);
+        assertEquals(1, errors.size(), errors::toString);
+        var data = analyzed.analysisData();
+        var origin = data.propagatedFailureOrigins().get(anchor);
+        assertNotNull(origin);
+        assertSame(anchor, origin.primaryAnchor());
+        var recovery = origin.originRecovery();
+        assertNotNull(recovery);
+        assertEquals(recoveryCode, recovery.code());
+        assertEquals(category, errors.getFirst().category());
+        assertEquals(recovery.range(), errors.getFirst().range());
+        if (!(anchor instanceof MissingAttributeStep)) {
+            assertEquals(FrontendRange.fromAstRange(anchor.range()), errors.getFirst().range());
+        }
+        assertEquals(errors.getFirst(), data.claimedParseRecoveries().get(recovery));
+    }
+
+    private static @NotNull List<FrontendDiagnostic> errors(@NotNull AnalyzedScript analyzed) {
+        return analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                .toList();
     }
 
     private static @NotNull FunctionDeclaration findFunction(@NotNull Node root, @NotNull String name) {

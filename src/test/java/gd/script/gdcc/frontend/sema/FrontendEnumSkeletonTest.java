@@ -1,12 +1,15 @@
 package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.EnumDeclaration;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -398,11 +401,7 @@ class FrontendEnumSkeletonTest {
     }
 
     @Test
-    void parserBrokenEnumPublishesNoFactsAndSkipsSubtreeWithoutDuplicateDiagnostic() throws IOException {
-        // The parser rejects string/float initializers itself and its recovery drops the value,
-        // leaving members that look like auto-increment candidates. The pre-pass must not
-        // fabricate constants from them: no constant rows, subtree skipped, and no second
-        // diagnostic on the parser-owned root cause.
+    void nonIntegerEnumInitializersHaveOneSemanticOwnerAndNoPublishedValues() throws IOException {
         var fixture = build("enum_parser_owned_values.gd", """
                 class_name EnumParserOwnedValues
                 extends RefCounted
@@ -418,8 +417,9 @@ class FrontendEnumSkeletonTest {
                 .toList();
         var classDef = findClass(fixture, "EnumParserOwnedValues");
         assertAll(
-                () -> assertEquals(2, parseDiagnostics.size()),
-                () -> assertTrue(skeletonDiagnostics(fixture).isEmpty()),
+                () -> assertTrue(parseDiagnostics.isEmpty()),
+                () -> assertEquals(List.of("sema.enum_declaration", "sema.enum_declaration"),
+                        skeletonDiagnostics(fixture).stream().map(FrontendDiagnostic::category).toList()),
                 () -> assertEquals(List.of("GOOD"), classDef.getScriptConstants().stream()
                         .map(GdScriptClassConstant::name)
                         .toList()),
@@ -429,6 +429,59 @@ class FrontendEnumSkeletonTest {
                         .containsKey(enumStatement(fixture, 1))),
                 () -> assertNotNull(findProperty(classDef, "hp"))
         );
+    }
+
+    @Test
+    void halfParsedEnumNeverPublishesAnAutoIncrementValueInEitherManager() throws IOException {
+        var original = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "truncated_enum.gd"), """
+                enum Broken { A
+                var kept: int = 1
+                """, original);
+        var enumeration = assertInstanceOf(EnumDeclaration.class, unit.ast().statements().getFirst());
+        assertEquals(1, unit.parseRecoveries().size());
+        var recovery = unit.parseRecoveries().getFirst();
+        assertEquals(DiagnosticCodes.MISSING_CLOSER_ENUM, recovery.code());
+        assertSame(enumeration, recovery.owner());
+        var parsed = original.snapshot().asList();
+        var api = ExtensionApiLoader.loadDefault();
+        for (var active : List.of(original, new DiagnosticManager())) {
+            var data = new FrontendSemanticAnalyzer().analyzeForCompile(
+                    FrontendModule.singleUnit("test", unit), new ClassRegistry(api), active);
+            var classDef = data.moduleSkeleton().sourceClassRelations().getFirst().classDef();
+            assertTrue(data.skippedSubtreeRoots().containsKey(enumeration));
+            assertTrue(classDef.getScriptConstants().isEmpty());
+            assertEquals(GdIntType.INT, findPropertyType(classDef, "kept"));
+            var errors = active.snapshot().asList();
+            assertEquals(1, errors.size());
+            if (active == original) {
+                assertEquals(parsed, errors);
+            } else {
+                assertEquals("sema.enum_declaration", errors.getFirst().category());
+                assertEquals(FrontendRange.fromAstRange(enumeration.range()), errors.getFirst().range());
+            }
+            assertEquals(errors.getFirst(), data.claimedParseRecoveries().get(recovery));
+        }
+    }
+
+    @Test
+    void rejectedAncestorPropertyDoesNotBlockAHealthyGlobalEnumReference() throws IOException {
+        var fixture = build(List.of(
+                new SourceSpec("child.gd", """
+                        class_name Child
+                        extends Parent
+                        enum { GOOD = OK }
+                        """),
+                new SourceSpec("parent.gd", """
+                        class_name Parent
+                        var OK: Array[Array[int]]
+                        """)
+        ));
+        assertConstantValues(findClass(fixture, "Child"), "GOOD", 0);
+        assertNull(findProperty(findClass(fixture, "Parent"), "OK"));
+        assertEquals(1, fixture.diagnostics().snapshot().asList().size());
+        assertEquals(DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN,
+                fixture.diagnostics().snapshot().asList().getFirst().category());
     }
 
     @Test
@@ -586,9 +639,6 @@ class FrontendEnumSkeletonTest {
 
     @Test
     void emptyEnumIsRejectedForBothNamingForms() throws IOException {
-        // gdparser still maps an empty enum body to one phantom blank-named member, but now
-        // reports the missing enumerator/identifier itself (`parse.lowering`), so the pre-pass
-        // skips both enums without a second sema diagnostic (single-owner recovery rule).
         var fixture = build("enum_empty_reject.gd", """
                 class_name EnumEmptyReject
                 extends RefCounted
@@ -599,13 +649,14 @@ class FrontendEnumSkeletonTest {
                 """);
 
         var parseErrors = fixture.diagnostics().snapshot().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals("parse.lowering"))
+                .filter(diagnostic -> diagnostic.category().startsWith("parse."))
                 .toList();
+        var errors = skeletonDiagnostics(fixture);
         assertAll(
-                () -> assertTrue(skeletonDiagnostics(fixture).isEmpty()),
-                () -> assertEquals(4, parseErrors.size()),
-                () -> assertTrue(parseErrors.stream().allMatch(diagnostic ->
-                        diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)),
+                () -> assertTrue(parseErrors.isEmpty()),
+                () -> assertEquals(List.of("sema.enum_declaration", "sema.enum_declaration"),
+                        errors.stream().map(FrontendDiagnostic::category).toList()),
+                () -> assertTrue(errors.stream().allMatch(d -> d.severity() == FrontendDiagnosticSeverity.ERROR)),
                 () -> assertTrue(fixture.analysisData().skippedSubtreeRoots().containsKey(enumStatement(fixture, 0))),
                 () -> assertTrue(fixture.analysisData().skippedSubtreeRoots().containsKey(enumStatement(fixture, 1))),
                 () -> assertTrue(findClass(fixture, "EnumEmptyReject").getScriptConstants().isEmpty()),
@@ -736,7 +787,8 @@ class FrontendEnumSkeletonTest {
             @NotNull Fixture fixture
     ) {
         return fixture.diagnostics().snapshot().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton"))
+                .filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton")
+                        || diagnostic.category().equals("sema.enum_declaration"))
                 .toList();
     }
 

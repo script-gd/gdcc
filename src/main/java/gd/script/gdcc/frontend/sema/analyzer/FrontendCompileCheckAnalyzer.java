@@ -18,6 +18,7 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.*;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.util.IdentityHashSet;
 
 /// Compile-only final frontend gate that runs after the shared semantic pipeline.
 ///
@@ -104,7 +105,7 @@ public class FrontendCompileCheckAnalyzer {
     private static @NotNull Set<Node> collectConstructorBlockAnchors(
             @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls
     ) {
-        var anchors = Collections.newSetFromMap(new IdentityHashMap<Node, Boolean>());
+        var anchors = new IdentityHashSet<Node>();
         for (var entry : resolvedCalls.entrySet()) {
             var anchor = entry.getKey();
             var hasArguments = switch (anchor) {
@@ -298,16 +299,15 @@ public class FrontendCompileCheckAnalyzer {
         private final @NotNull Set<LirFunctionDef> coroutineFunctions;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
-        private final @NotNull Set<Node> compileSurfaceNodes = Collections.newSetFromMap(new IdentityHashMap<>());
-        private final @NotNull Set<Node> handledAnchors = Collections.newSetFromMap(new IdentityHashMap<>());
-        private final @NotNull Set<Node> bareCallCallees = Collections.newSetFromMap(new IdentityHashMap<>());
+        private final @NotNull Set<Node> compileSurfaceNodes = new IdentityHashSet<>();
+        private final @NotNull Set<Node> handledAnchors = new IdentityHashSet<>();
+        private final @NotNull Set<Node> bareCallCallees = new IdentityHashSet<>();
         /// Chain-head identifiers (`base` of an `AttributeExpression`) tracked so the super position
         /// gate can tell a legal `super.m(...)` head from a value-position misuse.
-        private final @NotNull Set<Node> chainHeadIdentifiers = Collections.newSetFromMap(new IdentityHashMap<>());
+        private final @NotNull Set<Node> chainHeadIdentifiers = new IdentityHashSet<>();
         /// Coroutine-call position checks dedupe by call anchor: a chain root checks its trailing
         /// call step with statement-root privilege, and the later nested walk must not re-report it.
-        private final @NotNull Set<Node> checkedCoroutineCallAnchors =
-                Collections.newSetFromMap(new IdentityHashMap<>());
+        private final @NotNull Set<Node> checkedCoroutineCallAnchors = new IdentityHashSet<>();
         private int supportedExecutableBlockDepth;
         /// True only while walking the direct root expression of an `ExpressionStatement`; the first
         /// walked expression consumes the flag so nested children stay in value position (§3.5).

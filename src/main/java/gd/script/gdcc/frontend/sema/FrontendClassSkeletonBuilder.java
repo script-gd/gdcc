@@ -5,6 +5,7 @@ import gd.script.gdcc.frontend.constant.Evaluation;
 import gd.script.gdcc.frontend.constant.GdScriptEvaluatedConstant;
 import gd.script.gdcc.frontend.scope.FrontendRejectedClassConstant;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendAnnotationCollector;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendErrorSubtreeAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.support.EvaluationPolicy;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendAncestorMemberBlocker;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendClassConstPrepassContext;
@@ -15,10 +16,12 @@ import gd.script.gdcc.frontend.sema.analyzer.support.FrontendEnumConstantEvaluat
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExportAnnotationSupport;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdparser.frontend.ast.*;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
+import gd.script.gdcc.frontend.parse.FrontendParseRecovery;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
@@ -50,13 +53,14 @@ public final class FrontendClassSkeletonBuilder {
     /// Matches upstream Godot GDScript behavior: scripts/classes without an explicit `extends`
     /// default to `RefCounted`.
     private static final String DEFAULT_SUPER_CLASS_NAME = "RefCounted";
+    private static final String ENUM_DECLARATION_CATEGORY = "sema.enum_declaration";
+    private static final String CLASS_SKELETON_CATEGORY = "sema.class_skeleton";
 
     /// Builds the module skeleton while appending all newly discovered skeleton diagnostics
     /// into the shared pipeline manager.
     ///
-    /// The manager is expected to already own any parse-phase diagnostics collected from the same
-    /// `FrontendSourceUnit`s. Units themselves no longer store parse diagnostics, so this builder
-    /// must treat the shared manager as the only parse diagnostic source of truth.
+    /// Recoveries on the source units identify damaged slots. The passed manager determines whether
+    /// those recoveries already have an active diagnostic.
     public @NotNull FrontendModuleSkeleton build(
             @NotNull FrontendModule module,
             @NotNull ClassRegistry classRegistry,
@@ -69,7 +73,9 @@ public final class FrontendClassSkeletonBuilder {
         Objects.requireNonNull(analysisData, "analysisData must not be null");
 
         var units = module.units();
+        indexStandaloneRecoveries(units, analysisData);
         var annotationCollector = new FrontendAnnotationCollector();
+        var memberAdmission = new IdentityHashMap<Statement, Boolean>();
 
         for (var unit : units) {
             // Parse-failed units carry an empty synthetic AST: nothing to collect, and their
@@ -81,7 +87,7 @@ public final class FrontendClassSkeletonBuilder {
             // annotation ownership map instead of local copies.
             analysisData.annotationsByAst().putAll(annotationCollector.collect(unit));
         }
-        var headerDiscovery = discoverModuleClassHeaders(module, classRegistry, diagnosticManager);
+        var headerDiscovery = discoverModuleClassHeaders(module, classRegistry, diagnosticManager, analysisData);
         markSkippedSubtreeRoots(headerDiscovery.rejectedSubtreeRoots(), analysisData);
         var sourceClassRelations = new ArrayList<FrontendSourceClassRelation>();
 
@@ -94,7 +100,8 @@ public final class FrontendClassSkeletonBuilder {
                     diagnosticManager,
                     sourceUnitGraph.unit().path(),
                     analysisData,
-                    module.topLevelCanonicalNameMap()
+                    module.topLevelCanonicalNameMap(),
+                    memberAdmission
             );
             var sourceClassRelation = buildSourceClassRelationShell(sourceUnitGraph, context);
             applyScriptToolAnnotation(sourceClassRelation, context);
@@ -124,7 +131,8 @@ public final class FrontendClassSkeletonBuilder {
                     diagnosticManager,
                     sourceClassRelation.unit().path(),
                     analysisData,
-                    module.topLevelCanonicalNameMap()
+                    module.topLevelCanonicalNameMap(),
+                    memberAdmission
             );
             fillSourceClassRelationMembers(
                     sourceClassRelation,
@@ -145,6 +153,26 @@ public final class FrontendClassSkeletonBuilder {
                 module.topLevelCanonicalNameMap(),
                 diagnosticManager.snapshot()
         );
+    }
+
+    /// Direct skeleton callers do not pass through the same-generation semantic indexing step.
+    private static void indexStandaloneRecoveries(
+            @NotNull List<FrontendSourceUnit> units,
+            @NotNull FrontendAnalysisData data
+    ) {
+        var byOwner = data.parseRecoveriesByOwner();
+        if (!byOwner.isEmpty()) {
+            return;
+        }
+        var buckets = new IdentityHashMap<Node, List<FrontendParseRecovery>>();
+        for (var unit : units) {
+            for (var recovery : unit.parseRecoveries()) {
+                if (recovery.owner() != null) {
+                    buckets.computeIfAbsent(recovery.owner(), _ -> new ArrayList<>()).add(recovery);
+                }
+            }
+        }
+        buckets.forEach((owner, recoveries) -> byOwner.put(owner, List.copyOf(recoveries)));
     }
 
     /// Builds one accepted source-owned skeleton relation from the validated header graph:
@@ -315,10 +343,13 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull SkeletonBuildContext context
     ) {
         var sourceFile = sourceClassRelation.unit().ast();
-        var hasScriptTool = context.analysisData().annotationsByAst()
-                .getOrDefault(sourceFile, List.of())
-                .stream()
-                .anyMatch(annotation -> annotation.name().equals("tool") && annotation.arguments().isEmpty());
+        var hasScriptTool = false;
+        for (var annotation : context.analysisData().annotationsByAst().getOrDefault(sourceFile, List.of())) {
+            if (isUsableAnnotation(annotation, context.analysisData())
+                    && annotation.name().equals("tool") && annotation.arguments().isEmpty()) {
+                hasScriptTool = true;
+            }
+        }
         if (!hasScriptTool) {
             return;
         }
@@ -354,6 +385,25 @@ public final class FrontendClassSkeletonBuilder {
                 rejectedClassConstants
         );
         for (var statement : statements) {
+            if (statement instanceof VariableDeclaration variable) {
+                markSkippedSubtreeRoots(variable.recoveryAnnotations(), context.analysisData());
+            }
+            if (!isAdmissibleMember(statement, context)) {
+                if (!(statement instanceof ClassDeclaration || statement instanceof EnumDeclaration)) {
+                    var message = "Invalid class member declaration on '" + classDef.getName() + "'";
+                    if (statement instanceof VariableDeclaration variable) {
+                        reportVariableRecoveryError(variable, variableRecoveries(variable, context.analysisData()),
+                                message, context);
+                    } else {
+                        reportRecoveryError(statement,
+                                recoveriesFor(statement, context.analysisData(), "declaration.name", "function.name"),
+                                CLASS_SKELETON_CATEGORY, message, context.sourcePath(),
+                                context.analysisData(), context.diagnostics(), false);
+                    }
+                    markSkippedSubtreeRoots(List.of(statement), context.analysisData());
+                }
+                continue;
+            }
             switch (statement) {
                 case SignalStatement signalStatement -> {
                     if (rejectReservedSyntheticPropertyHelperMember(
@@ -496,7 +546,7 @@ public final class FrontendClassSkeletonBuilder {
                         context
                 );
                 case VariableDeclaration variableDeclaration -> {
-                    if (variableDeclaration.kind() == DeclarationKind.CONST) {
+                    if (variableDeclaration.kind() == DeclarationKind.CONST && isAdmissibleMember(statement, context)) {
                         processClassConstDeclaration(
                                 classDef,
                                 variableDeclaration,
@@ -547,6 +597,9 @@ public final class FrontendClassSkeletonBuilder {
         var claimedMemberNames = new LinkedHashMap<String, Node>();
         var declaredMemberNames = new LinkedHashMap<String, Node>();
         for (var statement : statements) {
+            if (!isAdmissibleMember(statement, context)) {
+                continue;
+            }
             switch (statement) {
                 case SignalStatement signalStatement -> {
                     claimedMemberNames.putIfAbsent(signalStatement.name().trim(), signalStatement);
@@ -598,7 +651,7 @@ public final class FrontendClassSkeletonBuilder {
                 buildAncestorMemberBlocker(
                         classDef.getSuperName(),
                         relationsByCanonicalName,
-                        context.classRegistry()
+                        context
                 )
         );
     }
@@ -613,7 +666,7 @@ public final class FrontendClassSkeletonBuilder {
     private @NotNull FrontendAncestorMemberBlocker buildAncestorMemberBlocker(
             @NotNull String superClassCanonicalName,
             @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName,
-            @NotNull ClassRegistry classRegistry
+            @NotNull SkeletonBuildContext context
     ) {
         var enumNames = new HashSet<String>();
         var memberNames = new HashSet<String>();
@@ -626,14 +679,14 @@ public final class FrontendClassSkeletonBuilder {
                 engineRootClassName = currentSuperName;
                 break;
             }
-            collectAncestorMemberNames(classBodyStatementsOf(relation), enumNames, memberNames);
+            collectAncestorMemberNames(classBodyStatementsOf(relation), enumNames, memberNames, context);
             currentSuperName = relation.superClassRef().canonicalName();
         }
         return new FrontendAncestorMemberBlocker(
                 enumNames,
                 memberNames,
                 engineRootClassName,
-                classRegistry
+                context.classRegistry()
         );
     }
 
@@ -643,16 +696,24 @@ public final class FrontendClassSkeletonBuilder {
     private static void collectAncestorMemberNames(
             @NotNull List<Statement> statements,
             @NotNull Set<String> enumNames,
-            @NotNull Set<String> memberNames
+            @NotNull Set<String> memberNames,
+            @NotNull SkeletonBuildContext context
     ) {
         for (var statement : statements) {
+            if (!isAdmissibleMember(statement, context)) {
+                continue;
+            }
             switch (statement) {
                 case EnumDeclaration enumDeclaration -> {
-                    if (enumDeclaration.name() != null) {
-                        enumNames.add(enumDeclaration.name().trim());
+                    var groupName = StringUtil.trimToNull(enumDeclaration.name());
+                    if (groupName != null) {
+                        enumNames.add(groupName);
                     } else {
                         for (var member : enumDeclaration.members()) {
-                            enumNames.add(member.name().trim());
+                            var memberName = StringUtil.trimToNull(member.name());
+                            if (memberName != null) {
+                                enumNames.add(memberName);
+                            }
                         }
                     }
                 }
@@ -667,6 +728,23 @@ public final class FrontendClassSkeletonBuilder {
                 }
             }
         }
+    }
+
+    /// All name views and member filling use the same structural decision, independent of the
+    /// order in which class shells are filled. A rejected const with a name still masks lookups.
+    private static boolean isAdmissibleMember(@NotNull Statement statement, @NotNull SkeletonBuildContext context) {
+        return context.memberAdmission().computeIfAbsent(statement, member -> switch (member) {
+            case ClassDeclaration inner -> StringUtil.trimToNull(inner.name()) != null;
+            case SignalStatement signal -> StringUtil.trimToNull(signal.name()) != null;
+            case FunctionDeclaration function -> StringUtil.trimToNull(function.name()) != null;
+            case VariableDeclaration variable -> StringUtil.trimToNull(variable.name()) != null
+                    && (variable.kind() != DeclarationKind.VAR
+                        || variableRecoveries(variable, context.analysisData()).isEmpty()
+                        && !containsDamagedSyntax(variable.value()));
+            case EnumDeclaration declaration -> enumRecoveries(declaration, context.analysisData()).isEmpty()
+                    && declaration.members().stream().noneMatch(memberNode -> containsDamagedSyntax(memberNode.value()));
+            default -> true;
+        });
     }
 
     /// Validates and evaluates one enum declaration, publishing its facts only when every member
@@ -684,24 +762,21 @@ public final class FrontendClassSkeletonBuilder {
         var groupName = StringUtil.trimToNull(enumDeclaration.name());
         var members = enumDeclaration.members();
         var enumLabel = groupName != null ? "Enum '" + groupName + "'" : "Anonymous enum";
-        // The parser may have already rejected something inside this enum (its recovery drops a
-        // broken initializer, leaving a `value == null` member that looks like an auto-increment
-        // candidate). Publishing constants from such a subtree would fabricate values, so the enum
-        // is skipped without publication — and without a second diagnostic on the same root cause
-        // (single-owner recovery rule: parse owns the initializer error).
-        if (hasParserDiagnosticInside(enumDeclaration, context)) {
+        // A recovered initializer may have been dropped. Do not mistake it for auto-increment.
+        if (!isAdmissibleMember(enumDeclaration, context)) {
+            reportRecoveryError(
+                    enumDeclaration, enumRecoveries(enumDeclaration, context.analysisData()),
+                    ENUM_DECLARATION_CATEGORY, enumLabel + " is damaged and will be skipped",
+                    context.sourcePath(), context.analysisData(), context.diagnostics(), false
+            );
             markSkippedSubtreeRoots(List.of(enumDeclaration), context.analysisData());
             return;
         }
-        // gdparser recovery maps an empty enum body to one phantom member with an empty name.
-        // Current parser versions also report the missing enumerator/identifier themselves, in
-        // which case the hasParserDiagnosticInside guard above already skipped this enum; the
-        // blank-member check stays as a defensive fallback so both shapes collapse into the same
-        // "at least one member" rule here.
-        if (members.isEmpty() || members.stream().anyMatch(member -> member.name().isBlank())) {
+        if (members.isEmpty() || members.stream().anyMatch(member -> StringUtil.trimToNull(member.name()) == null)) {
             rejectEnumDeclaration(
                     enumDeclaration,
                     enumDeclaration,
+                    ENUM_DECLARATION_CATEGORY,
                     enumLabel + " on class '" + classDef.getName() + "' must declare at least one member",
                     context
             );
@@ -771,6 +846,7 @@ public final class FrontendClassSkeletonBuilder {
                         rejectEnumDeclaration(
                                 enumDeclaration,
                                 member,
+                                ENUM_DECLARATION_CATEGORY,
                                 enumLabel + " on class '" + classDef.getName() + "' member '" + memberName
                                         + "' has no supported int constant value: " + rejected.reason(),
                                 context
@@ -817,17 +893,25 @@ public final class FrontendClassSkeletonBuilder {
         }
     }
 
-    /// Emits the single `sema.class_skeleton` diagnostic for one rejected enum and skips its
-    /// whole subtree. `diagnosticAnchor` stays as precise as the failure allows (member node for
-    /// value evaluation errors, the enum declaration itself for structural errors).
     private void rejectEnumDeclaration(
             @NotNull EnumDeclaration enumDeclaration,
             @NotNull Node diagnosticAnchor,
             @NotNull String message,
             @NotNull SkeletonBuildContext context
     ) {
+        rejectEnumDeclaration(enumDeclaration, diagnosticAnchor, CLASS_SKELETON_CATEGORY, message, context);
+    }
+
+    /// Value failures anchor the member; rejection still withdraws the entire declaration.
+    private void rejectEnumDeclaration(
+            @NotNull EnumDeclaration enumDeclaration,
+            @NotNull Node diagnosticAnchor,
+            @NotNull String category,
+            @NotNull String message,
+            @NotNull SkeletonBuildContext context
+    ) {
         context.diagnostics().error(
-                "sema.class_skeleton",
+                category,
                 message,
                 context.sourcePath(),
                 FrontendRange.fromAstRange(diagnosticAnchor.range())
@@ -880,10 +964,17 @@ public final class FrontendClassSkeletonBuilder {
         // Parse-damaged subtrees stay the parser's diagnostic property (the same single-owner
         // recovery rule the enum path applies); the name still masks so references terminate
         // instead of leaking to outer names.
-        if (hasParserDiagnosticInside(variableDeclaration, context)) {
+        var recoveries = variableRecoveries(variableDeclaration, context.analysisData());
+        if (!recoveries.isEmpty() || containsDamagedSyntax(variableDeclaration.value())) {
+            var reason = "the constant declaration is damaged and could not be evaluated";
+            reportVariableRecoveryError(
+                    variableDeclaration, recoveries,
+                    "Constant '" + name + "' on class '" + classDef.getName() + "': " + reason,
+                    context
+            );
             maskRejectedClassConstant(
                     variableDeclaration,
-                    "the constant declaration is damaged and could not be evaluated",
+                    reason,
                     variableDeclaration,
                     nameViews,
                     context
@@ -900,7 +991,6 @@ public final class FrontendClassSkeletonBuilder {
         )) {
             case FrontendConstDeclaredTypeSupport.DeclaredTypeCheck.Rejected rejected -> {
                 rejectClassConstDeclaration(
-                        classDef,
                         variableDeclaration,
                         variableDeclaration,
                         "Constant '" + name + "' on class '" + classDef.getName() + "': "
@@ -919,7 +1009,6 @@ public final class FrontendClassSkeletonBuilder {
         var initializer = variableDeclaration.value();
         if (initializer == null) {
             rejectClassConstDeclaration(
-                    classDef,
                     variableDeclaration,
                     variableDeclaration,
                     "Constant '" + name + "' on class '" + classDef.getName()
@@ -938,14 +1027,13 @@ public final class FrontendClassSkeletonBuilder {
                 ),
                 EvaluationPolicy.general()
         );
-        if (evaluation instanceof Evaluation.Rejected rejected) {
-            var anchor = rejected.offendingNode() != null ? rejected.offendingNode() : variableDeclaration;
+        if (evaluation instanceof Evaluation.Rejected(var reason, var offendingNode)) {
+            var anchor = offendingNode != null ? offendingNode : variableDeclaration;
             rejectClassConstDeclaration(
-                    classDef,
                     variableDeclaration,
                     anchor,
                     "Constant '" + name + "' on class '" + classDef.getName()
-                            + "' has no supported constant value: " + rejected.reason(),
+                            + "' has no supported constant value: " + reason,
                     nameViews,
                     context
             );
@@ -960,7 +1048,6 @@ public final class FrontendClassSkeletonBuilder {
             );
             if (converted == null) {
                 rejectClassConstDeclaration(
-                        classDef,
                         variableDeclaration,
                         variableDeclaration,
                         "Constant '" + name + "' on class '" + classDef.getName()
@@ -993,7 +1080,6 @@ public final class FrontendClassSkeletonBuilder {
     /// `diagnosticAnchor` stays as precise as the failure allows (the offending initializer node
     /// for evaluation errors, the declaration itself for structural errors).
     private void rejectClassConstDeclaration(
-            @NotNull LirClassDef classDef,
             @NotNull VariableDeclaration variableDeclaration,
             @NotNull Node diagnosticAnchor,
             @NotNull String message,
@@ -1036,30 +1122,292 @@ public final class FrontendClassSkeletonBuilder {
         );
     }
 
-    /// Checks whether the parser already reported an error inside this declaration's source
-    /// range. Parse diagnostics live in the same shared manager (parse runs before skeleton), so
-    /// any `parse.*` diagnostic whose range is contained in the declaration range marks the
-    /// whole declaration as parse-broken and owned by the parser's recovery rule.
-    private boolean hasParserDiagnosticInside(
-            @NotNull Node node,
-            @NotNull SkeletonBuildContext context
+    private static @NotNull List<FrontendParseRecovery> recoveriesFor(
+            @NotNull Node owner,
+            @NotNull FrontendAnalysisData data,
+            String @NotNull ... facets
     ) {
-        var nodeRange = FrontendRange.fromAstRange(node.range());
-        var sourcePath = context.sourcePath().toString().replace('\\', '/');
-        for (var diagnostic : context.diagnostics().snapshot().asList()) {
-            if (!diagnostic.category().startsWith("parse.")) {
+        var ownerRecoveries = data.parseRecoveriesByOwner().get(owner);
+        if (ownerRecoveries == null) {
+            return List.of();
+        }
+        var matching = new ArrayList<FrontendParseRecovery>();
+        for (var item : ownerRecoveries) {
+            if (!FrontendErrorSubtreeAnalyzer.isNonExemptError(item)) {
                 continue;
             }
-            var range = diagnostic.range();
-            if (range == null || diagnostic.sourcePath() == null
-                    || !diagnostic.sourcePath().equals(sourcePath)) {
-                continue;
+            for (var facet : facets) {
+                if (facet.equals(item.facet())) {
+                    matching.add(item);
+                    break;
+                }
             }
-            if (range.startByte() >= nodeRange.startByte() && range.endByte() <= nodeRange.endByte()) {
+        }
+        return matching;
+    }
+
+    private static @NotNull List<FrontendParseRecovery> variableRecoveries(
+            @NotNull VariableDeclaration variable,
+            @NotNull FrontendAnalysisData data
+    ) {
+        var ownerRecoveries = variable.kind() == DeclarationKind.CONST
+                ? recoveriesFor(variable, data, "declaration.name", "constant.type", "constant.value", "type.argument")
+                : recoveriesFor(variable, data, "declaration.name", "variable.type", "variable.initializer",
+                                "variable.property", "type.argument");
+        if (variable.type() == null) {
+            return ownerRecoveries;
+        }
+        var typeRecoveries = recoveriesFor(variable.type(), data, "type.argument");
+        if (ownerRecoveries.isEmpty()) {
+            return typeRecoveries;
+        }
+        ownerRecoveries.addAll(typeRecoveries);
+        return ownerRecoveries;
+    }
+
+    private static @NotNull List<FrontendParseRecovery> enumRecoveries(
+            @NotNull EnumDeclaration declaration,
+            @NotNull FrontendAnalysisData data
+    ) {
+        var matching = new ArrayList<>(recoveriesFor(declaration, data, "enum.body", "declaration.name"));
+        for (var member : declaration.members()) {
+            matching.addAll(recoveriesFor(member, data, "enum.value", "declaration.name"));
+        }
+        return matching;
+    }
+
+    private static boolean containsDamagedSyntax(@Nullable Node node) {
+        if (node == null) {
+            return false;
+        }
+        if (isDamagedSyntaxNode(node)) {
+            return true;
+        }
+        for (var child : node.getChildren()) {
+            if (containsDamagedSyntax(child)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static boolean isDamagedSyntaxNode(@NotNull Node node) {
+        return node instanceof ErrorStatement || node instanceof UnknownStatement || node instanceof ErrorExpression
+                || node instanceof UnknownExpression || node instanceof RecoveredInfixExpression;
+    }
+
+    private static void reportVariableRecoveryError(
+            @NotNull VariableDeclaration variable,
+            @NotNull List<FrontendParseRecovery> recoveries,
+            @NotNull String message,
+            @NotNull SkeletonBuildContext context
+    ) {
+        var damage = new InitializerDamage();
+        var rootDamage = collectInitializerDamage(variable.value(), context.analysisData(), damage);
+        var hasRootRecovery = rootDamage && recoveries.stream().anyMatch(recovery ->
+                recovery.owner() == variable && initializerFacet(variable).equals(recovery.facet()));
+        var unmatched = damage.unmatched || rootDamage && !hasRootRecovery;
+        reportNestedInitializerRecoveries(damage.recoveries, context);
+        if (unmatched || damage.recoveries.isEmpty() || !recoveries.isEmpty()
+                || StringUtil.trimToNull(variable.name()) == null) {
+            reportRecoveryError(variable, recoveries, CLASS_SKELETON_CATEGORY, message,
+                    context.sourcePath(), context.analysisData(), context.diagnostics(), unmatched);
+        }
+    }
+
+    /// Return only damage from the same expression slot to the parent. A nested statement,
+    /// branch, or callable cannot supply evidence for an enclosing condition or initializer.
+    private static boolean collectInitializerDamage(
+            @Nullable Node node, @NotNull FrontendAnalysisData data, @NotNull InitializerDamage damage
+    ) {
+        if (node == null) {
+            return false;
+        }
+        var localDamage = isDamagedSyntaxNode(node);
+        Map<String, List<Node>> damagedSlots = null;
+        for (var child : node.getChildren()) {
+            if (!collectInitializerDamage(child, data, damage)) {
+                continue;
+            }
+            var facet = valueRecoveryFacet(node, child);
+            if (facet == null) {
+                localDamage = true;
+            } else {
+                if (damagedSlots == null) {
+                    damagedSlots = new LinkedHashMap<>();
+                }
+                damagedSlots.computeIfAbsent(facet, _ -> new ArrayList<>()).add(child);
+            }
+        }
+        if (damagedSlots != null) {
+            for (var slot : damagedSlots.entrySet()) {
+                var facet = slot.getKey();
+                var matching = recoveriesFor(node, data, facet);
+                if (matching.isEmpty()) {
+                    localDamage = true;
+                } else {
+                    var siblings = sharedRecoveryChildren(node, facet);
+                    if (siblings == null) {
+                        damage.recoveries.addAll(matching);
+                    } else {
+                        localDamage |= !collectSharedChildRecoveries(
+                                siblings, slot.getValue(), matching, damage.recoveries);
+                    }
+                }
+            }
+        }
+        if (localDamage && (node instanceof Statement || node instanceof LambdaExpression
+                || node instanceof ElifClause || node instanceof MatchSection || node instanceof Parameter)) {
+            damage.unmatched = true;
+            return false;
+        }
+        return localDamage;
+    }
+
+    private static @Nullable List<Expression> sharedRecoveryChildren(@NotNull Node owner, @NotNull String facet) {
+        return switch (owner) {
+            case MatchSection section when "match.pattern".equals(facet) -> section.patterns();
+            case AnnotationStatement annotation when "annotation.arguments".equals(facet) -> annotation.arguments();
+            default -> null;
+        };
+    }
+
+    /// A shared bucket covers each damaged child separately. Sweep only the known siblings
+    /// and their owner/facet bucket. Of the children starting by a recovery's start, the two
+    /// greatest ends suffice to detect unique containment (including ambiguous touching edges
+    /// for zero-width recoveries). Keep the original bucket order when collecting matches.
+    private static boolean collectSharedChildRecoveries(
+            @NotNull List<Expression> siblings,
+            @NotNull List<Node> damagedChildren,
+            @NotNull List<FrontendParseRecovery> recoveries,
+            @NotNull List<FrontendParseRecovery> matched
+    ) {
+        var coveredChildren = new IdentityHashMap<Node, Boolean>();
+        for (var child : damagedChildren) {
+            coveredChildren.put(child, false);
+        }
+        var seenChildren = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>());
+        var childrenByStart = siblings.stream()
+                .filter(child -> child.range() != null && seenChildren.add(child))
+                .sorted(Comparator.comparingInt(child -> child.range().startByte()))
+                .toList();
+        var recoveriesByStart = recoveries.stream()
+                .filter(recovery -> recovery.range() != null)
+                .sorted(Comparator.comparingInt(recovery -> Objects.requireNonNull(recovery.range()).startByte()))
+                .toList();
+        var matchedRecoveries = Collections.newSetFromMap(new IdentityHashMap<FrontendParseRecovery, Boolean>());
+        var nextChild = 0;
+        Expression longest = null;
+        var longestEnd = -1;
+        var secondEnd = -1;
+        for (var recovery : recoveriesByStart) {
+            var range = Objects.requireNonNull(recovery.range());
+            while (nextChild < childrenByStart.size()) {
+                var child = childrenByStart.get(nextChild);
+                if (child.range().startByte() > range.startByte()) {
+                    break;
+                }
+                nextChild++;
+                var end = child.range().endByte();
+                if (end > longestEnd) {
+                    secondEnd = longestEnd;
+                    longestEnd = end;
+                    longest = child;
+                } else {
+                    secondEnd = Math.max(secondEnd, end);
+                }
+            }
+            if (longest != null && longestEnd >= range.endByte() && secondEnd < range.endByte()
+                    && coveredChildren.containsKey(longest)) {
+                matchedRecoveries.add(recovery);
+                coveredChildren.put(longest, true);
+            }
+        }
+        for (var recovery : recoveries) {
+            if (matchedRecoveries.remove(recovery)) {
+                matched.add(recovery);
+            }
+        }
+        return !coveredChildren.containsValue(false);
+    }
+
+    /// Projects an actual child of the owner onto the parser's expression slot. The surrounding
+    /// headers and delimiters, such as `assert.arguments`, can have independent diagnostics.
+    private static @Nullable String valueRecoveryFacet(@NotNull Node owner, @NotNull Node child) {
+        return switch (owner) {
+            case ReturnStatement statement when statement.value() == child -> "return.value";
+            case ExpressionStatement statement when statement.expression() == child -> "expression";
+            case IfStatement statement when statement.condition() == child -> "if.condition";
+            case ElifClause clause when clause.condition() == child -> "elif.condition";
+            case WhileStatement statement when statement.condition() == child -> "while.condition";
+            case ForStatement statement when statement.iterable() == child -> "for.iterable";
+            case AssertStatement statement when statement.condition() == child -> "assert.condition";
+            case AssertStatement statement when statement.message() == child -> "assert.message";
+            case MatchStatement statement when statement.value() == child -> "match.value";
+            case MatchSection section when section.guard() == child -> "match.guard";
+            case MatchSection _ when child instanceof Expression -> "match.pattern";
+            case AnnotationStatement _ when child instanceof Expression -> "annotation.arguments";
+            case Parameter parameter when parameter.defaultValue() == child -> "parameter.default";
+            case VariableDeclaration declaration when declaration.value() == child -> initializerFacet(declaration);
+            default -> null;
+        };
+    }
+
+    private static @NotNull String initializerFacet(@NotNull VariableDeclaration declaration) {
+        return declaration.kind() == DeclarationKind.CONST ? "constant.value" : "variable.initializer";
+    }
+
+    private static final class InitializerDamage {
+        private final List<FrontendParseRecovery> recoveries = new ArrayList<>();
+        private boolean unmatched;
+    }
+
+    /// The rejected initializer will not reach expression analysis. Keep each nested slot's
+    /// original error instead of merging distinct source errors into one skeleton fallback.
+    private static void reportNestedInitializerRecoveries(
+            @NotNull List<FrontendParseRecovery> recoveries, @NotNull SkeletonBuildContext context
+    ) {
+        var sourcePath = FrontendDiagnostic.sourcePathText(context.sourcePath());
+        for (var recovery : recoveries) {
+            var diagnostic = FrontendParseRecovery.findActiveCoveringDiagnostic(
+                    recovery, context.analysisData(), context.diagnostics(), sourcePath);
+            if (diagnostic == null) {
+                diagnostic = FrontendDiagnostic.error(recovery.code(), recovery.message(), sourcePath, recovery.range());
+                context.diagnostics().report(diagnostic);
+            }
+            recovery.claimCoveringDiagnostic(context.analysisData(), context.diagnostics(), diagnostic);
+        }
+    }
+
+    /// A rejected declaration may cover several parser recoveries, but not unrelated errors
+    /// at the same range. Determine active coverage before publishing one shared fallback.
+    private static void reportRecoveryError(
+            @NotNull Node anchor,
+            @NotNull List<FrontendParseRecovery> recoveries,
+            @NotNull String category,
+            @NotNull String message,
+            @NotNull Path sourcePath,
+            @NotNull FrontendAnalysisData data,
+            @NotNull DiagnosticManager diagnostics,
+            boolean unmatchedDamage
+    ) {
+        var pathText = FrontendDiagnostic.sourcePathText(sourcePath);
+        var uncovered = new ArrayList<FrontendParseRecovery>();
+        for (var recovery : recoveries) {
+            var covering = FrontendParseRecovery.findActiveCoveringDiagnostic(recovery, data, diagnostics, pathText);
+            if (covering == null) {
+                uncovered.add(recovery);
+            } else {
+                recovery.claimCoveringDiagnostic(data, diagnostics, covering);
+            }
+        }
+        if (unmatchedDamage || recoveries.isEmpty() || !uncovered.isEmpty()) {
+            var fallback = FrontendDiagnostic.error(category, message, pathText, FrontendRange.fromAstRange(anchor.range()));
+            diagnostics.report(fallback);
+            for (var recovery : uncovered) {
+                data.claimParseRecovery(recovery, fallback);
+            }
+        }
     }
 
     private @NotNull List<Statement> classBodyStatementsOf(@NotNull FrontendOwnedClassRelation relation) {
@@ -1130,7 +1478,10 @@ public final class FrontendClassSkeletonBuilder {
                     declaredTypeScope,
                     context.moduleTopLevelCanonicalNameMap(),
                     context.sourcePath(),
-                    context.diagnostics()
+                    context.diagnostics(),
+                    context.analysisData(),
+                    parameter,
+                    "parameter.type"
             );
             signalDef.addParameter(new LirParameterDef(
                     parameter.name().trim(),
@@ -1167,6 +1518,9 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull SkeletonBuildContext context
     ) {
         for (var annotation : context.analysisData().annotationsByAst().getOrDefault(variableDeclaration, List.of())) {
+            if (!isUsableAnnotation(annotation, context.analysisData())) {
+                continue;
+            }
             // The shared export helper owns argument evaluation: well-formed export annotations
             // map to their Godot hint_string metadata, while malformed ones stay retention-only
             // in the side table (the usage analyzer owns the argument diagnostics). Same-name
@@ -1188,6 +1542,20 @@ public final class FrontendClassSkeletonBuilder {
                 }
             }
         }
+    }
+
+    private static boolean isUsableAnnotation(
+            @NotNull FrontendGdAnnotation annotation,
+            @NotNull FrontendAnalysisData data
+    ) {
+        var source = annotation.sourceStatement();
+        if (source == null) {
+            return true;
+        }
+        if (FrontendErrorSubtreeAnalyzer.isDamagedAnnotation(source, data)) {
+            data.skippedSubtreeRoots().put(source, Boolean.TRUE);
+        }
+        return !data.skippedSubtreeRoots().containsKey(source);
     }
 
     /// Bare `@export` on a property whose declared type resolves to a successfully evaluated
@@ -1282,7 +1650,10 @@ public final class FrontendClassSkeletonBuilder {
                 declaredTypeScope,
                 context.moduleTopLevelCanonicalNameMap(),
                 context.sourcePath(),
-                context.diagnostics()
+                context.diagnostics(),
+                context.analysisData(),
+                functionDeclaration,
+                "function.return_type"
         ));
         fillFunctionParameters(
                 functionDef,
@@ -1322,7 +1693,10 @@ public final class FrontendClassSkeletonBuilder {
                     declaredTypeScope,
                     context.moduleTopLevelCanonicalNameMap(),
                     context.sourcePath(),
-                    context.diagnostics()
+                    context.diagnostics(),
+                    context.analysisData(),
+                    parameter,
+                    "parameter.type"
             );
             functionDef.addParameter(new LirParameterDef(
                     parameter.name().trim(),
@@ -1564,7 +1938,8 @@ public final class FrontendClassSkeletonBuilder {
     private @NotNull ModuleClassHeaderDiscovery discoverModuleClassHeaders(
             @NotNull FrontendModule module,
             @NotNull ClassRegistry classRegistry,
-            @NotNull DiagnosticManager diagnosticManager
+            @NotNull DiagnosticManager diagnosticManager,
+            @NotNull FrontendAnalysisData analysisData
     ) {
         Objects.requireNonNull(module, "module must not be null");
         // Header discovery receives the frozen module carrier directly so the same module-level
@@ -1590,7 +1965,8 @@ public final class FrontendClassSkeletonBuilder {
                     discoveredHeadersInOrder,
                     rejectedCandidates,
                     rejectedSubtreeRoots,
-                    diagnosticManager
+                    diagnosticManager,
+                    analysisData
             );
             sourceUnitHeaders.add(new MutableSourceUnitHeaders(unit, topLevelHeader));
         }
@@ -1657,7 +2033,8 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
             @NotNull List<RejectedClassHeader> rejectedCandidates,
             @NotNull List<Node> rejectedSubtreeRoots,
-            @NotNull DiagnosticManager diagnosticManager
+            @NotNull DiagnosticManager diagnosticManager,
+            @NotNull FrontendAnalysisData analysisData
     ) {
         var classNameStatement = firstClassNameStatement(unit.ast().statements());
         var topLevelSourceName = resolveClassName(unit.path(), classNameStatement);
@@ -1706,7 +2083,11 @@ public final class FrontendClassSkeletonBuilder {
                 discoveredHeadersInOrder,
                 rejectedCandidates,
                 rejectedSubtreeRoots,
-                diagnosticManager
+                diagnosticManager,
+                analysisData,
+                unit.parseRecoveries().stream().anyMatch(recovery ->
+                        DiagnosticCodes.NESTING_DEPTH_EXCEEDED.equals(recovery.code())
+                                && FrontendErrorSubtreeAnalyzer.isNonExemptError(recovery))
         );
         return topLevelHeader;
     }
@@ -1723,7 +2104,9 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
             @NotNull List<RejectedClassHeader> rejectedCandidates,
             @NotNull List<Node> rejectedSubtreeRoots,
-            @NotNull DiagnosticManager diagnosticManager
+            @NotNull DiagnosticManager diagnosticManager,
+            @NotNull FrontendAnalysisData analysisData,
+            boolean unitExceededNestingDepth
     ) {
         for (var statement : statements) {
             if (!(statement instanceof ClassDeclaration classDeclaration)) {
@@ -1732,12 +2115,17 @@ public final class FrontendClassSkeletonBuilder {
 
             var innerClassName = StringUtil.trimToNull(classDeclaration.name());
             if (innerClassName == null) {
-                diagnosticManager.error(
-                        "sema.class_skeleton",
-                        "Inner class declaration is missing a class name and will be skipped",
-                        unit.path(),
-                        FrontendRange.fromAstRange(classDeclaration.range())
-                );
+                var recoveries = recoveriesFor(classDeclaration, analysisData, "declaration.name");
+                // A depth placeholder has no name slot. The enclosing parse error owns it.
+                var depthPlaceholder = recoveries.isEmpty() && unitExceededNestingDepth
+                        && classDeclaration.extendsTarget() == null && classDeclaration.body().statements().isEmpty();
+                if (!depthPlaceholder) {
+                    reportRecoveryError(
+                            classDeclaration, recoveries, CLASS_SKELETON_CATEGORY,
+                            "Inner class declaration is missing a class name and will be skipped",
+                            unit.path(), analysisData, diagnosticManager, false
+                    );
+                }
                 rejectedCandidates.add(new RejectedClassHeader(
                         unit,
                         lexicalOwner,
@@ -1816,7 +2204,9 @@ public final class FrontendClassSkeletonBuilder {
                     discoveredHeadersInOrder,
                     rejectedCandidates,
                     rejectedSubtreeRoots,
-                    diagnosticManager
+                    diagnosticManager,
+                    analysisData,
+                    unitExceededNestingDepth
             );
         }
     }
@@ -2762,7 +3152,8 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull DiagnosticManager diagnostics,
             @NotNull Path sourcePath,
             @NotNull FrontendAnalysisData analysisData,
-            @NotNull Map<String, String> moduleTopLevelCanonicalNameMap
+            @NotNull Map<String, String> moduleTopLevelCanonicalNameMap,
+            @NotNull Map<Statement, Boolean> memberAdmission
     ) {
     }
 }

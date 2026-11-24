@@ -127,7 +127,7 @@
 
 #### 2.2.2 错误子树标注（scope 之前的独立步骤）
 
-`FrontendErrorSubtreeAnnotator`（静态工具）在 skeleton 发布后、scope 前遍历整棵 AST
+`FrontendErrorSubtreeAnalyzer`（静态工具）在 skeleton 发布后、scope 前遍历整棵 AST
 （含函数体、控制流、match、lambda、参数默认值 island）：
 
 - 错误节点向上提升到**最小 statement 或 declaration 根**，写入 `skippedSubtreeRoots()`。
@@ -480,7 +480,7 @@ GDCC 依赖 gdparser 0.6.0 的下列能力（均为已发布合同，升级时�
 ## 5. 回归锚点
 
 - 容错管线：`FrontendErrorRecoveryIntegrationTest`（跨文件与同文件子树级打捞、
-  部分链不标 skipped、parseFailed 单元）、`FrontendErrorSubtreeAnnotatorTest`（手写
+  部分链不标 skipped、parseFailed 单元）、`FrontendErrorSubtreeAnalyzerTest`（手写
   AST 锚定提升规则与 island 规则）、`AnalysisRunnerRecoveryTest`（lowering 隔离、
   代际身份、异常收口）。
 - 并发与版本：`ApiAnalysisSnapshotConcurrencyTest`（三段式、条件发布、删除重建隔离）、
@@ -509,7 +509,7 @@ GDCC 依赖 gdparser 0.6.0 的下列能力（均为已发布合同，升级时�
   `ReadOnlyScope`、`QuerySourceRange`、`SymbolDocDescriptor` 等 DTO）。
 - 发布与并发：`gd.script.gdcc.api`（`API.analyze` 三段式与条件发布、`ModuleState`
   版本计数、`AnalysisRunner.analyzeRich`、`AnalysisResult` 版本对）。
-- 容错语义：`gd.script.gdcc.frontend.sema`（`FrontendErrorSubtreeAnnotator`、
+- 容错语义：`gd.script.gdcc.frontend.sema`（`FrontendErrorSubtreeAnalyzer`、
   `FrontendScopeAnalyzer`/`FrontendSuiteResolver`/`FrontendStatementResolver` skipped
   消费、`FrontendClassSkeletonBuilder` 失败单元排除与 `declarationOrigins` 发布、
   `FrontendSourceUnit.parseFailed`）。

@@ -1,6 +1,7 @@
 package gd.script.gdcc.frontend.lowering;
 
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPass;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringFunctionPreparationPass;
@@ -28,8 +29,8 @@ import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
-import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
@@ -53,6 +54,49 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendLoweringFunctionPreparationPassTest {
+    @Test
+    void runSkipsLambdasInParserDamagedBranchesAndPreservesIdentityOrder() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "preparation_damaged_lambda_branch.gd"), """
+                func run():
+                    if :
+                        var dropped = func():
+                            pass
+                    var kept = func():
+                        return func():
+                            pass
+                """, diagnostics);
+        var module = new FrontendModule("test_module", List.of(unit));
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analysis = new FrontendSemanticAnalyzer().analyze(module, registry, diagnostics);
+        var function = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getLast());
+        var branch = function.body().statements().getFirst();
+        var dropped = findNode(branch, LambdaExpression.class, _ -> true);
+        var kept = findNode(function.body().statements().getLast(), LambdaExpression.class, _ -> true);
+        var nested = findNode(kept.body(), LambdaExpression.class, _ -> true);
+        assertEquals(List.of("parse.missing_expression.if_condition"),
+                diagnostics.snapshot().asList().stream().map(FrontendDiagnostic::category).toList());
+        assertTrue(analysis.skippedSubtreeRoots().containsKey(branch));
+        assertFalse(analysis.lambdaPlans().containsKey(dropped));
+        assertFalse(analysis.lambdaIdentities().containsKey(dropped));
+
+        // The compile gate rejects this source. Exercise preparation with the real partial surface
+        // to verify it does not demand a plan or scope from the skipped subtree.
+        var context = new FrontendLoweringContext(module, registry, diagnostics);
+        context.publishAnalysisData(analysis);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+
+        var lambdaContexts = context.requireFunctionLoweringContexts().stream()
+                .filter(item -> item.kind() == FunctionLoweringContext.Kind.LAMBDA_BODY)
+                .toList();
+        assertEquals(2, lambdaContexts.size());
+        assertSame(kept, lambdaContexts.getFirst().sourceOwner());
+        assertSame(nested, lambdaContexts.getLast().sourceOwner());
+        assertEquals(List.of(0, 1), lambdaContexts.stream()
+                .map(item -> analysis.lambdaIdentities().get(item.sourceOwner()).ordinal()).toList());
+    }
+
     @Test
     void runPublishesExecutableAndPropertyInitContextsWhileKeepingSkeletonOnlyLir() throws Exception {
         var prepared = prepareCompileReadyContext();

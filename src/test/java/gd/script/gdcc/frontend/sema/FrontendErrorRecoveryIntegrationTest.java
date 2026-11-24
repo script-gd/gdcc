@@ -1,33 +1,43 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.AnnotationStatement;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.Block;
-import dev.superice.gdparser.frontend.ast.ErrorStatement;
+import dev.superice.gdparser.frontend.ast.ConditionalExpression;
+import dev.superice.gdparser.frontend.ast.ErrorExpression;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
+import dev.superice.gdparser.frontend.ast.MissingAttributeStep;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
+import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ScopeValueKind;
+import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdObjectType;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -41,16 +51,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Integration coverage for the fault-tolerant semantic pipeline
 /// (`frontend_lsp_foundation_implementation.md` §2.2): parser-damaged subtrees are skipped
 /// through `skippedSubtreeRoots()` while healthy sibling subtrees of the same file and clean
 /// sibling files keep publishing facts.
-///
-/// The damaged source shapes below were probed against gdparser 0.6.0 to guarantee they produce
-/// real `ErrorStatement`/`ErrorExpression` nodes (not silently dropped structures), so every
-/// negative anchor pins the actual recovery contract.
 class FrontendErrorRecoveryIntegrationTest {
     private static final @NotNull String HEADER = """
             class_name Recover
@@ -69,9 +76,9 @@ class FrontendErrorRecoveryIntegrationTest {
 
         var function = requireFunction(fixture.unit(), "f");
         var ifStatement = requireChild(function.body(), IfStatement.class);
-        var yDeclaration = requireChild(function.body(), VariableDeclaration.class);
+        assertParserRecovery(fixture, fixture.unit(), ifStatement, "if.condition",
+                DiagnosticCodes.SLOT_IF_CONDITION, "if");
         assertAll(
-                () -> assertTrue(fixture.hasParseError(), "parse.lowering ERROR expected"),
                 () -> assertTrue(fixture.isSkipped(ifStatement), "damaged if statement must be a skipped root"),
                 () -> assertFalse(fixture.isSkipped(function), "the callable must survive"),
                 () -> assertNull(fixture.analysisData().scopesByAst().get(ifStatement)),
@@ -91,8 +98,9 @@ class FrontendErrorRecoveryIntegrationTest {
 
         var function = requireFunction(fixture.unit(), "f");
         var forStatement = requireChild(function.body(), ForStatement.class);
+        assertParserRecovery(fixture, fixture.unit(), forStatement, "for.iterable",
+                DiagnosticCodes.SLOT_FOR_ITERABLE, "in");
         assertAll(
-                () -> assertTrue(fixture.hasParseError()),
                 () -> assertTrue(fixture.isSkipped(forStatement)),
                 () -> assertNull(fixture.analysisData().scopesByAst().get(forStatement)),
                 () -> assertNull(fixture.analysisData().scopesByAst().get(forStatement.body())),
@@ -112,8 +120,9 @@ class FrontendErrorRecoveryIntegrationTest {
 
         var function = requireFunction(fixture.unit(), "f");
         var matchStatement = requireChild(function.body(), MatchStatement.class);
+        assertParserRecovery(fixture, fixture.unit(), matchStatement, "match.value",
+                DiagnosticCodes.SLOT_MATCH_VALUE, "match");
         assertAll(
-                () -> assertTrue(fixture.hasParseError()),
                 () -> assertTrue(fixture.isSkipped(matchStatement)),
                 () -> assertNull(fixture.analysisData().scopesByAst().get(matchStatement)),
                 () -> assertHealthyLocalBinding(fixture, function, "y")
@@ -130,17 +139,18 @@ class FrontendErrorRecoveryIntegrationTest {
 
         var function = requireFunction(fixture.unit(), "f");
         var returnStatement = requireChild(function.body(), ReturnStatement.class);
+        assertParserRecovery(fixture, fixture.unit(), returnStatement, "return.value",
+                DiagnosticCodes.SLOT_RETURN_VALUE, "= 3");
         assertAll(
-                () -> assertTrue(fixture.hasParseError()),
                 () -> assertTrue(fixture.isSkipped(returnStatement),
                         "error expression in return value must promote to the return statement"),
+                () -> assertNull(fixture.analysisData().expressionTypes().get(returnStatement.value())),
                 () -> assertHealthyLocalBinding(fixture, function, "y")
         );
     }
 
     @Test
-    void errorStatementInFunctionBodySkipsOnlyItself() throws IOException {
-        // `true if  else false` lowers to an ErrorStatement node (probed against gdparser 0.6.0).
+    void damagedLocalInitializerSkipsOnlyItsDeclaration() throws IOException {
         var fixture = analyze("broken_statement.gd", HEADER + """
                 func f():
                     var y = 2
@@ -148,11 +158,18 @@ class FrontendErrorRecoveryIntegrationTest {
                 """);
 
         var function = requireFunction(fixture.unit(), "f");
-        var errorStatement = requireChild(function.body(), ErrorStatement.class);
+        var damaged = requireChild(function.body(), VariableDeclaration.class, variable -> variable.name().equals("x"));
+        var conditional = assertInstanceOf(ConditionalExpression.class, damaged.value());
+        assertInstanceOf(ErrorExpression.class, conditional.condition());
+        assertParserRecovery(fixture, fixture.unit(), damaged, "variable.initializer",
+                DiagnosticCodes.SLOT_TERNARY_CONDITION, "if");
+        var bodyScope = assertInstanceOf(BlockScope.class, fixture.analysisData().scopesByAst().get(function.body()));
         assertAll(
-                () -> assertTrue(fixture.hasParseError()),
-                () -> assertTrue(fixture.isSkipped(errorStatement)),
-                () -> assertNull(fixture.analysisData().scopesByAst().get(errorStatement)),
+                () -> assertTrue(fixture.isSkipped(damaged)),
+                () -> assertNull(fixture.analysisData().scopesByAst().get(damaged)),
+                () -> assertNull(fixture.analysisData().expressionTypes().get(conditional)),
+                () -> assertNull(fixture.analysisData().slotTypes().get(damaged)),
+                () -> assertNull(bodyScope.resolveValueHere("x")),
                 () -> assertHealthyLocalBinding(fixture, function, "y")
         );
     }
@@ -171,9 +188,10 @@ class FrontendErrorRecoveryIntegrationTest {
         var gDeclaration = requireChild(function.body(), VariableDeclaration.class, variable -> variable.name().equals("g"));
         var lambda = assertInstanceOf(LambdaExpression.class, gDeclaration.value());
         var innerIf = requireChild(lambda.body(), IfStatement.class);
+        assertParserRecovery(fixture, fixture.unit(), innerIf, "if.condition", DiagnosticCodes.SLOT_IF_CONDITION, "if");
         assertAll(
-                () -> assertTrue(fixture.hasParseError()),
                 () -> assertTrue(fixture.isSkipped(innerIf)),
+                () -> assertNull(fixture.analysisData().scopesByAst().get(innerIf.body())),
                 () -> assertFalse(fixture.isSkipped(gDeclaration), "the lambda-owning statement must survive"),
                 () -> assertFalse(fixture.isSkipped(lambda), "the lambda itself must survive"),
                 () -> assertNotNull(fixture.analysisData().scopesByAst().get(lambda.body()),
@@ -184,22 +202,28 @@ class FrontendErrorRecoveryIntegrationTest {
     }
 
     @Test
-    void classLevelErrorStatementSkipsOnlyItself() throws IOException {
-        // `var hp = (1` at end of file lowers to a class-member ErrorStatement (probed).
+    void classMemberWithMissingInitializerCloserSkipsOnlyItself() throws IOException {
         var fixture = analyze("broken_member.gd", HEADER + """
-                var mp = 2
+                var mp: int = 2
                 var hp = (1
                 """);
 
-        var errorStatement = requireChild(fixture.unit().ast(), ErrorStatement.class);
+        var kept = assertInstanceOf(VariableDeclaration.class, fixture.unit().ast().statements().get(2));
+        var damaged = assertInstanceOf(VariableDeclaration.class, fixture.unit().ast().statements().getLast());
+        assertEquals("hp", damaged.name());
+        assertParserRecovery(fixture, fixture.unit(), damaged, "variable.initializer",
+                DiagnosticCodes.MISSING_CLOSER_GROUPING, "");
+        assertEquals(damaged.range().endByte(), fixture.unit().parseRecoveries().getFirst().range().startByte());
         var topLevelClass = fixture.topLevelClassDef();
         assertAll(
-                () -> assertTrue(fixture.hasParseError()),
-                () -> assertTrue(fixture.isSkipped(errorStatement)),
-                () -> assertNotNull(topLevelClass.getProperties().stream()
+                () -> assertTrue(fixture.isSkipped(damaged)),
+                () -> assertNull(fixture.analysisData().scopesByAst().get(damaged)),
+                () -> assertNull(fixture.analysisData().expressionTypes().get(damaged.value())),
+                () -> assertEquals(GdIntType.INT, topLevelClass.getProperties().stream()
                         .filter(property -> property.getName().equals("mp"))
                         .findFirst()
-                        .orElse(null), "healthy sibling property must stay registered"),
+                        .orElseThrow().getType(), "healthy sibling property must stay registered"),
+                () -> assertEquals(GdIntType.INT, fixture.analysisData().expressionTypes().get(kept.value()).publishedType()),
                 () -> assertTrue(topLevelClass.getProperties().stream()
                                 .noneMatch(property -> property.getName().equals("hp")),
                         "the damaged member must not be registered")
@@ -208,25 +232,22 @@ class FrontendErrorRecoveryIntegrationTest {
 
     @Test
     void damagedParameterDefaultKeepsCallableBodyAlive() throws IOException {
-        // gdparser 0.6.0 maps `x = 1 +` to a defaulted `x` plus a phantom parameter rather than an
-        // error-expression default, so this anchors the tolerant no-crash outcome of that shape.
         var fixture = analyze("broken_default.gd", HEADER + """
                 func f(x = 1 +):
                     var y = 2
                 """);
 
         var function = requireFunction(fixture.unit(), "f");
+        assertEquals(1, function.parameters().size(), "a damaged default must not invent a second parameter");
+        var parameter = function.parameters().getFirst();
+        assertParserRecovery(fixture, fixture.unit(), parameter, "parameter.default",
+                DiagnosticCodes.SLOT_BINARY_RIGHT, "+");
         assertAll(
-                () -> assertTrue(fixture.hasParseError()),
                 () -> assertFalse(fixture.isSkipped(function), "the callable must not be skipped"),
-                () -> assertHealthyLocalBinding(fixture, function, "y"),
-                // Single-owner rule: the phantom parameter must not trigger a second sema-level
-                // parameter-order error for the same parser-reported root cause.
-                () -> assertTrue(fixture.diagnostics.snapshot().asList().stream()
-                                .noneMatch(diagnostic -> diagnostic.category()
-                                        .equals("sema.invalid_parameter_default_order")),
-                        () -> "phantom parameter must not earn sema.invalid_parameter_default_order: "
-                                + fixture.diagnostics.snapshot().asList())
+                () -> assertTrue(fixture.isSkipped(parameter.defaultValue())),
+                () -> assertNull(fixture.analysisData().expressionTypes().get(parameter.defaultValue())),
+                () -> assertNull(requireFunctionDef(fixture, fixture.unit(), "f").getParameter("x").getDefaultValueFunc()),
+                () -> assertHealthyLocalBinding(fixture, function, "y")
         );
     }
 
@@ -242,11 +263,19 @@ class FrontendErrorRecoveryIntegrationTest {
         var function = requireFunction(fixture.unit(), "f");
         var xDeclaration = requireChild(function.body(), VariableDeclaration.class);
         var chain = assertInstanceOf(AttributeExpression.class, xDeclaration.value());
+        var receiver = assertInstanceOf(SelfExpression.class, chain.base());
+        assertInstanceOf(MissingAttributeStep.class, chain.steps().getLast());
+        assertParserRecovery(fixture, fixture.unit(), xDeclaration, "variable.initializer",
+                DiagnosticCodes.ATTRIBUTE_MISSING_NAME, ".");
         assertAll(
-                () -> assertTrue(fixture.hasParseError(), "Missing identifier diagnostic expected"),
                 () -> assertFalse(fixture.isSkipped(xDeclaration),
                         "partial member chains must not be skipped (frontend_lsp_foundation_implementation.md §2.2.1)"),
-                () -> assertFalse(chain.steps().isEmpty(), "the chain keeps its steps"),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED,
+                        fixture.analysisData().expressionTypes().get(receiver).status()),
+                () -> assertEquals(new GdObjectType("Recover"),
+                        fixture.analysisData().expressionTypes().get(receiver).publishedType()),
+                () -> assertEquals(FrontendExpressionTypeStatus.FAILED,
+                        fixture.analysisData().expressionTypes().get(chain).status()),
                 () -> assertHealthyLocalBinding(fixture, function, "x"),
                 // Single-owner rule: the parser's `Missing identifier` diagnostic is the only
                 // error; sema phases must not re-report the same root cause.
@@ -259,11 +288,8 @@ class FrontendErrorRecoveryIntegrationTest {
 
     @Test
     void damagedParameterDefaultInOneFileNeverSuppressesOrderErrorInAnother() throws IOException {
-        // The parse diagnostic manager is shared module-wide while byte ranges are file-local:
-        // A.gd's damaged parameter list must not suppress B.gd's genuine order violation. The
-        // fixture is tuned so A.gd's parse diagnostic range actually overlaps the byte range of
-        // B.gd's mandatory parameter (both [47,48)) — verified below, otherwise this test could
-        // not catch a missing source-path filter.
+        // Byte ranges are file-local. A's damaged default and B's mandatory parameter occupy
+        // the same byte range but have different diagnostic owners.
         var fixture = analyze(
                 List.of(
                         new SourceSpec("a.gd", """
@@ -283,29 +309,56 @@ class FrontendErrorRecoveryIntegrationTest {
                 )
         );
 
-        var parseDiagnosticsInA = fixture.diagnostics().snapshot().asList().stream()
-                .filter(diagnostic -> diagnostic.category().startsWith("parse."))
-                .filter(diagnostic -> diagnostic.sourcePath().endsWith("a.gd"))
+        var a = fixture.unit("a.gd");
+        var b = fixture.unit("b.gd");
+        var defaultParameter = requireFunction(a, "f").parameters().getFirst();
+        var orderFunction = requireFunction(b, "f");
+        assertParserRecovery(fixture, a, defaultParameter, "parameter.default", DiagnosticCodes.SLOT_BINARY_RIGHT, "+");
+        assertParserRecovery(fixture, b, orderFunction, "function.signature",
+                DiagnosticCodes.SIGNATURE_MANDATORY_AFTER_OPTIONAL, "b");
+        assertEquals(a.parseRecoveries().getFirst().range(), b.parseRecoveries().getFirst().range());
+        assertEquals("tmp/b.gd", fixture.analysisData().claimedParseRecoveries()
+                .get(b.parseRecoveries().getFirst()).sourcePath());
+        assertOrderMetadata(fixture, b, orderFunction);
+
+        // Hand-build B's violating parameter and owner without its parse recovery. A's active
+        // parser diagnostic still overlaps, but may not silence the semantic fallback in B.
+        var parsedOffender = orderFunction.parameters().getLast();
+        var mandatory = new Parameter("b", null, null, false, parsedOffender.range());
+        var manualFunction = new FunctionDeclaration(orderFunction.name(),
+                List.of(orderFunction.parameters().getFirst(), mandatory),
+                orderFunction.returnType(), orderFunction.isStatic(), orderFunction.body(), orderFunction.range());
+        var statements = b.ast().statements().stream()
+                .map(statement -> statement == orderFunction ? manualFunction : statement)
                 .toList();
-        var orderErrors = fixture.diagnostics().snapshot().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals("sema.invalid_parameter_default_order"))
+        var manual = new FrontendSourceUnit(b.path(), b.source(), new SourceFile(statements, b.ast().range()));
+        assertTrue(manual.parseRecoveries().isEmpty());
+        var manager = new DiagnosticManager();
+        var onlyA = fixture.parserDiagnostics().stream()
+                .filter(diagnostic -> diagnostic.sourcePath().equals("tmp/a.gd"))
                 .toList();
+        manager.reportAll(onlyA);
+        var fallback = analyzeUnits(List.of(a, manual), manager);
+        var errors = fallback.diagnostics().snapshot().asList();
+        assertEquals(2, errors.size(), errors::toString);
+        assertEquals(onlyA.getFirst(), errors.getFirst());
+        var orderError = errors.getLast();
+        assertEquals("sema.invalid_parameter_default_order", orderError.category());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, orderError.severity());
+        assertEquals("tmp/b.gd", orderError.sourcePath());
+        assertEquals(FrontendRange.fromAstRange(mandatory.range()), orderError.range());
+        assertEquals(onlyA.getFirst().range(), orderError.range());
+        assertTrue(orderError.message().contains("'b'"));
+        assertFalse(fallback.analysisData().parseRecoveriesByOwner().containsKey(manualFunction));
+        assertOrderMetadata(fallback, manual, manualFunction);
+    }
+
+    private static void assertOrderMetadata(RecoveryFixture fixture, FrontendSourceUnit unit, FunctionDeclaration function) {
+        var definition = requireFunctionDef(fixture, unit, function.name());
         assertAll(
-                () -> assertTrue(fixture.hasParseError(), "A.gd must carry the parse error"),
-                () -> assertEquals(1, orderErrors.size(),
-                        () -> "B.gd's genuine order violation must survive: "
-                                + fixture.diagnostics().snapshot().asList()),
-                () -> assertTrue(orderErrors.getFirst().message().contains("'b'")),
-                () -> assertTrue(orderErrors.getFirst().sourcePath().endsWith("b.gd")),
-                // The order error is anchored at B.gd's parameter; the fixture only exercises the
-                // source-path filter when A.gd's parse diagnostic range truly overlaps it.
-                () -> assertTrue(parseDiagnosticsInA.stream().anyMatch(parseDiagnostic -> {
-                            var parseRange = parseDiagnostic.range();
-                            var orderRange = orderErrors.getFirst().range();
-                            return parseRange.startByte() < orderRange.endByte()
-                                    && orderRange.startByte() < parseRange.endByte();
-                        }),
-                        "fixture must keep A.gd's parse range overlapping B.gd's parameter range")
+                () -> assertEquals("_default_f$a", definition.getParameter("a").getDefaultValueFunc()),
+                () -> assertNull(definition.getParameter("b").getDefaultValueFunc()),
+                () -> assertTrue(fixture.analysisData().scopesByAst().containsKey(function.body()))
         );
     }
 
@@ -328,9 +381,14 @@ class FrontendErrorRecoveryIntegrationTest {
                 )
         );
 
-        var cleanFunction = requireFunction(fixture.unit("clean.gd"), "g");
+        var broken = fixture.unit("broken.gd");
+        var damaged = requireChild(requireFunction(broken, "f").body(), IfStatement.class);
+        assertParserRecovery(fixture, broken, damaged, "if.condition", DiagnosticCodes.SLOT_IF_CONDITION, "if");
+        var cleanUnit = fixture.unit("clean.gd");
+        var cleanFunction = requireFunction(cleanUnit, "g");
         assertAll(
-                () -> assertTrue(fixture.hasParseError()),
+                () -> assertTrue(fixture.isSkipped(damaged)),
+                () -> assertTrue(cleanUnit.parseRecoveries().isEmpty()),
                 () -> assertEquals(2, fixture.analysisData().moduleSkeleton().sourceClassRelations().size()),
                 () -> assertHealthyLocalBinding(fixture, cleanFunction, "z")
         );
@@ -425,6 +483,15 @@ class FrontendErrorRecoveryIntegrationTest {
                 .orElseThrow(() -> new AssertionError("function '" + name + "' not found"));
     }
 
+    private static LirFunctionDef requireFunctionDef(RecoveryFixture fixture, FrontendSourceUnit unit, String name) {
+        return fixture.analysisData().moduleSkeleton().sourceClassRelations().stream()
+                .filter(relation -> relation.unit() == unit)
+                .flatMap(relation -> relation.topLevelClassDef().getFunctions().stream())
+                .filter(function -> function.getName().equals(name))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("function definition '" + name + "' not found in " + unit.path()));
+    }
+
     private static <T extends Node> @NotNull T requireChild(@NotNull Block block, @NotNull Class<T> type) {
         return requireChild(block, type, _ -> true);
     }
@@ -462,14 +529,14 @@ class FrontendErrorRecoveryIntegrationTest {
                 @onready
                 var hp: int = [1, = 3]
                 """);
-
-        var usageDiagnostics = fixture.diagnostics().snapshot().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals("sema.annotation_usage"))
-                .toList();
+        var property = requireChild(fixture.unit().ast(), VariableDeclaration.class);
+        assertParserRecovery(fixture, fixture.unit(), property, "variable.initializer",
+                DiagnosticCodes.SLOT_ARRAY_ELEMENT, ",");
         assertAll(
-                () -> assertTrue(fixture.hasParseError(), "parser must own the damage diagnostic"),
-                () -> assertTrue(usageDiagnostics.isEmpty(),
-                        () -> "recovery must not invent annotation placement errors: " + usageDiagnostics)
+                () -> assertTrue(fixture.isSkipped(property)),
+                () -> assertNull(fixture.analysisData().scopesByAst().get(property)),
+                () -> assertNull(fixture.analysisData().expressionTypes().get(property.value())),
+                () -> assertTrue(fixture.topLevelClassDef().getProperties().isEmpty())
         );
     }
 
@@ -482,14 +549,60 @@ class FrontendErrorRecoveryIntegrationTest {
                 var hp: int = 2
                 """);
 
-        var usageDiagnostics = fixture.diagnostics().snapshot().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals("sema.annotation_usage"))
-                .toList();
+        var unit = fixture.unit();
+        var annotation = requireChild(unit.ast(), AnnotationStatement.class);
+        var property = requireChild(unit.ast(), VariableDeclaration.class);
+        assertParserRecoveries(fixture, unit, annotation, "annotation.arguments", List.of(
+                new ExpectedRecovery(DiagnosticCodes.SLOT_ANNOTATION_ARGUMENT, ","),
+                new ExpectedRecovery(DiagnosticCodes.MISSING_CLOSER_ANNOTATION, "")
+        ));
+        assertEquals(annotation.range().endByte(), unit.parseRecoveries().getLast().range().startByte());
         assertAll(
-                () -> assertTrue(fixture.hasParseError(), "parser must own the damage diagnostic"),
-                () -> assertTrue(usageDiagnostics.isEmpty(),
-                        () -> "a damaged annotation projection must not be re-validated: " + usageDiagnostics)
+                () -> assertTrue(fixture.isSkipped(annotation)),
+                () -> assertFalse(fixture.isSkipped(property)),
+                () -> assertNotNull(fixture.analysisData().scopesByAst().get(property)),
+                () -> assertEquals(GdIntType.INT, fixture.analysisData().expressionTypes().get(property.value()).publishedType()),
+                () -> assertEquals(List.of("hp"),
+                        fixture.topLevelClassDef().getProperties().stream().map(PropertyDef::getName).toList())
         );
+    }
+
+    private static void assertParserRecovery(
+            RecoveryFixture fixture, FrontendSourceUnit unit, Node owner, String facet, String code, String anchor
+    ) {
+        assertParserRecoveries(fixture, unit, owner, facet, List.of(new ExpectedRecovery(code, anchor)));
+    }
+
+    private static void assertParserRecoveries(
+            RecoveryFixture fixture, FrontendSourceUnit unit, Node owner, String facet, List<ExpectedRecovery> expected
+    ) {
+        var sourcePath = FrontendDiagnostic.sourcePathText(unit.path());
+        var original = fixture.parserDiagnostics().stream()
+                .filter(diagnostic -> sourcePath.equals(diagnostic.sourcePath()))
+                .toList();
+        var recoveries = unit.parseRecoveries();
+        assertEquals(expected.size(), original.size(), original::toString);
+        assertEquals(expected.size(), recoveries.size());
+        for (var index = 0; index < expected.size(); index++) {
+            var diagnostic = original.get(index);
+            var recovery = recoveries.get(index);
+            var expectation = expected.get(index);
+            assertEquals(expectation.code(), diagnostic.category());
+            assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());
+            var range = diagnostic.range();
+            assertEquals(expectation.anchor(), unit.source().substring(range.startByte(), range.endByte()));
+            assertEquals(expectation.code(), recovery.code());
+            assertEquals(range, recovery.range());
+            assertSame(owner, recovery.owner());
+            assertEquals(facet, recovery.facet());
+        }
+        var activeErrors = fixture.diagnostics().snapshot().asList().stream()
+                .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                .toList();
+        assertEquals(fixture.parserDiagnostics(), activeErrors, "recovering a parser error must not produce a second error");
+    }
+
+    private record ExpectedRecovery(String code, String anchor) {
     }
 
     private record SourceSpec(@NotNull String fileName, @NotNull String source) {
@@ -498,8 +611,8 @@ class FrontendErrorRecoveryIntegrationTest {
     private record RecoveryFixture(
             @NotNull List<FrontendSourceUnit> units,
             @NotNull FrontendAnalysisData analysisData,
-            @NotNull DiagnosticManager diagnostics,
-            @NotNull ClassRegistry registry
+            @NotNull List<FrontendDiagnostic> parserDiagnostics,
+            @NotNull DiagnosticManager diagnostics
     ) {
         private @NotNull FrontendSourceUnit unit() {
             return units.getFirst();
@@ -514,12 +627,6 @@ class FrontendErrorRecoveryIntegrationTest {
 
         private boolean isSkipped(@NotNull Node node) {
             return analysisData.skippedSubtreeRoots().containsKey(node);
-        }
-
-        private boolean hasParseError() {
-            return diagnostics.snapshot().asList().stream()
-                    .anyMatch(diagnostic -> diagnostic.category().equals("parse.lowering")
-                            && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR);
         }
 
         private @NotNull ClassDef topLevelClassDef() {
@@ -537,12 +644,17 @@ class FrontendErrorRecoveryIntegrationTest {
         var units = sources.stream()
                 .map(source -> parserService.parseUnit(Path.of("tmp", source.fileName()), source.source(), diagnostics))
                 .toList();
+        return analyzeUnits(units, diagnostics);
+    }
+
+    private static RecoveryFixture analyzeUnits(List<FrontendSourceUnit> units, DiagnosticManager diagnostics) throws IOException {
+        var parserDiagnostics = diagnostics.snapshot().asList();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = new FrontendSemanticAnalyzer().analyze(
                 new FrontendModule("test_module", units),
                 registry,
                 diagnostics
         );
-        return new RecoveryFixture(units, analysisData, diagnostics, registry);
+        return new RecoveryFixture(units, analysisData, parserDiagnostics, diagnostics);
     }
 }

@@ -39,6 +39,7 @@ import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
@@ -49,6 +50,7 @@ import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ClassDef;
@@ -462,7 +464,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var helperDefaultCall = findNode(
                 pingFunction.parameters().getLast().defaultValue(),
                 CallExpression.class,
-                candidate -> true
+                _ -> true
         );
         assertEquals(
                 FrontendBindingKind.METHOD,
@@ -648,23 +650,51 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var unit = parserService.parseUnit(Path.of("tmp", "stable_snapshot.gd"), """
                 class_name StableSnapshot
                 extends Node
-                
-                func _ready(
-                    pass
+
+                func probe():
+                    if :
+                        pass
+                    var typed: MissingType
                 """, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
 
-        var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
         var parseSnapshot = diagnostics.snapshot();
-        var beforeMutation = result.diagnostics();
+        assertEquals(1, parseSnapshot.size());
+        var parseDiagnostic = parseSnapshot.getFirst();
+        assertEquals(DiagnosticCodes.SLOT_IF_CONDITION, parseDiagnostic.category());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, parseDiagnostic.severity());
+        assertEquals(1, unit.parseRecoveries().size());
+        var recovery = unit.parseRecoveries().getFirst();
+        var function = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getLast());
+        var branch = assertInstanceOf(IfStatement.class, function.body().statements().getFirst());
+        assertSame(branch, recovery.owner());
+        assertEquals("if.condition", recovery.facet());
+        var range = parseDiagnostic.range();
+        assertNotNull(range);
+        var ifStart = unit.source().indexOf("if :");
+        assertEquals(ifStart, range.startByte());
+        assertEquals(ifStart + 2, range.endByte());
+
+        var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
+        var sharedSnapshot = diagnostics.snapshot();
+        assertEquals(2, sharedSnapshot.size());
+        assertEquals(parseDiagnostic, sharedSnapshot.getFirst());
+        var typeDiagnostic = sharedSnapshot.getLast();
+        assertEquals("sema.type_resolution", typeDiagnostic.category());
+        assertEquals(FrontendDiagnosticSeverity.WARNING, typeDiagnostic.severity());
+        var typed = assertInstanceOf(VariableDeclaration.class, function.body().statements().getLast());
+        var declaredType = typed.type();
+        assertNotNull(declaredType);
+        assertEquals(FrontendRange.fromAstRange(declaredType.range()), typeDiagnostic.range());
+
         diagnostics.error("sema.synthetic", "late diagnostic", unit.path(), null);
 
-        assertFalse(beforeMutation.isEmpty());
-        assertEquals(parseSnapshot.asList(), beforeMutation.asList());
-        assertEquals(beforeMutation, result.diagnostics());
-        assertEquals(beforeMutation, result.moduleSkeleton().diagnostics());
-        assertEquals(beforeMutation.size() + 1, diagnostics.snapshot().size());
+        assertEquals(parseSnapshot, result.moduleSkeleton().diagnostics());
+        assertEquals(sharedSnapshot, result.diagnostics());
+        var afterMutation = diagnostics.snapshot();
+        assertEquals(3, afterMutation.size());
+        assertEquals("sema.synthetic", afterMutation.getLast().category());
     }
 
     @Test
@@ -1489,7 +1519,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void semanticAnalysisRejectsSingletonSuperclassSourceAtFrontendBoundary() throws Exception {
+    void semanticAnalysisRejectsSingletonSuperclassSourceAtFrontendBoundary() {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "singleton_super.gd"), """

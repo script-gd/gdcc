@@ -16,6 +16,7 @@ import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -488,6 +489,20 @@ public final class FrontendChainHeadReceiverSupport {
             @NotNull LiteralExpression literalExpression
     ) {
         var literalType = resolveLiteralType(literalExpression);
+        if (literalType == GdIntType.INT && StringUtil.parseGdIntegerLexeme(literalExpression.sourceText()) == null) {
+            // The fallback lets the expression owner register the invalid literal as the source.
+            var failure = fallbackExpressionReceiverResolver.resolve(literalExpression);
+            if (failure != null && failure.status() == FrontendChainReductionHelper.Status.FAILED) {
+                return failure;
+            }
+            return new FrontendChainReductionHelper.ReceiverState(
+                    FrontendChainReductionHelper.Status.FAILED,
+                    FrontendReceiverKind.UNKNOWN,
+                    null,
+                    null,
+                    "Integer literal '" + literalExpression.sourceText() + "' is malformed or overflows 64-bit signed int"
+            );
+        }
         if (literalType != null) {
             return FrontendChainReductionHelper.ReceiverState.resolvedInstance(literalType);
         }

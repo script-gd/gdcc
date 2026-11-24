@@ -25,6 +25,7 @@ import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.util.FreezableIdentityMap;
+import gd.script.gdcc.util.IdentityHashSet;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -206,8 +207,8 @@ public final class FrontendAnalysisData {
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
-                Collections.newSetFromMap(new IdentityHashMap<>()),
-                Collections.newSetFromMap(new IdentityHashMap<>()),
+                new IdentityHashSet<>(),
+                new IdentityHashSet<>(),
                 new ArrayList<>(),
                 new FrontendAstSideTable<>()
         );
@@ -1205,7 +1206,7 @@ public final class FrontendAnalysisData {
 
     /// Origin of a propagated failure, for reporting once at the primary anchor.
     ///
-    /// @param primaryAnchor AST node that owns the failure rather than inheriting it
+    /// @param primaryAnchor  AST node that owns the failure rather than inheriting it
     /// @param originRecovery parser recovery causing the failure, if any
     public record FrontendPropagatedFailureOrigin(
             @NotNull Node primaryAnchor,

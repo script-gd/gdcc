@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.parse;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ConditionalExpression;
+import dev.superice.gdparser.frontend.ast.ErrorExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -10,6 +11,7 @@ import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import org.junit.jupiter.api.Test;
@@ -18,17 +20,14 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /// Freezes gdparser {@code ConditionalExpression} AST shape for ternary support.
 ///
-/// Associativity and precedence come from tree-sitter-gdscript
-/// (`prec.right(PREC.conditional = -1)`) and the shipped gdparser mapper, which
-/// passes `left`/`condition`/`right` through without swapping. This suite only
-/// characterization-tests the consumed AST; sema and lowering stay out.
+/// This suite covers the consumed AST and parser-owned recovery; sema and lowering stay out.
 class FrontendConditionalParseBehaviorTest {
     private final GdScriptParserService parserService = new GdScriptParserService();
 
@@ -232,19 +231,26 @@ class FrontendConditionalParseBehaviorTest {
     }
 
     @Test
-    void missingElseProducesParseLoweringError() {
-        assertParseLoweringError("conditional_missing_else.gd", """
+    void missingElsePreservesConditionAndMarksFalseArmDamaged() {
+        var statement = assertReturnRecovery("conditional_missing_else.gd", """
                 func probe(flag):
                     return 1 if flag
-                """);
+                    return 2
+                """, DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN, "flag");
+        var conditional = assertInstanceOf(ConditionalExpression.class, statement.value());
+        assertIntegerLiteral(conditional.left(), "1");
+        assertIdentifier(conditional.condition(), "flag");
+        assertInstanceOf(ErrorExpression.class, conditional.right());
     }
 
     @Test
-    void missingTrueArmProducesParseLoweringError() {
-        assertParseLoweringError("conditional_missing_left.gd", """
+    void missingTrueArmKeepsReturnWithDamagedValue() {
+        var statement = assertReturnRecovery("conditional_missing_left.gd", """
                 func probe(flag):
                     return if flag else 1
-                """);
+                    return 2
+                """, DiagnosticCodes.SLOT_RETURN_VALUE, "if flag else 1");
+        assertInstanceOf(ErrorExpression.class, statement.value());
     }
 
     private FrontendSourceUnit parse(String fileName, String source) {
@@ -257,15 +263,28 @@ class FrontendConditionalParseBehaviorTest {
         return unit;
     }
 
-    private void assertParseLoweringError(String fileName, String source) {
+    private ReturnStatement assertReturnRecovery(String fileName, String source, String code, String anchor) {
         var diagnostics = new DiagnosticManager();
-        parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
-        assertFalse(diagnostics.snapshot().isEmpty(), "expected parse diagnostics");
-        assertTrue(diagnostics.snapshot().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("parse.lowering")
-                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && diagnostic.range() != null
-        ), () -> "expected parse.lowering ERROR, got: " + diagnostics.snapshot().asList());
+        var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
+        var statements = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getFirst()).body().statements();
+        assertEquals(2, statements.size());
+        var damaged = assertInstanceOf(ReturnStatement.class, statements.getFirst());
+        assertIntegerLiteral(assertInstanceOf(ReturnStatement.class, statements.getLast()).value(), "2");
+
+        var errors = diagnostics.snapshot().asList();
+        assertEquals(1, errors.size(), errors::toString);
+        assertEquals(1, unit.parseRecoveries().size());
+        var diagnostic = errors.getFirst();
+        var recovery = unit.parseRecoveries().getFirst();
+        assertEquals(code, diagnostic.category());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());
+        assertEquals("tmp/" + fileName, diagnostic.sourcePath());
+        assertEquals(anchor, source.substring(diagnostic.range().startByte(), diagnostic.range().endByte()));
+        assertEquals(code, recovery.code());
+        assertEquals(diagnostic.range(), recovery.range());
+        assertSame(damaged, recovery.owner());
+        assertEquals("return.value", recovery.facet());
+        return damaged;
     }
 
     private static ConditionalExpression conditionalFromReturn(FrontendSourceUnit unit, String functionName) {

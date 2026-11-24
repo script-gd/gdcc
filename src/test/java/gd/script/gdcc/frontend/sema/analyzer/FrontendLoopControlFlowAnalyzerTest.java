@@ -3,17 +3,21 @@ package gd.script.gdcc.frontend.sema.analyzer;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
+import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.BreakStatement;
 import dev.superice.gdparser.frontend.ast.ContinueStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -25,12 +29,13 @@ import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendLoopControlFlowAnalyzerTest {
     @Test
     void analyzeReportsBreakOutsideLoopAndKeepsOtherFunctionsAlive() throws Exception {
-        var result = analyzeShared("loop_control_break_outside_loop.gd", """
+        var result = analyzeWithParserLoopErrors("loop_control_break_outside_loop.gd", """
                 class_name LoopControlBreakOutsideLoop
                 extends Node
                 
@@ -41,39 +46,29 @@ class FrontendLoopControlFlowAnalyzerTest {
                 func stable(flag):
                     while flag:
                         continue
-                """);
+                """, false, "break");
         var brokenFunction = findFunction(result.unit().ast().statements(), "broken");
         var stableFunction = findFunction(result.unit().ast().statements(), "stable");
         var breakStatement = findNode(brokenFunction, BreakStatement.class, _ -> true);
 
-        var loopDiagnostics = diagnosticsByCategory(result.diagnostics(), "sema.loop_control_flow");
-
-        assertTrue(result.diagnostics().hasErrors());
-        assertEquals(1, loopDiagnostics.size());
-        assertEquals(result.rangeOf(breakStatement), loopDiagnostics.getFirst().range());
-        assertTrue(loopDiagnostics.getFirst().message().contains("`break`"));
+        assertEquals(result.rangeOf(breakStatement), result.diagnostics().asList().getFirst().range());
         assertTrue(result.analysisData().scopesByAst().containsKey(stableFunction));
         assertTrue(result.analysisData().scopesByAst().containsKey(stableFunction.body()));
     }
 
     @Test
     void analyzeReportsContinueOutsideLoopInFunctionBody() throws Exception {
-        var result = analyzeShared("loop_control_continue_outside_loop.gd", """
+        var result = analyzeWithParserLoopErrors("loop_control_continue_outside_loop.gd", """
                 class_name LoopControlContinueOutsideLoop
                 extends Node
                 
                 func ping():
                     continue
-                """);
+                """, false, "continue");
         var pingFunction = findFunction(result.unit().ast().statements(), "ping");
         var continueStatement = findNode(pingFunction, ContinueStatement.class, _ -> true);
 
-        var loopDiagnostics = diagnosticsByCategory(result.diagnostics(), "sema.loop_control_flow");
-
-        assertTrue(result.diagnostics().hasErrors());
-        assertEquals(1, loopDiagnostics.size());
-        assertEquals(result.rangeOf(continueStatement), loopDiagnostics.getFirst().range());
-        assertTrue(loopDiagnostics.getFirst().message().contains("`continue`"));
+        assertEquals(result.rangeOf(continueStatement), result.diagnostics().asList().getFirst().range());
     }
 
     @Test
@@ -181,7 +176,7 @@ class FrontendLoopControlFlowAnalyzerTest {
 
     @Test
     void analyzeReportsBreakAndContinueInsideMatchWithoutOuterLoop() throws Exception {
-        var result = analyzeShared("loop_control_match_without_loop.gd", """
+        var result = analyzeWithParserLoopErrors("loop_control_match_without_loop.gd", """
                 class_name LoopControlMatchWithoutLoop
                 extends Node
                 
@@ -191,25 +186,17 @@ class FrontendLoopControlFlowAnalyzerTest {
                             break
                         _:
                             continue
-                """);
+                """, false, "break", "continue");
         var pingFunction = findFunction(result.unit().ast().statements(), "ping");
         var breakStatement = findNode(pingFunction, BreakStatement.class, _ -> true);
         var continueStatement = findNode(pingFunction, ContinueStatement.class, _ -> true);
-        var loopDiagnostics = diagnosticsByCategory(result.diagnostics(), "sema.loop_control_flow");
-
-        assertTrue(result.diagnostics().hasErrors());
-        assertEquals(2, loopDiagnostics.size());
-        assertTrue(loopDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.range().equals(result.rangeOf(breakStatement))
-        ));
-        assertTrue(loopDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.range().equals(result.rangeOf(continueStatement))
-        ));
+        assertEquals(List.of(result.rangeOf(breakStatement), result.rangeOf(continueStatement)),
+                result.diagnostics().asList().stream().map(FrontendDiagnostic::range).toList());
     }
 
     @Test
     void analyzeResetsOuterLoopDepthAtLambdaBoundary() throws Exception {
-        var result = analyzeShared("loop_control_lambda_boundary.gd", """
+        var result = analyzeWithParserLoopErrors("loop_control_lambda_boundary.gd", """
                 class_name LoopControlLambdaBoundary
                 extends Node
                 
@@ -218,16 +205,16 @@ class FrontendLoopControlFlowAnalyzerTest {
                         var callback = func():
                             break
                         return
-                """);
+                """, false, "break");
         var pingFunction = findFunction(result.unit().ast().statements(), "ping");
         var breakStatement = findNode(pingFunction, BreakStatement.class, _ -> true);
 
-        var loopDiagnostics = diagnosticsByCategory(result.diagnostics(), "sema.loop_control_flow");
-
-        assertTrue(result.diagnostics().hasErrors());
-        assertEquals(1, loopDiagnostics.size());
-        assertEquals(result.rangeOf(breakStatement), loopDiagnostics.getFirst().range());
-        assertTrue(loopDiagnostics.getFirst().message().contains("current callable boundary"));
+        assertEquals(result.rangeOf(breakStatement), result.diagnostics().asList().getFirst().range());
+        var fresh = analyzeUnit(result.unit(), new DiagnosticManager(), false);
+        assertEquals(1, fresh.diagnostics().asList().size());
+        assertEquals("sema.loop_control_flow", fresh.diagnostics().asList().getFirst().category());
+        assertEquals(fresh.rangeOf(breakStatement), fresh.diagnostics().asList().getFirst().range());
+        assertTrue(fresh.diagnostics().asList().getFirst().message().contains("current callable boundary"));
     }
 
     @Test
@@ -240,43 +227,90 @@ class FrontendLoopControlFlowAnalyzerTest {
                     break
                 """;
 
-        var shared = analyzeShared("loop_control_compile_boundary.gd", source);
-        var compiled = analyzeForCompile("loop_control_compile_boundary.gd", source);
-        var sharedLoopDiagnostics = diagnosticsByCategory(shared.diagnostics(), "sema.loop_control_flow");
-        var compiledLoopDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.loop_control_flow");
+        var shared = analyzeWithParserLoopErrors("loop_control_compile_boundary.gd", source, false, "break");
+        var compiled = analyzeWithParserLoopErrors("loop_control_compile_boundary.gd", source, true, "break");
+        assertEquals(shared.diagnostics().asList(), compiled.diagnostics().asList());
+        var freshShared = analyzeUnit(shared.unit(), new DiagnosticManager(), false);
+        var freshCompiled = analyzeUnit(compiled.unit(), new DiagnosticManager(), true);
+        assertEquals(1, freshShared.diagnostics().asList().size());
+        assertEquals("sema.loop_control_flow", freshShared.diagnostics().asList().getFirst().category());
+        assertEquals(freshShared.diagnostics().asList(), freshCompiled.diagnostics().asList());
+    }
 
-        assertEquals(1, sharedLoopDiagnostics.size());
-        assertEquals(1, compiledLoopDiagnostics.size());
-        assertEquals(sharedLoopDiagnostics.getFirst().range(), compiledLoopDiagnostics.getFirst().range());
-        assertEquals(sharedLoopDiagnostics.getFirst().message(), compiledLoopDiagnostics.getFirst().message());
-        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+    @Test
+    void manualJumpsAtTheSameRangeKeepDistinctErrorsWhenCompileGateReplaysThem() throws Exception {
+        var parseDiagnostics = new DiagnosticManager();
+        var healthy = new GdScriptParserService().parseUnit(Path.of("tmp", "manual_loop_control.gd"), """
+                func ping() -> void:
+                    pass
+                """, parseDiagnostics);
+        assertTrue(parseDiagnostics.isEmpty());
+        var function = assertInstanceOf(FunctionDeclaration.class, healthy.ast().statements().getFirst());
+        var range = function.body().statements().getFirst().range();
+        var body = new Block(List.of(new BreakStatement(range), new ContinueStatement(range)), function.body().range());
+        var wrapper = new FunctionDeclaration(function.name(), function.parameters(), function.returnType(),
+                function.isStatic(), body, function.range());
+        var unit = new FrontendSourceUnit(healthy.path(), healthy.source(), new SourceFile(List.of(wrapper), healthy.ast().range()));
+        var analyzed = analyzeUnit(unit, new DiagnosticManager(), false);
+        var expected = analyzed.diagnostics().asList();
+        assertEquals(2, expected.size());
+        assertTrue(expected.stream().allMatch(d -> d.category().equals("sema.loop_control_flow")
+                && FrontendRange.fromAstRange(range).equals(d.range()) && d.severity() == FrontendDiagnosticSeverity.ERROR));
+        assertTrue(expected.getFirst().message().contains("`break`"));
+        assertTrue(expected.getLast().message().contains("`continue`"));
+        assertTrue(analyzed.analysisData().claimedParseRecoveries().isEmpty());
+        var replay = new DiagnosticManager();
+        new FrontendCompileCheckAnalyzer().analyze(analyzed.analysisData(), replay);
+        assertEquals(expected, replay.snapshot().asList());
     }
 
     private static @NotNull AnalyzedScript analyzeShared(
             @NotNull String fileName,
             @NotNull String source
     ) throws Exception {
-        return analyze(fileName, source, false);
+        var parseDiagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", fileName), source, parseDiagnostics);
+        assertTrue(parseDiagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + parseDiagnostics.snapshot());
+        return analyzeUnit(unit, parseDiagnostics, false);
     }
 
-    private static @NotNull AnalyzedScript analyzeForCompile(
-            @NotNull String fileName,
-            @NotNull String source
-    ) throws Exception {
-        return analyze(fileName, source, true);
-    }
-
-    private static @NotNull AnalyzedScript analyze(
+    private static @NotNull AnalyzedScript analyzeWithParserLoopErrors(
             @NotNull String fileName,
             @NotNull String source,
+            boolean compileMode,
+            String... keywords
+    ) throws Exception {
+        var manager = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", fileName), source, manager);
+        var original = manager.snapshot().asList();
+        assertEquals(keywords.length, original.size());
+        assertEquals(keywords.length, unit.parseRecoveries().size());
+        for (var index = 0; index < keywords.length; index++) {
+            var keyword = keywords[index];
+            var recovery = unit.parseRecoveries().get(index);
+            if (keyword.equals("break")) {
+                assertInstanceOf(BreakStatement.class, recovery.owner());
+            } else {
+                assertInstanceOf(ContinueStatement.class, recovery.owner());
+            }
+            assertEquals("statement.control", recovery.facet());
+            assertEquals(DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN, original.get(index).category());
+            assertEquals("Cannot use \"" + keyword + "\" outside of a loop.", original.get(index).message());
+        }
+        var analyzed = analyzeUnit(unit, manager, compileMode);
+        assertEquals(original, analyzed.diagnostics().asList());
+        for (var index = 0; index < keywords.length; index++) {
+            assertEquals(original.get(index),
+                    analyzed.analysisData().claimedParseRecoveries().get(unit.parseRecoveries().get(index)));
+        }
+        return analyzed;
+    }
+
+    private static @NotNull AnalyzedScript analyzeUnit(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull DiagnosticManager diagnosticManager,
             boolean compileMode
     ) throws Exception {
-        var parserService = new GdScriptParserService();
-        var parseDiagnostics = new DiagnosticManager();
-        var unit = parserService.parseUnit(Path.of("tmp", fileName), source, parseDiagnostics);
-        assertTrue(parseDiagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + parseDiagnostics.snapshot());
-
-        var diagnosticManager = new DiagnosticManager();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
         var analysisData = compileMode

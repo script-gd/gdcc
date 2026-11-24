@@ -389,38 +389,20 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
             @NotNull FrontendAnalysisData analysisData,
             @NotNull List<FunctionLoweringContext> contexts
     ) {
+        // Keep the same pre-order boundaries as identity assignment. These subtrees never
+        // publish lambda plans, even if their AST still contains lambda expressions.
+        if (analysisData.skippedSubtreeRoots().containsKey(root)
+                || root instanceof FunctionDeclaration || root instanceof ConstructorDeclaration
+                || root instanceof VariableDeclaration declaration && declaration.kind() == DeclarationKind.CONST) {
+            return;
+        }
+        if (root instanceof LambdaExpression lambdaExpression) {
+            contexts.add(buildLambdaContext(sourceClassRelation, owningClass, lambdaExpression, analysisData));
+            collectLambdaContexts(lambdaExpression.body(), sourceClassRelation, owningClass, analysisData, contexts);
+            return;
+        }
         for (var child : root.getChildren()) {
-            // A local const initializer is never part of the callable surface: a lambda nested
-            // in one is rejected by const resolution and carries no `FrontendLambdaPlan`, so
-            // descending would trip the fail-fast missing-plan check on a subtree that can
-            // never become a context.
-            if (child instanceof VariableDeclaration variableDeclaration
-                    && variableDeclaration.kind() == DeclarationKind.CONST) {
-                continue;
-            }
-            if (child instanceof LambdaExpression lambdaExpression) {
-                contexts.add(buildLambdaContext(
-                        sourceClassRelation,
-                        owningClass,
-                        lambdaExpression,
-                        analysisData
-                ));
-                collectLambdaContexts(
-                        lambdaExpression.body(),
-                        sourceClassRelation,
-                        owningClass,
-                        analysisData,
-                        contexts
-                );
-                continue;
-            }
-            collectLambdaContexts(
-                    child,
-                    sourceClassRelation,
-                    owningClass,
-                    analysisData,
-                    contexts
-            );
+            collectLambdaContexts(child, sourceClassRelation, owningClass, analysisData, contexts);
         }
     }
 

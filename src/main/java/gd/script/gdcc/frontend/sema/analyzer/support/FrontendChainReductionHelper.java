@@ -18,7 +18,6 @@ import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.frontend.constant.GdScriptEvaluatedConstant;
 import gd.script.gdcc.frontend.scope.FrontendClassConstantLookup;
 import gd.script.gdcc.frontend.scope.FrontendRejectedClassConstant;
-import gd.script.gdcc.scope.GdScriptClassConstant;
 import gd.script.gdcc.scope.GdScriptEnumConstant;
 import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.PropertyDef;
@@ -296,6 +295,7 @@ public final class FrontendChainReductionHelper {
         }
     }
 
+    /// @param dependencyOperand original argument or index selected by this step's failed resolution
     public record StepTrace(
             int stepIndex,
             @NotNull AttributeStep step,
@@ -308,8 +308,27 @@ public final class FrontendChainReductionHelper {
             @Nullable FrontendResolvedMember suggestedMember,
             @Nullable FrontendResolvedCall suggestedCall,
             boolean finalizeRetryUsed,
-            @Nullable String detailReason
+            @Nullable String detailReason,
+            @Nullable Expression dependencyOperand
     ) {
+        public StepTrace(
+                int stepIndex,
+                @NotNull AttributeStep step,
+                @NotNull StepKind stepKind,
+                @NotNull RouteKind routeKind,
+                @NotNull ReceiverState incomingReceiver,
+                @NotNull Status status,
+                @NotNull ReceiverState outgoingReceiver,
+                @Nullable UpstreamCause upstreamCause,
+                @Nullable FrontendResolvedMember suggestedMember,
+                @Nullable FrontendResolvedCall suggestedCall,
+                boolean finalizeRetryUsed,
+                @Nullable String detailReason
+        ) {
+            this(stepIndex, step, stepKind, routeKind, incomingReceiver, status, outgoingReceiver,
+                    upstreamCause, suggestedMember, suggestedCall, finalizeRetryUsed, detailReason, null);
+        }
+
         public StepTrace {
             if (stepIndex < 0) {
                 throw new IllegalArgumentException("stepIndex must be >= 0");
@@ -555,8 +574,7 @@ public final class FrontendChainReductionHelper {
         // and any later suffix reduces against the call result like an ordinary chain.
         if (stepIndex == 0 && isSuperChainHead(request)) {
             return switch (step) {
-                case AttributeCallStep callStep ->
-                        reduceSuperCallStep(stepIndex, callStep, incomingReceiver, request);
+                case AttributeCallStep callStep -> reduceSuperCallStep(stepIndex, callStep, incomingReceiver, request);
                 case AttributePropertyStep propertyStep -> {
                     var detailReason = "'super' only supports method calls; property access '"
                             + propertyStep.name() + "' is not allowed";
@@ -583,7 +601,8 @@ public final class FrontendChainReductionHelper {
                         null,
                         "'super' only supports method calls; subscript access is not allowed"
                 );
-                case UnknownAttributeStep unknownStep -> unsupportedUnknownStep(stepIndex, unknownStep, incomingReceiver);
+                case UnknownAttributeStep unknownStep ->
+                        unsupportedUnknownStep(stepIndex, unknownStep, incomingReceiver);
                 case MissingAttributeStep missingStep -> missingFinalStep(stepIndex, missingStep, incomingReceiver);
             };
         }
@@ -777,9 +796,9 @@ public final class FrontendChainReductionHelper {
             var boundaryDetail = onreadyInitializer
                     ? null
                     : FrontendPropertyInitializerSupport.detailForResolvedPropertyBoundary(
-                            request.propertyInitializerContext(),
-                            property
-                    );
+                    request.propertyInitializerContext(),
+                    property
+            );
             if (boundaryDetail != null) {
                 return unsupportedResolvedPropertyTrace(stepIndex, step, incomingReceiver, property, boundaryDetail);
             }
@@ -806,9 +825,9 @@ public final class FrontendChainReductionHelper {
             var boundaryDetail = onreadyInitializer
                     ? null
                     : FrontendPropertyInitializerSupport.detailForResolvedSignalBoundary(
-                            request.propertyInitializerContext(),
-                            signal
-                    );
+                    request.propertyInitializerContext(),
+                    signal
+            );
             if (boundaryDetail != null) {
                 return unsupportedResolvedSignalTrace(stepIndex, step, incomingReceiver, signal, boundaryDetail);
             }
@@ -845,17 +864,18 @@ public final class FrontendChainReductionHelper {
 
         var propertyFailed = assertPropertyFailure(propertyResult);
         var signalFailed = assertSignalFailure(signalResult);
-        if (propertyFailed.kind() == ScopePropertyResolver.FailureKind.PROPERTY_MISSING
-                && signalFailed.kind() == ScopeSignalResolver.FailureKind.SIGNAL_MISSING) {
+        var missingPropertyAndSignal = propertyFailed.kind() == ScopePropertyResolver.FailureKind.PROPERTY_MISSING
+                && signalFailed.kind() == ScopeSignalResolver.FailureKind.SIGNAL_MISSING;
+        if (missingPropertyAndSignal) {
             var methodReference = resolveInstanceMethodReference(request.classRegistry(), receiverType, step.name());
             if (methodReference != null) {
                 var boundaryDetail = onreadyInitializer
                         ? null
                         : FrontendPropertyInitializerSupport.detailForMethodReferenceBoundary(
-                                request.propertyInitializerContext(),
-                                methodReference.ownerClass(),
-                                methodReference.declarationSite().getFirst()
-                        );
+                        request.propertyInitializerContext(),
+                        methodReference.ownerClass(),
+                        methodReference.declarationSite().getFirst()
+                );
                 if (boundaryDetail != null) {
                     return unsupportedMethodReferenceTrace(
                             stepIndex,
@@ -868,8 +888,7 @@ public final class FrontendChainReductionHelper {
                 return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
             }
         }
-        var detailReason = propertyFailed.kind() == ScopePropertyResolver.FailureKind.PROPERTY_MISSING
-                && signalFailed.kind() == ScopeSignalResolver.FailureKind.SIGNAL_MISSING
+        var detailReason = missingPropertyAndSignal
                 ? "Member '" + step.name() + "' was not found as a property or signal on type '" + receiverType.getTypeName() + "'"
                 : renderMemberFailure(propertyFailed, signalFailed);
         return new StepTrace(
@@ -977,15 +996,14 @@ public final class FrontendChainReductionHelper {
                     reduceBuiltinStaticLoad(stepIndex, step, incomingReceiver, request.classRegistry(), receiverTypeMeta);
             case ENGINE_CLASS ->
                     reduceEngineStaticLoad(stepIndex, step, incomingReceiver, request.classRegistry(), receiverTypeMeta);
-            case GDCC_CLASS ->
-                    reduceGdccStaticLoad(
-                            stepIndex,
-                            step,
-                            incomingReceiver,
-                            request.classRegistry(),
-                            receiverTypeMeta,
-                            request.analysisData().rejectedClassConstants()
-                    );
+            case GDCC_CLASS -> reduceGdccStaticLoad(
+                    stepIndex,
+                    step,
+                    incomingReceiver,
+                    request.classRegistry(),
+                    receiverTypeMeta,
+                    request.analysisData().rejectedClassConstants()
+            );
         };
     }
 
@@ -1176,8 +1194,8 @@ public final class FrontendChainReductionHelper {
         // shadowing and lets a subclass constant win.
         var visited = new HashSet<String>();
         for (var current = classRegistry.resolveClassDefFromTypeMeta(receiverTypeMeta);
-                current != null && visited.add(current.getName());
-                current = classRegistry.resolveSuperclass(current)) {
+             current != null && visited.add(current.getName());
+             current = classRegistry.resolveSuperclass(current)) {
             var methodReference = resolveStaticMethodReferenceOnLayer(classRegistry, current, step.name());
             if (methodReference != null) {
                 return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
@@ -1742,15 +1760,17 @@ public final class FrontendChainReductionHelper {
             @NotNull List<ReductionNote> notes
     ) {
         var argumentResolution = resolveArgumentTypes(step.arguments(), request);
+        var typeMetaReceiver = incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META;
+        var constructorCall = typeMetaReceiver && step.name().equals("new");
         if (argumentResolution.status() != Status.RESOLVED) {
-            var routeKind = incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META && step.name().equals("new")
+            var routeKind = constructorCall
                     ? RouteKind.CONSTRUCTOR
-                    : incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META
+                    : typeMetaReceiver
                       ? RouteKind.STATIC_METHOD
                       : RouteKind.INSTANCE_METHOD;
-            var callKind = incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META && step.name().equals("new")
+            var callKind = constructorCall
                     ? FrontendCallResolutionKind.CONSTRUCTOR
-                    : incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META
+                    : typeMetaReceiver
                       ? FrontendCallResolutionKind.STATIC_METHOD
                       : FrontendCallResolutionKind.INSTANCE_METHOD;
             return unresolvedCallDependencyTrace(
@@ -1763,7 +1783,7 @@ public final class FrontendChainReductionHelper {
             );
         }
 
-        if (incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META && step.name().equals("new")) {
+        if (constructorCall) {
             return reduceConstructorStep(
                     stepIndex,
                     step,
@@ -1774,7 +1794,7 @@ public final class FrontendChainReductionHelper {
             );
         }
 
-        if (incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META) {
+        if (typeMetaReceiver) {
             return reduceStaticMethodStep(
                     stepIndex,
                     step,
@@ -1811,8 +1831,8 @@ public final class FrontendChainReductionHelper {
         var rejectedClassConstants = request.analysisData().rejectedClassConstants();
         var visited = new HashSet<String>();
         for (var current = classRegistry.resolveClassDefFromTypeMeta(receiverTypeMeta);
-                current != null && visited.add(current.getName());
-                current = classRegistry.resolveSuperclass(current)) {
+             current != null && visited.add(current.getName());
+             current = classRegistry.resolveSuperclass(current)) {
             if (declaresFunctionOnLayer(current, step.name())) {
                 return null;
             }
@@ -2144,9 +2164,9 @@ public final class FrontendChainReductionHelper {
                 var boundaryDetail = onreadyInitializer
                         ? null
                         : FrontendPropertyInitializerSupport.detailForResolvedMethodBoundary(
-                                propertyInitializerContext,
-                                resolvedMethod
-                        );
+                        propertyInitializerContext,
+                        resolvedMethod
+                );
                 var routeKind = resolvedMethod.isStatic() ? RouteKind.STATIC_METHOD : RouteKind.INSTANCE_METHOD;
                 var callKind = resolvedMethod.isStatic()
                         ? FrontendCallResolutionKind.STATIC_METHOD
@@ -2392,7 +2412,8 @@ public final class FrontendChainReductionHelper {
                 null,
                 call,
                 argumentResolution.retryUsed(),
-                detailReason
+                detailReason,
+                argumentResolution.dependencyOperand()
         );
     }
 
@@ -2458,7 +2479,7 @@ public final class FrontendChainReductionHelper {
         var publishableContainerMember = containerMember != null
                 && containerMember.status() == FrontendMemberResolutionStatus.RESOLVED
                 && (containerMember.bindingKind() == FrontendBindingKind.PROPERTY
-                        || containerMember.declarationSite() instanceof GdScriptEnumGroup)
+                || containerMember.declarationSite() instanceof GdScriptEnumGroup)
                 ? containerMember
                 : null;
         return new StepTrace(
@@ -2504,7 +2525,8 @@ public final class FrontendChainReductionHelper {
                 null,
                 null,
                 argumentResolution.retryUsed(),
-                detailReason
+                detailReason,
+                argumentResolution.dependencyOperand()
         );
     }
 
@@ -2556,10 +2578,10 @@ public final class FrontendChainReductionHelper {
         );
     }
 
-    private static @NotNull StepTrace propagateStep(            int stepIndex,
-            @NotNull AttributeStep step,
-            @NotNull ReceiverState incomingReceiver,
-            @NotNull UpstreamCause upstreamCause
+    private static @NotNull StepTrace propagateStep(int stepIndex,
+                                                    @NotNull AttributeStep step,
+                                                    @NotNull ReceiverState incomingReceiver,
+                                                    @NotNull UpstreamCause upstreamCause
     ) {
         var detailReason = renderUpstreamReason(upstreamCause);
         var routeKind = switch (upstreamCause.status()) {
@@ -2890,8 +2912,7 @@ public final class FrontendChainReductionHelper {
             var expression = arguments.get(index);
             var result = lookupExpressionType(request, expression, false);
             switch (result.status()) {
-                case RESOLVED -> resolvedTypes.add(Objects.requireNonNull(result.type()));
-                case DYNAMIC -> resolvedTypes.add(Objects.requireNonNull(result.type()));
+                case RESOLVED, DYNAMIC -> resolvedTypes.add(Objects.requireNonNull(result.type()));
                 case BLOCKED -> {
                     if (result.type() != null) {
                         resolvedTypes.add(result.type());
@@ -2900,7 +2921,8 @@ public final class FrontendChainReductionHelper {
                             Status.BLOCKED,
                             resolvedArgumentPrefix(resolvedTypes),
                             "Argument #" + (index + 1) + " is blocked: " + result.detailReason(),
-                            false
+                            false,
+                            expression
                     );
                 }
                 case DEFERRED -> {
@@ -2912,22 +2934,22 @@ public final class FrontendChainReductionHelper {
                             result.status(),
                             resolvedArgumentPrefix(resolvedTypes),
                             "Argument #" + (index + 1) + " type is unavailable: " + result.detailReason(),
-                            false
+                            false,
+                            expression
                     );
                 }
             }
         }
 
         if (deferredIndexes.isEmpty()) {
-            return new ArgumentResolution(Status.RESOLVED, List.copyOf(resolvedTypes), null, false);
+            return new ArgumentResolution(Status.RESOLVED, List.copyOf(resolvedTypes), null, false, null);
         }
 
         for (var deferredIndex : deferredIndexes) {
             var expression = arguments.get(deferredIndex);
             var result = lookupExpressionType(request, expression, true);
             switch (result.status()) {
-                case RESOLVED -> resolvedTypes.set(deferredIndex, Objects.requireNonNull(result.type()));
-                case DYNAMIC -> resolvedTypes.set(deferredIndex, Objects.requireNonNull(result.type()));
+                case RESOLVED, DYNAMIC -> resolvedTypes.set(deferredIndex, Objects.requireNonNull(result.type()));
                 case BLOCKED -> {
                     if (result.type() != null) {
                         resolvedTypes.set(deferredIndex, result.type());
@@ -2937,7 +2959,8 @@ public final class FrontendChainReductionHelper {
                             resolvedArgumentPrefix(resolvedTypes),
                             "Argument #" + (deferredIndex + 1) + " is blocked during finalize-window retry: "
                                     + result.detailReason(),
-                            true
+                            true,
+                            expression
                     );
                 }
                 case DEFERRED -> {
@@ -2946,7 +2969,8 @@ public final class FrontendChainReductionHelper {
                             resolvedArgumentPrefix(resolvedTypes),
                             "Argument #" + (deferredIndex + 1) + " type is still deferred after finalize-window retry: "
                                     + result.detailReason(),
-                            true
+                            true,
+                            expression
                     );
                 }
                 case FAILED, UNSUPPORTED -> {
@@ -2955,12 +2979,13 @@ public final class FrontendChainReductionHelper {
                             resolvedArgumentPrefix(resolvedTypes),
                             "Argument #" + (deferredIndex + 1) + " type became unavailable during finalize-window retry: "
                                     + result.detailReason(),
-                            true
+                            true,
+                            expression
                     );
                 }
             }
         }
-        return new ArgumentResolution(Status.RESOLVED, List.copyOf(resolvedTypes), null, true);
+        return new ArgumentResolution(Status.RESOLVED, List.copyOf(resolvedTypes), null, true, null);
     }
 
     private static @NotNull List<GdType> resolvedArgumentPrefix(@NotNull List<GdType> resolvedTypes) {
@@ -3118,8 +3143,7 @@ public final class FrontendChainReductionHelper {
             case AttributePropertyStep _ -> StepKind.PROPERTY;
             case AttributeCallStep _ -> StepKind.CALL;
             case AttributeSubscriptStep _ -> StepKind.SUBSCRIPT;
-            case UnknownAttributeStep _ -> StepKind.UNKNOWN;
-            case MissingAttributeStep _ -> StepKind.UNKNOWN;
+            case UnknownAttributeStep _, MissingAttributeStep _ -> StepKind.UNKNOWN;
         };
     }
 
@@ -3189,11 +3213,13 @@ public final class FrontendChainReductionHelper {
         };
     }
 
+    /// @param dependencyOperand original argument whose outcome determined the non-resolved result
     private record ArgumentResolution(
             @NotNull Status status,
             @NotNull List<GdType> argumentTypes,
             @Nullable String detailReason,
-            boolean retryUsed
+            boolean retryUsed,
+            @Nullable Expression dependencyOperand
     ) {
         private ArgumentResolution {
             Objects.requireNonNull(status, "status must not be null");

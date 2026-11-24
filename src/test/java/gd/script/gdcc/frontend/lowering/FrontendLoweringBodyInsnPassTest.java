@@ -122,6 +122,7 @@ import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
+import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
@@ -157,6 +158,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -13380,6 +13382,117 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersSourceDictionaryPatternIntoHasGateAndKeyedFetch() throws Exception {
+        var ping = lowerSourceMatchFunction("body_insn_source_match_dict.gd", "BodyInsnSourceMatchDict", """
+                class_name BodyInsnSourceMatchDict
+                extends RefCounted
+                func ping(value) -> int:
+                    match value:
+                        {"k": var v}:
+                            return v
+                        _:
+                            return 0
+                """);
+        var declaration = assertInstanceOf(FunctionDeclaration.class, ping.sourceOwner());
+        var match = assertInstanceOf(MatchStatement.class, declaration.body().statements().getFirst());
+        var dictionary = assertInstanceOf(DictionaryExpression.class, match.sections().getFirst().patterns().getFirst());
+        assertSourceDictionaryKey(ping, dictionary);
+
+        var function = ping.targetFunction();
+        var instructions = allInstructions(function);
+        var hasCalls = matchContainerCalls(instructions, "has");
+        assertEquals(1, hasCalls.size());
+        var has = hasCalls.getFirst();
+        assertEquals(1, has.args().size());
+        var hasKey = assertInstanceOf(LirInstruction.VariableOperand.class, has.args().getFirst());
+        var key = requireOnlyInstruction(function, LiteralStringInsn.class);
+        var fetch = requireOnlyInstruction(function, VariantGetKeyedInsn.class);
+        var packedSourceByTarget = instructions.stream()
+                .filter(PackVariantInsn.class::isInstance)
+                .map(PackVariantInsn.class::cast)
+                .collect(Collectors.toMap(PackVariantInsn::resultId, PackVariantInsn::valueId));
+
+        var blocks = StreamSupport.stream(function.spliterator(), false).toList();
+        var hasBlock = blocks.stream()
+                .filter(block -> block.getNonTerminatorInstructions().contains(has))
+                .findFirst().orElseThrow();
+        var hasResultId = has.resultId();
+        assertNotNull(hasResultId);
+        var branchBlock = blocks.stream()
+                .filter(block -> block.getTerminator() instanceof GoIfInsn test && hasResultId.equals(test.conditionVarId()))
+                .findFirst().orElseThrow();
+        var branch = assertInstanceOf(GoIfInsn.class, branchBlock.getTerminator());
+        var fetchBlock = blocks.stream()
+                .filter(block -> block.getNonTerminatorInstructions().contains(fetch))
+                .findFirst().orElseThrow();
+        var region = assertInstanceOf(FrontendMatchRegion.class, ping.requireFrontendCfgRegion(match));
+        assertAll(
+                () -> assertEquals(1, matchContainerCalls(instructions, "size").size()),
+                () -> assertEquals(0, countInstructions(instructions, VariantGetIndexedInsn.class)),
+                () -> assertEquals("k", key.value()),
+                () -> assertEquals(key.resultId(), packedSourceByTarget.get(hasKey.id())),
+                () -> assertEquals(key.resultId(), packedSourceByTarget.get(fetch.keyId())),
+                () -> assertEquals(has.objectId(), fetch.keyedVariantId()),
+                () -> assertTrue(canReachBlock(function, hasBlock.id(), branchBlock.id()), "The has result reaches its branch"),
+                () -> assertTrue(canReachBlock(function, branch.trueBbId(), fetchBlock.id()), "A hit reaches the keyed fetch"),
+                () -> assertFalse(canReachBlock(function, branch.falseBbId(), fetchBlock.id()), "A miss bypasses the keyed fetch"),
+                () -> assertTrue(canReachBlock(function, branch.falseBbId(), region.sections().getLast().testEntryId())),
+                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(function, "v")),
+                () -> assertEquals(fetch.resultId(), assignSourcesByTarget(instructions).get("v"))
+        );
+    }
+
+    @Test
+    void runLowersSourceNestedDictionaryPatternWithBothFetchKinds() throws Exception {
+        var ping = lowerSourceMatchFunction("body_insn_source_match_nested.gd", "BodyInsnSourceMatchNested", """
+                class_name BodyInsnSourceMatchNested
+                extends RefCounted
+                func ping(value) -> int:
+                    match value:
+                        [{"k": var x}]:
+                            return x
+                        _:
+                            return 0
+                """);
+        var declaration = assertInstanceOf(FunctionDeclaration.class, ping.sourceOwner());
+        var match = assertInstanceOf(MatchStatement.class, declaration.body().statements().getFirst());
+        var array = assertInstanceOf(ArrayExpression.class, match.sections().getFirst().patterns().getFirst());
+        var dictionary = assertInstanceOf(DictionaryExpression.class, array.elements().getFirst());
+        assertSourceDictionaryKey(ping, dictionary);
+
+        var function = ping.targetFunction();
+        var instructions = allInstructions(function);
+        var indexedFetch = requireOnlyInstruction(function, VariantGetIndexedInsn.class);
+        var keyedFetch = requireOnlyInstruction(function, VariantGetKeyedInsn.class);
+        var hasCalls = matchContainerCalls(instructions, "has");
+        assertEquals(1, hasCalls.size());
+        var has = hasCalls.getFirst();
+        var assignSources = assignSourcesByTarget(instructions);
+        var dictUnpackResult = assignSources.get(has.objectId());
+        assertNotNull(dictUnpackResult, "The dictionary receiver must come from container materialization");
+        var dictUnpack = instructions.stream()
+                .filter(UnpackVariantInsn.class::isInstance)
+                .map(UnpackVariantInsn.class::cast)
+                .filter(insn -> dictUnpackResult.equals(insn.resultId()))
+                .findFirst().orElseThrow();
+        var arrayIndex = instructions.stream()
+                .filter(LiteralIntInsn.class::isInstance)
+                .map(LiteralIntInsn.class::cast)
+                .filter(insn -> indexedFetch.indexId().equals(insn.resultId()))
+                .findFirst().orElseThrow();
+        var sizeCalls = matchContainerCalls(instructions, "size");
+        assertAll(
+                () -> assertEquals(2, sizeCalls.size()),
+                () -> assertEquals(Set.of(indexedFetch.variantId(), has.objectId()),
+                        sizeCalls.stream().map(CallMethodInsn::objectId).collect(Collectors.toSet())),
+                () -> assertEquals(0L, arrayIndex.value()),
+                () -> assertEquals(indexedFetch.resultId(), dictUnpack.variantId()),
+                () -> assertEquals(has.objectId(), keyedFetch.keyedVariantId()),
+                () -> assertEquals(keyedFetch.resultId(), assignSources.get("x"))
+        );
+    }
+
+    @Test
     void runLowersStaticallyTypedArraySubjectWithoutTypeofGate() throws Exception {
         var prepared = prepareContext(
                 "body_insn_match_typed_array.gd",
@@ -13820,6 +13933,61 @@ class FrontendLoweringBodyInsnPassTest {
                         originalBinding == null ? identifierExpression : originalBinding.declarationSite()
                 )
         );
+    }
+
+    /// Runs the default pass loop so semantic errors stop before CFG and no test facts are injected.
+    private static @NotNull FunctionLoweringContext lowerSourceMatchFunction(
+            @NotNull String fileName,
+            @NotNull String className,
+            @NotNull String source
+    ) throws Exception {
+        var canonicalName = "Runtime" + className;
+        var module = parseModule(List.of(new SourceFixture(fileName, source)), Map.of(className, canonicalName));
+        var diagnostics = new DiagnosticManager();
+        var context = new FrontendLoweringPassManager().lowerToContext(
+                module, new ClassRegistry(ExtensionApiLoader.loadDefault()), diagnostics
+        );
+        assertFalse(diagnostics.hasErrors(), () -> diagnostics.snapshot().toString());
+        assertFalse(context.isStopRequested());
+        assertNotNull(context.lirModuleOrNull());
+        return requireContext(context.requireFunctionLoweringContexts(), FunctionLoweringContext.Kind.EXECUTABLE_BODY, canonicalName, "ping");
+    }
+
+    private static void assertSourceDictionaryKey(
+            @NotNull FunctionLoweringContext function,
+            @NotNull DictionaryExpression dictionary
+    ) {
+        assertEquals(1, dictionary.entries().size());
+        var key = dictionary.entries().getFirst().key();
+        assertEquals(new Evaluation.Resolved(new GdConstantValue.StringValue("k")), function.analysisData().constantFacts().get(key));
+    }
+
+    private static @NotNull List<CallMethodInsn> matchContainerCalls(
+            @NotNull List<LirInstruction> instructions,
+            @NotNull String method
+    ) {
+        return instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(call -> call.methodName().equals(method))
+                .toList();
+    }
+
+    /// Follows LIR edges, including the zero-edge path when both instructions share a block.
+    private static boolean canReachBlock(@NotNull LirFunctionDef function, @NotNull String startId, @NotNull String targetId) {
+        var pending = new ArrayList<String>();
+        var visited = new LinkedHashSet<String>();
+        pending.add(startId);
+        while (!pending.isEmpty()) {
+            var blockId = pending.removeLast();
+            if (blockId.equals(targetId)) {
+                return true;
+            }
+            if (visited.add(blockId)) {
+                pending.addAll(requireBlock(function, blockId).getSuccessorIds());
+            }
+        }
+        return false;
     }
 
     private static @NotNull PreparedContext prepareContext(

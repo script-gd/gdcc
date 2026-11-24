@@ -1,12 +1,18 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
+import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.EnumDeclaration;
+import dev.superice.gdparser.frontend.ast.EnumMember;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Point;
+import dev.superice.gdparser.frontend.ast.Range;
+import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
@@ -27,6 +33,7 @@ import gd.script.gdcc.scope.ScopeLookupStatus;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdIntType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -47,9 +54,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// top binding /
 /// visible value resolver / expression typing with zero changes (`CONSTANT` kind, enum metadata
 /// provenance, int/Dictionary published types), property-initializer and parameter-default
-/// islands consume them, and a function-body `enum` statement is closed by one
-/// `sema.unsupported_binding_subtree` error anchored at the declaration root while the rejected
-/// subtree publishes no facts and sibling statements survive.
+/// islands consume them. A function-body `enum` is rejected by the parser; if one reaches the
+/// body resolver as a hand-built AST, the semantic boundary still rejects it without publishing facts.
 class FrontendEnumBodyBindingExprTypeTest {
     @Test
     void bareAnonymousEnumMemberPublishesConstantBindingAndIntType() throws Exception {
@@ -180,8 +186,8 @@ class FrontendEnumBodyBindingExprTypeTest {
     }
 
     @Test
-    void functionBodyNamedEnumEmitsSingleBoundaryDiagnosticAndSkipsSubtree() throws Exception {
-        var analyzed = analyze("enum_body_named_rejected.gd", """
+    void functionBodyNamedEnumKeepsSiblingsInSourceAndAtSemanticBoundary() throws Exception {
+        var source = analyzeRejectedSourceEnum("enum_body_named_rejected.gd", """
                 class_name EnumBodyNamedRejected
                 extends RefCounted
 
@@ -190,31 +196,17 @@ class FrontendEnumBodyBindingExprTypeTest {
                     enum Inside { A = 1 }
                     var after := 2
                 """);
-        var ping = findFunction(analyzed.unit().ast(), "ping");
-        var enumDeclaration = findNode(ping, EnumDeclaration.class, declaration -> "Inside".equals(declaration.name()));
-        var memberValue = findNode(enumDeclaration, LiteralExpression.class, literal -> true);
+        assertEquals(1, source.diagnostics().size(), () -> "Unexpected diagnostics: " + source.diagnostics());
+        assertSiblingSlots(source.analysisData(), findFunction(source.unit().ast(), "ping"));
 
-        var diagnostics = analyzed.diagnostics().asList();
-        assertEquals(1, diagnostics.size(), () -> "Unexpected diagnostics: " + diagnostics);
-        var diagnostic = diagnostics.getFirst();
-        assertAll(
-                () -> assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity()),
-                () -> assertEquals("sema.unsupported_binding_subtree", diagnostic.category()),
-                () -> assertEquals(FrontendRange.fromAstRange(enumDeclaration.range()), diagnostic.range()),
-                // The resolver never descends into the rejected root: no facts for nodes inside.
-                () -> assertNull(analyzed.analysisData().symbolBindings().get(enumDeclaration)),
-                () -> assertNull(analyzed.analysisData().expressionTypes().get(memberValue)),
-                () -> assertNull(analyzed.analysisData().symbolBindings().get(memberValue)),
-                // The skeleton→scope skip side table stays untouched: body phase has no consumer.
-                () -> assertFalse(analyzed.analysisData().skippedSubtreeRoots().containsKey(enumDeclaration))
-        );
-        // Sibling statements around the rejected enum keep publishing facts.
-        assertSiblingSlots(analyzed.analysisData(), ping);
+        var manual = analyzeManualLocalEnum(source.unit(), "Inside", "A", "1");
+        assertEquals(1, manual.diagnostics().size(), () -> "Unexpected diagnostics: " + manual.diagnostics());
+        assertSiblingSlots(manual.analysisData(), findFunction(manual.unit().ast(), "ping"));
     }
 
     @Test
-    void functionBodyAnonymousEnumEmitsBoundaryDiagnosticAndKeepsSiblings() throws Exception {
-        var analyzed = analyze("enum_body_anonymous_rejected.gd", """
+    void functionBodyAnonymousEnumKeepsSiblingsInSourceAndAtSemanticBoundary() throws Exception {
+        var source = analyzeRejectedSourceEnum("enum_body_anonymous_rejected.gd", """
                 class_name EnumBodyAnonymousRejected
                 extends RefCounted
 
@@ -223,28 +215,17 @@ class FrontendEnumBodyBindingExprTypeTest {
                     enum { B = 2 }
                     var after := 3
                 """);
-        var ping = findFunction(analyzed.unit().ast(), "ping");
-        var enumDeclaration = findNode(ping, EnumDeclaration.class, declaration -> declaration.name() == null);
-        var memberValue = findNode(enumDeclaration, LiteralExpression.class, literal -> true);
+        assertEquals(1, source.diagnostics().size(), () -> "Unexpected diagnostics: " + source.diagnostics());
+        assertSiblingSlots(source.analysisData(), findFunction(source.unit().ast(), "ping"));
 
-        var diagnostics = analyzed.diagnostics().asList();
-        assertEquals(1, diagnostics.size(), () -> "Unexpected diagnostics: " + diagnostics);
-        var diagnostic = diagnostics.getFirst();
-        assertAll(
-                () -> assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity()),
-                () -> assertEquals("sema.unsupported_binding_subtree", diagnostic.category()),
-                () -> assertEquals(FrontendRange.fromAstRange(enumDeclaration.range()), diagnostic.range()),
-                // Same structural-stop canary as the named-enum case: the member value
-                // expression publishes no facts, and the skip side table stays untouched.
-                () -> assertNull(analyzed.analysisData().expressionTypes().get(memberValue)),
-                () -> assertFalse(analyzed.analysisData().skippedSubtreeRoots().containsKey(enumDeclaration))
-        );
-        assertSiblingSlots(analyzed.analysisData(), ping);
+        var manual = analyzeManualLocalEnum(source.unit(), null, "B", "2");
+        assertEquals(1, manual.diagnostics().size(), () -> "Unexpected diagnostics: " + manual.diagnostics());
+        assertSiblingSlots(manual.analysisData(), findFunction(manual.unit().ast(), "ping"));
     }
 
     @Test
     void functionBodyEnumDoesNotLeakNamesIntoScope() throws Exception {
-        var analyzed = analyze("enum_body_no_scope_leak.gd", """
+        var source = analyzeRejectedSourceEnum("enum_body_no_scope_leak.gd", """
                 class_name EnumBodyNoScopeLeak
                 extends RefCounted
 
@@ -252,15 +233,18 @@ class FrontendEnumBodyBindingExprTypeTest {
                     enum Inside { LEAKED }
                     return LEAKED
                 """);
-        var ping = findFunction(analyzed.unit().ast(), "ping");
-        var leaked = findNode(ping, IdentifierExpression.class, identifier -> identifier.name().equals("LEAKED"));
-
-        // The rejected enum never reaches skeleton/scope, so its members stay unresolvable.
-        var leakedBinding = analyzed.analysisData().symbolBindings().get(leaked);
-        assertNotNull(leakedBinding);
-        assertEquals(FrontendBindingKind.UNKNOWN, leakedBinding.kind());
-        assertEquals(1, diagnosticsByCategory(analyzed.diagnostics(), "sema.unsupported_binding_subtree").size());
-        assertEquals(1, diagnosticsByCategory(analyzed.diagnostics(), "sema.binding").size());
+        var manual = analyzeManualLocalEnum(source.unit(), "Inside", "LEAKED", null);
+        for (var analyzed : List.of(source, manual)) {
+            var ping = findFunction(analyzed.unit().ast(), "ping");
+            var leaked = findNode(ping, IdentifierExpression.class, identifier -> identifier.name().equals("LEAKED"));
+            var leakedBinding = analyzed.analysisData().symbolBindings().get(leaked);
+            assertNotNull(leakedBinding);
+            assertEquals(FrontendBindingKind.UNKNOWN, leakedBinding.kind());
+            assertEquals(FrontendExpressionTypeStatus.FAILED, analyzed.analysisData().expressionTypes().get(leaked).status());
+            var errors = diagnosticsByCategory(analyzed.diagnostics(), "sema.binding");
+            assertEquals(1, errors.size());
+            assertEquals(FrontendRange.fromAstRange(leaked.range()), errors.getFirst().range());
+        }
     }
 
     @Test
@@ -361,6 +345,89 @@ class FrontendEnumBodyBindingExprTypeTest {
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
         assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        return analyze(unit, diagnostics);
+    }
+
+    private static AnalyzedInput analyzeRejectedSourceEnum(String fileName, String source) throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", fileName), source, diagnostics);
+        var function = findFunction(unit.ast(), "ping");
+        assertEquals(1, diagnostics.snapshot().size());
+        assertEquals(1, unit.parseRecoveries().size());
+        var diagnostic = diagnostics.snapshot().getFirst();
+        var recovery = unit.parseRecoveries().getFirst();
+        assertEquals(DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN, diagnostic.category());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());
+        assertEquals("tmp/" + fileName, diagnostic.sourcePath());
+        assertEquals("enum", source.substring(diagnostic.range().startByte(), diagnostic.range().endByte()));
+        assertEquals(diagnostic.category(), recovery.code());
+        assertEquals(diagnostic.range(), recovery.range());
+        assertSame(function, recovery.owner());
+        assertEquals("suite.body", recovery.facet());
+        assertTrue(function.body().statements().stream().noneMatch(EnumDeclaration.class::isInstance));
+
+        var analyzed = analyze(unit, diagnostics);
+        assertEquals(List.of(diagnostic), diagnosticsByCategory(analyzed.diagnostics(), diagnostic.category()));
+        assertTrue(diagnosticsByCategory(analyzed.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
+        assertFalse(analyzed.analysisData().skippedSubtreeRoots().containsKey(function));
+        assertTrue(analyzed.analysisData().scopesByAst().containsKey(function.body()));
+        return analyzed;
+    }
+
+    private static AnalyzedInput analyzeManualLocalEnum(
+            FrontendSourceUnit rejected, @Nullable String group, String memberName, @Nullable String integer
+    ) throws Exception {
+        var parserRange = rejected.parseRecoveries().getFirst().range();
+        var source = rejected.source();
+        var start = parserRange.startByte();
+        var end = source.indexOf('}', start) + 1;
+        var memberStart = source.indexOf(memberName, start + "enum".length());
+        var valueStart = integer == null ? -1 : source.indexOf(integer, memberStart + memberName.length());
+        var base = new Point(parserRange.start().line() - 1, parserRange.start().column() - 1);
+        var value = integer == null ? null : new LiteralExpression("integer", integer,
+                enumLineRange(start, base, valueStart, valueStart + integer.length()));
+        var member = new EnumMember(memberName, value, enumLineRange(start, base, memberStart,
+                value != null ? value.range().endByte() : memberStart + memberName.length()));
+        var declaration = new EnumDeclaration(group, List.of(member), enumLineRange(start, base, start, end));
+
+        // Insert the current parser's rejected shape without any attached recovery so the same
+        // frontend entry can exercise its independent semantic guard.
+        var function = findFunction(rejected.ast(), "ping");
+        var body = new ArrayList<>(function.body().statements());
+        var insertion = 0;
+        while (insertion < body.size() && body.get(insertion).range().startByte() < start) {
+            insertion++;
+        }
+        body.add(insertion, declaration);
+        var manualFunction = new FunctionDeclaration(function.name(), function.parameters(), function.returnType(),
+                function.isStatic(), new Block(body, function.body().range()), function.range());
+        var statements = rejected.ast().statements().stream()
+                .map(statement -> statement == function ? manualFunction : statement)
+                .toList();
+        var unit = new FrontendSourceUnit(rejected.path(), source, new SourceFile(statements, rejected.ast().range()));
+        assertTrue(unit.parseRecoveries().isEmpty());
+        var analyzed = analyze(unit, new DiagnosticManager());
+        assertTrue(analyzed.analysisData().parseRecoveriesByOwner().isEmpty());
+        var errors = diagnosticsByCategory(analyzed.diagnostics(), "sema.unsupported_binding_subtree");
+        assertEquals(1, errors.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, errors.getFirst().severity());
+        assertEquals(FrontendRange.fromAstRange(declaration.range()), errors.getFirst().range());
+        assertNull(analyzed.analysisData().symbolBindings().get(declaration));
+        assertFalse(analyzed.analysisData().skippedSubtreeRoots().containsKey(declaration));
+        if (value != null) {
+            assertNull(analyzed.analysisData().expressionTypes().get(value));
+            assertNull(analyzed.analysisData().symbolBindings().get(value));
+        }
+        return analyzed;
+    }
+
+    private static Range enumLineRange(int lineStart, Point base, int start, int end) {
+        return new Range(start, end,
+                new Point(base.row(), base.column() + start - lineStart),
+                new Point(base.row(), base.column() + end - lineStart));
+    }
+
+    private static AnalyzedInput analyze(FrontendSourceUnit unit, DiagnosticManager diagnostics) throws Exception {
         var analysisData = new FrontendSemanticAnalyzer().analyze(
                 new FrontendModule("test_module", List.of(unit)),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),

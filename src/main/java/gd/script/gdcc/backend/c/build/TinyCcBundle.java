@@ -273,7 +273,7 @@ final class TinyCcBundle {
     /// The in-JVM install lock for one lock-file path. Package-private (mirroring the project
     /// build lock holder) so tests can observe queued waiters instead of guessing with sleeps.
     static @NotNull ReentrantLock requireInstallLock(@NotNull Path lockFile) {
-        return INSTALL_LOCKS.computeIfAbsent(lockFile.toAbsolutePath().normalize(), key -> new ReentrantLock());
+        return INSTALL_LOCKS.computeIfAbsent(lockFile.toAbsolutePath().normalize(), _ -> new ReentrantLock());
     }
 
     /// The bundle resource/directory key segment for a platform. Only platforms with a
@@ -301,11 +301,13 @@ final class TinyCcBundle {
         return bundleRoot.resolve("bin").resolve(libraryName);
     }
 
-    /// Cache directory key: gdcc version + pinned tinycc commit + platform, sanitized so the
-    /// key is always a single safe path segment.
+    /// Cache directory key: gdcc version + pinned tinycc commit + platform. The Linux x86-64
+    /// revision keeps an older, otherwise valid extraction from masking the patched libtcc.
+    /// This is an extraction namespace only: VERSION, object keys and overrides are unchanged.
     static @NotNull String bundleKey(@NotNull String gdccVersion, @NotNull String platformKey) {
         var sanitizedVersion = gdccVersion.replaceAll("[^A-Za-z0-9._-]", "-");
-        return sanitizedVersion + "-tinycc-" + TINYCC_PINNED_COMMIT + "-" + platformKey;
+        var key = sanitizedVersion + "-tinycc-" + TINYCC_PINNED_COMMIT + "-" + platformKey;
+        return LINUX_X86_64_KEY.equals(platformKey) ? key + "-noexecstack-v1" : key;
     }
 
     /// The bundle source backed by classpath resources: `<root>/<platformKey>/MANIFEST` lists

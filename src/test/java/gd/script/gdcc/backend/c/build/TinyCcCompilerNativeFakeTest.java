@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
@@ -17,6 +18,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -26,6 +28,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
+import static gd.script.gdcc.backend.c.build.TinyCcElfTestFixtures.linuxX8664SharedObject;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -78,8 +81,8 @@ class TinyCcCompilerNativeFakeTest {
         // Pin an isolated project-local cache root: `@TempDir` cannot scrub a parent-process
         // GDCC_SHARED_C_COMPILER_CACHE (CI sets it for the zig cache), which would otherwise
         // redirect resolution away from this temporary project tree.
-        return new TinyCcCompiler(() -> bundleRoot, (root, targetPlatform, roundArena) -> {
-            var fake = new FakeTinyCcNative(roundArena);
+        return new TinyCcCompiler(() -> bundleRoot, (_, targetPlatform, roundArena) -> {
+            var fake = new FakeTinyCcNative(roundArena, targetPlatform);
             program.accept(fake);
             created.set(fake);
             return fake;
@@ -120,7 +123,7 @@ class TinyCcCompilerNativeFakeTest {
     private record StepFailure(@NotNull String name, @NotNull Consumer<FakeTinyCcNative> program,
                                @NotNull Consumer<FakeTinyCcNative> verify, @NotNull String channelFragment) {
         @Override
-        public String toString() {
+        public @NotNull String toString() {
             return name;
         }
     }
@@ -181,7 +184,7 @@ class TinyCcCompilerNativeFakeTest {
         var tuB = writeTu(tempDir, "b.c");
         var bundleRoot = newBundleRoot(tempDir);
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = newCompiler(bundleRoot, created, fake -> {
+        var compiler = newCompiler(bundleRoot, created, _ -> {
         });
 
         var result = compiler.compile(tempDir, List.of(includeA, includeB), List.of(tuA, tuB), "probe", COptimizationLevel.DEBUG, host);
@@ -208,6 +211,7 @@ class TinyCcCompilerNativeFakeTest {
         var link = fake.states.get(2);
         assertEquals(List.of("setErrorHandler", "setLibPath", "setOptions", "setOutputType", "addFile", "addFile", "outputFile", "delete"), link.calls);
         assertEquals(TinyCcLibrary.TCC_OUTPUT_DLL, link.outputTypeSeen);
+        assertEquals(expectedLinkOptions(host), link.optionsSeen);
         assertTrue(link.includePathsSeen.isEmpty(), "the link state consumes objects and needs no include paths");
         assertEquals(expectedOutput.toString(), link.outputPathSeen);
         // Both OBJ outputs went through the cache temp name and were published as final entries.
@@ -222,13 +226,13 @@ class TinyCcCompilerNativeFakeTest {
         var cacheRoot = tempDir.resolve("compiler-cache");
         assertTrue(link.filesSeen.stream().allMatch(file -> file.endsWith(".o") && !file.startsWith(cacheRoot.toString())),
                 () -> "freshly compiled TUs link from round-exclusive temps: " + link.filesSeen);
-        assertTrue(Files.isRegularFile(TinyCcObjCache.finalPath(cacheRoot, keyOf(tempDir, tuA, List.of(includeA, includeB), bundleRoot, host))),
+        assertTrue(Files.isRegularFile(TinyCcObjCache.finalPath(cacheRoot, keyOf(tuA, List.of(includeA, includeB), bundleRoot, host))),
                 "the miss was published under its content key");
         assertTrue(fake.arenaAliveAtLastDelete);
         assertFalse(fake.roundArena.scope().isAlive());
     }
 
-    private static @NotNull String keyOf(@NotNull Path tempDir, @NotNull Path tu, @NotNull List<Path> includeDirs, @NotNull Path bundleRoot, @NotNull TargetPlatform host) throws IOException {
+    private static @NotNull String keyOf(@NotNull Path tu, @NotNull List<Path> includeDirs, @NotNull Path bundleRoot, @NotNull TargetPlatform host) throws IOException {
         return TinyCcObjCache.requireKey(tu, Files.readAllBytes(tu), includeDirs,
                 TinyCcObjCache.hashIncludeTrees(includeDirs),
                 Files.readString(bundleRoot.resolve(TinyCcBundle.VERSION_FILE_NAME)), host);
@@ -242,7 +246,7 @@ class TinyCcCompilerNativeFakeTest {
         var tuB = writeTu(tempDir, "b.c");
         var bundleRoot = newBundleRoot(tempDir);
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = newCompiler(bundleRoot, created, fake -> {
+        var compiler = newCompiler(bundleRoot, created, _ -> {
         });
 
         var first = compiler.compile(tempDir, List.of(includeDir), List.of(tuA, tuB), "probe", COptimizationLevel.DEBUG, host);
@@ -285,7 +289,7 @@ class TinyCcCompilerNativeFakeTest {
         var tuB = writeTu(tempDir, "b.c");
         var bundleRoot = newBundleRoot(tempDir);
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = newCompiler(bundleRoot, created, fake -> {
+        var compiler = newCompiler(bundleRoot, created, _ -> {
         });
         var first = compiler.compile(tempDir, List.of(), List.of(tuA, tuB), "probe", COptimizationLevel.DEBUG, host);
         assertTrue(first.success(), () -> "seeding round failed:\n" + first.buildLog());
@@ -309,12 +313,14 @@ class TinyCcCompilerNativeFakeTest {
         assertEquals(List.of(TinyCcLibrary.TCC_OUTPUT_DLL, TinyCcLibrary.TCC_OUTPUT_OBJ, TinyCcLibrary.TCC_OUTPUT_DLL),
                 fake.states.stream().map(state -> state.outputTypeSeen).toList(),
                 () -> "rejected link state discarded, TU recompiled, fresh link state:\n" + fake.describeStates());
+        assertEquals(List.of(expectedLinkOptions(host), "-std=c11", expectedLinkOptions(host)),
+                fake.states.stream().map(state -> state.optionsSeen).toList());
         assertTrue(fake.states.stream().allMatch(state -> state.deleted),
                 "every state — including the discarded link state — is deleted exactly once");
-        assertTrue(fake.states.stream().flatMap(state -> state.calls.stream()).filter("delete"::equals).count() == 3);
+        assertEquals(3, fake.states.stream().flatMap(state -> state.calls.stream()).filter("delete"::equals).count());
 
         // The recompiled TU was published again: a third round is a full hit.
-        var third = newCompiler(bundleRoot, created, unused -> {
+        var third = newCompiler(bundleRoot, created, _ -> {
         }).compile(tempDir, List.of(), List.of(tuA, tuB), "probe", COptimizationLevel.DEBUG, host);
         assertTrue(third.success(), () -> "third round failed:\n" + third.buildLog());
         assertEquals(STATS_PREFIX + "2 hits, 0 misses\n", third.buildLog());
@@ -327,7 +333,7 @@ class TinyCcCompilerNativeFakeTest {
         var tuB = writeTu(tempDir, "b.c");
         var bundleRoot = newBundleRoot(tempDir);
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = newCompiler(bundleRoot, created, fake -> {
+        var compiler = newCompiler(bundleRoot, created, _ -> {
         });
         assertTrue(compiler.compile(tempDir, List.of(), List.of(tuA, tuB), "probe", COptimizationLevel.DEBUG, host).success());
 
@@ -353,7 +359,7 @@ class TinyCcCompilerNativeFakeTest {
         var bundleRoot = Files.createDirectories(tempDir.resolve("bundle"));
         // No VERSION file: the compiler identity is unknown, so no entry may be read or written.
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = newCompiler(bundleRoot, created, fake -> {
+        var compiler = newCompiler(bundleRoot, created, _ -> {
         });
 
         var result = compiler.compile(tempDir, List.of(), List.of(tu), "probe", COptimizationLevel.DEBUG, host);
@@ -370,7 +376,7 @@ class TinyCcCompilerNativeFakeTest {
         var tu = writeTu(tempDir, "a.c");
         var missingInclude = tempDir.resolve("does-not-exist");
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = newCompiler(newBundleRoot(tempDir), created, fake -> {
+        var compiler = newCompiler(newBundleRoot(tempDir), created, _ -> {
         });
 
         var result = compiler.compile(tempDir, List.of(missingInclude), List.of(tu), "probe", COptimizationLevel.DEBUG, host);
@@ -391,7 +397,7 @@ class TinyCcCompilerNativeFakeTest {
         Files.createDirectories(cacheRoot);
         Files.writeString(cacheRoot.resolve(TinyCcObjCache.OBJ_DIR_NAME), "not a directory");
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = newCompiler(bundleRoot, created, fake -> {
+        var compiler = newCompiler(bundleRoot, created, _ -> {
         });
 
         var result = compiler.compile(tempDir, List.of(), List.of(tu), "probe", COptimizationLevel.DEBUG, host);
@@ -413,7 +419,7 @@ class TinyCcCompilerNativeFakeTest {
         var tu = writeTu(tempDir, "a.c");
         var bundleRoot = newBundleRoot(tempDir);
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        assertTrue(newCompiler(bundleRoot, created, unused -> {
+        assertTrue(newCompiler(bundleRoot, created, _ -> {
         }).compile(tempDir, List.of(), List.of(tu), "probe", COptimizationLevel.DEBUG, host).success());
 
         // The rejection coincides with a broken diagnostic upcall: the round must fail through
@@ -430,7 +436,7 @@ class TinyCcCompilerNativeFakeTest {
         assertNotNull(fake);
         assertEquals(1, fake.states.size(), "no recompile state may be created after the callback failure");
         assertTrue(Files.isRegularFile(TinyCcObjCache.finalPath(tempDir.resolve("compiler-cache"),
-                keyOf(tempDir, tu, List.of(), bundleRoot, host))), "the entry must not be evicted on a callback failure");
+                keyOf(tu, List.of(), bundleRoot, host))), "the entry must not be evicted on a callback failure");
     }
 
     @Test
@@ -439,7 +445,7 @@ class TinyCcCompilerNativeFakeTest {
         var tu = writeTu(tempDir, "a.c");
         var bundleRoot = newBundleRoot(tempDir);
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        assertTrue(newCompiler(bundleRoot, created, unused -> {
+        assertTrue(newCompiler(bundleRoot, created, _ -> {
         }).compile(tempDir, List.of(), List.of(tu), "probe", COptimizationLevel.DEBUG, host).success());
 
         // The rejection lands with the interrupt flag already set: the round must surface the
@@ -460,7 +466,7 @@ class TinyCcCompilerNativeFakeTest {
         assertNotNull(fake);
         assertEquals(1, fake.states.size(), "no recompile state may be created once cancellation is pending");
         assertTrue(Files.isRegularFile(TinyCcObjCache.finalPath(tempDir.resolve("compiler-cache"),
-                keyOf(tempDir, tu, List.of(), bundleRoot, host))), "the entry must not be evicted on the cancellation path");
+                keyOf(tu, List.of(), bundleRoot, host))), "the entry must not be evicted on the cancellation path");
     }
 
     @Test
@@ -470,11 +476,11 @@ class TinyCcCompilerNativeFakeTest {
         var bundleRoot = newBundleRoot(tempDir);
         // Squat the final entry path with a non-empty directory: staging succeeds but the
         // atomic move fails — the round must still link the round-exclusive temp artifact.
-        var key = keyOf(tempDir, tu, List.of(), bundleRoot, host);
+        var key = keyOf(tu, List.of(), bundleRoot, host);
         var cacheRoot = tempDir.resolve("compiler-cache");
         Files.createDirectories(TinyCcObjCache.finalPath(cacheRoot, key).resolve("child"));
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = newCompiler(bundleRoot, created, unused -> {
+        var compiler = newCompiler(bundleRoot, created, _ -> {
         });
 
         var result = compiler.compile(tempDir, List.of(), List.of(tu), "probe", COptimizationLevel.DEBUG, host);
@@ -507,7 +513,7 @@ class TinyCcCompilerNativeFakeTest {
             return;
         }
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = newCompiler(newBundleRoot(tempDir), created, unused -> {
+        var compiler = newCompiler(newBundleRoot(tempDir), created, _ -> {
         });
 
         // Directory symlinks are followed by the native include search but not by the hashing
@@ -525,7 +531,7 @@ class TinyCcCompilerNativeFakeTest {
         var tu = writeTu(tempDir, "a.c");
         var bundleRoot = newBundleRoot(tempDir);
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = newCompiler(bundleRoot, created, unused -> {
+        var compiler = newCompiler(bundleRoot, created, _ -> {
         });
         // The same file spelled with a `..` segment: keys and `tcc_add_file` must both see the
         // normalized spelling, or __FILE__ would differ from what the key assumes.
@@ -540,7 +546,7 @@ class TinyCcCompilerNativeFakeTest {
                 "the native call receives the normalized path");
         // And the published entry sits under the normalized-path key: a second round with the
         // plain spelling hits it.
-        var second = newCompiler(bundleRoot, created, unused -> {
+        var second = newCompiler(bundleRoot, created, _ -> {
         }).compile(tempDir, List.of(), List.of(tu), "probe", COptimizationLevel.DEBUG, host);
         assertTrue(second.success(), () -> "got:\n" + second.buildLog());
         assertEquals(STATS_PREFIX + "1 hits, 0 misses\n", second.buildLog());
@@ -553,7 +559,7 @@ class TinyCcCompilerNativeFakeTest {
         // cache-available, and the (fake) compile of the missing file still succeeds.
         var missingTu = tempDir.resolve("ghost.c");
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = newCompiler(newBundleRoot(tempDir), created, fake -> {
+        var compiler = newCompiler(newBundleRoot(tempDir), created, _ -> {
         });
 
         var result = compiler.compile(tempDir, List.of(), List.of(missingTu), "probe", COptimizationLevel.DEBUG, host);
@@ -688,11 +694,69 @@ class TinyCcCompilerNativeFakeTest {
         assertFalse(Files.exists(output), "the stale artifact must be deleted and the failed output must not recreate it");
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("invalidLinuxDllOutputs")
+    void rejectsInvalidLinuxDllEvenWhenLibtccReturnsSuccess(
+            String label, byte[] output, String reason, @TempDir Path tempDir
+    ) throws IOException {
+        var host = TargetPlatform.getNativePlatform();
+        Assumptions.assumeTrue(host == TargetPlatform.LINUX_X86_64, "the GNU stack contract is Linux x86-64 only");
+        var tu = writeTu(tempDir, "main.c");
+        var artifact = tempDir.resolve("libprobe.so");
+        Files.writeString(artifact, "previous artifact");
+        var bundleRoot = newBundleRoot(tempDir);
+        var created = new AtomicReference<@Nullable FakeTinyCcNative>();
+        var compiler = newCompiler(bundleRoot, created, fake -> fake.linuxDllOutput = output);
+
+        var rejected = compiler.compile(tempDir, List.of(), List.of(tu), "probe", COptimizationLevel.DEBUG, host);
+
+        assertFalse(rejected.success(), label);
+        assertTrue(rejected.artifacts().isEmpty());
+        assertFalse(Files.exists(artifact), "a rejected artifact must not remain at the published path");
+        assertTrue(rejected.buildLog().startsWith(STATS_PREFIX + "0 hits, 1 misses\n"), rejected.buildLog());
+        assertTrue(rejected.buildLog().contains(reason), rejected.buildLog());
+        assertTrue(rejected.buildLog().contains("GDCC_TINYCC_HOME"), rejected.buildLog());
+        var fake = created.get();
+        assertNotNull(fake);
+        assertEquals(2, fake.states.size(), "an invalid final DLL does not trigger an object-cache retry");
+        var link = fake.states.getLast();
+        assertEquals("-std=c11 -Wl,-z,noexecstack", link.optionsSeen);
+        assertEquals(0, fake.dllOutputStatus);
+        assertTrue(link.calls.contains("outputFile"));
+        assertTrue(link.deleted);
+
+        // A bad linked image is a bundle/output failure, not corruption of the cached TU.
+        var fixed = newCompiler(bundleRoot, created, _ -> {
+        }).compile(tempDir, List.of(), List.of(tu), "probe", COptimizationLevel.DEBUG, host);
+        assertTrue(fixed.success(), fixed.buildLog());
+        assertEquals(STATS_PREFIX + "1 hits, 0 misses\n", fixed.buildLog());
+        assertEquals(List.of(artifact), fixed.artifacts());
+    }
+
+    static Stream<Arguments> invalidLinuxDllOutputs() {
+        var invalidOffset = linuxX8664SharedObject(6).putLong(32, Long.MAX_VALUE).array();
+        return Stream.of(
+                Arguments.of("option ignored by old libtcc", linuxX8664SharedObject().array(), "missing GNU_STACK"),
+                Arguments.of("executable stack", linuxX8664SharedObject(7).array(), "with RW permissions"),
+                Arguments.of("read-only stack", linuxX8664SharedObject(4).array(), "with RW permissions"),
+                Arguments.of("duplicate stack headers", linuxX8664SharedObject(6, 6).array(), "exactly one GNU_STACK"),
+                Arguments.of("non-ELF output", linuxX8664SharedObject(6).put(0, (byte) 0).array(), "expected a little-endian x86-64 ELF"),
+                Arguments.of("truncated header", Arrays.copyOf(linuxX8664SharedObject(6).array(), 32), "truncated ELF header data"),
+                Arguments.of("truncated PHDR", Arrays.copyOf(linuxX8664SharedObject(6).array(), 64 + 56), "invalid ELF program header table"),
+                Arguments.of("overflowing PHDR end", invalidOffset, "invalid ELF program header table"),
+                Arguments.of("wrong PHDR width", linuxX8664SharedObject(6).putShort(54, (short) 8).array(), "invalid ELF program header table")
+        );
+    }
+
+    private static String expectedLinkOptions(@NotNull TargetPlatform target) {
+        return target == TargetPlatform.LINUX_X86_64 ? "-std=c11 -Wl,-z,noexecstack" : "-std=c11";
+    }
+
     @Test
     void emptyCFilesFailBeforeAnyNativeWork(@TempDir Path tempDir) {
         var host = assumeSupportedHost();
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = new TinyCcCompiler(() -> Path.of("unused-bundle-root"), (root, targetPlatform, roundArena) -> {
+        var compiler = new TinyCcCompiler(() -> Path.of("unused-bundle-root"), (_, _, _) -> {
             fail("the native factory must not run for an empty input set");
             throw new IOException("unreachable");
         });
@@ -712,7 +776,7 @@ class TinyCcCompilerNativeFakeTest {
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
         var compiler = new TinyCcCompiler(() -> {
             throw new IOException("no bundle on the classpath; point GDCC_TINYCC_HOME at a bundle directory");
-        }, (root, targetPlatform, roundArena) -> {
+        }, (_, _, _) -> {
             fail("the native factory must not run when bundle resolution failed");
             throw new IOException("unreachable");
         });
@@ -736,7 +800,7 @@ class TinyCcCompilerNativeFakeTest {
         var compiler = new TinyCcCompiler(() -> {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while waiting for the tinycc bundle install lock");
-        }, (root, targetPlatform, roundArena) -> {
+        }, (_, _, _) -> {
             throw new AssertionError("the native factory must not run when bundle resolution failed");
         });
 
@@ -758,7 +822,7 @@ class TinyCcCompilerNativeFakeTest {
         var tu = writeTu(tempDir, "a.c");
         var otherTarget = host == TargetPlatform.LINUX_X86_64 ? TargetPlatform.WINDOWS_X86_64 : TargetPlatform.LINUX_X86_64;
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = new TinyCcCompiler(() -> Path.of("unused-bundle-root"), (root, targetPlatform, roundArena) -> {
+        var compiler = new TinyCcCompiler(() -> Path.of("unused-bundle-root"), (_, _, _) -> {
             fail("the native factory must not run for an unsupported target");
             throw new IOException("unreachable");
         });
@@ -826,7 +890,7 @@ class TinyCcCompilerNativeFakeTest {
         var host = assumeSupportedHost();
         var tu = writeTu(tempDir, "a.c");
         var created = new AtomicReference<@Nullable FakeTinyCcNative>();
-        var compiler = newCompiler(newBundleRoot(tempDir), created, fake -> {
+        var compiler = newCompiler(newBundleRoot(tempDir), created, _ -> {
         });
         var globalLock = TinyCcCompiler.tccGlobalLock();
         globalLock.lock();
@@ -854,7 +918,7 @@ class TinyCcCompilerNativeFakeTest {
     void interruptWhileWaitingForTheProjectLockAbortsTheRound(@TempDir Path tempDir) throws Exception {
         var host = assumeSupportedHost();
         var tu = writeTu(tempDir, "a.c");
-        var compiler = newCompiler(newBundleRoot(tempDir), new AtomicReference<>(), fake -> {
+        var compiler = newCompiler(newBundleRoot(tempDir), new AtomicReference<>(), _ -> {
         });
         var projectLock = CProjectBuildLock.require(tempDir);
         projectLock.lock();
@@ -968,6 +1032,7 @@ class TinyCcCompilerNativeFakeTest {
     /// (delete → arena close) without any real native library.
     private static final class FakeTinyCcNative implements TinyCcNative {
         final Arena roundArena;
+        private final TargetPlatform targetPlatform;
         final List<FakeState> states = new ArrayList<>();
         int newStateCalls;
         /// Programmed outcomes below; defaults are the all-success path.
@@ -983,6 +1048,8 @@ class TinyCcCompilerNativeFakeTest {
         int dllOutputStatus;
         boolean writeObjOutput = true;
         boolean writeDllOutput = true;
+        /// This fake writes the supplied bytes even when libtcc's noexecstack option was set.
+        byte[] linuxDllOutput = linuxX8664SharedObject(6).array();
         /// When set, `callbackFailure()` starts reporting a failure after the Nth step with this
         /// name ran (occurrence counting is global across states).
         @Nullable String callbackFailureAtStep;
@@ -1004,8 +1071,9 @@ class TinyCcCompilerNativeFakeTest {
         private int callbackStepMatches;
         private boolean callbackFailed;
 
-        FakeTinyCcNative(@NotNull Arena roundArena) {
+        FakeTinyCcNative(@NotNull Arena roundArena, @NotNull TargetPlatform targetPlatform) {
             this.roundArena = roundArena;
+            this.targetPlatform = targetPlatform;
         }
 
         /// Every operation resolves its state from the handle it was given: using a deleted or
@@ -1137,7 +1205,12 @@ class TinyCcCompilerNativeFakeTest {
             var objOutput = file.endsWith(".o");
             if (objOutput ? writeObjOutput : writeDllOutput) {
                 try {
-                    Files.writeString(Path.of(file), objOutput ? "fake object" : "fake shared object");
+                    var path = Path.of(file);
+                    if (!objOutput && targetPlatform == TargetPlatform.LINUX_X86_64) {
+                        Files.write(path, linuxDllOutput);
+                    } else {
+                        Files.writeString(path, objOutput ? "fake object" : "fake shared object");
+                    }
                 } catch (IOException e) {
                     throw new UncheckedIOException(e);
                 }

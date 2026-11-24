@@ -51,7 +51,8 @@ public final class FrontendLambdaIdentityAnalyzer {
         var identities = new FrontendAstSideTable<FrontendLambdaIdentity>();
         for (var relation : analysisData.moduleSkeleton().sourceClassRelations()) {
             var unit = relation.unit();
-            new Walker(unit.source().getBytes(StandardCharsets.UTF_8), identities).walkSourceFile(unit.ast());
+            new Walker(unit.source().getBytes(StandardCharsets.UTF_8), identities, analysisData.skippedSubtreeRoots())
+                    .walkNode(unit.ast());
         }
         return identities;
     }
@@ -61,18 +62,20 @@ public final class FrontendLambdaIdentityAnalyzer {
     private static final class Walker {
         private final byte @NotNull [] sourceBytes;
         private final @NotNull FrontendAstSideTable<FrontendLambdaIdentity> identities;
+        private final @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots;
         /// Path from the SourceFile down to the parent of the currently visited node.
         private final @NotNull ArrayDeque<Node> ancestors = new ArrayDeque<>();
         private int ordinalCounter;
         private boolean insideNamedFunction;
 
-        private Walker(byte @NotNull [] sourceBytes, @NotNull FrontendAstSideTable<FrontendLambdaIdentity> identities) {
+        private Walker(
+                byte @NotNull [] sourceBytes,
+                @NotNull FrontendAstSideTable<FrontendLambdaIdentity> identities,
+                @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots
+        ) {
             this.sourceBytes = sourceBytes;
             this.identities = identities;
-        }
-
-        private void walkSourceFile(@NotNull Node sourceFile) {
-            walkChildren(sourceFile);
+            this.skippedSubtreeRoots = skippedSubtreeRoots;
         }
 
         private void walkChildren(@NotNull Node node) {
@@ -84,8 +87,14 @@ public final class FrontendLambdaIdentityAnalyzer {
         }
 
         private void walkNode(@NotNull Node node) {
-            if (!insideNamedFunction && (node instanceof FunctionDeclaration || node instanceof ConstructorDeclaration)) {
-                enterNamedFunction(node);
+            if (skippedSubtreeRoots.containsKey(node)) {
+                return;
+            }
+            if (node instanceof FunctionDeclaration || node instanceof ConstructorDeclaration) {
+                // A declaration inside an executable body cannot own a recorded lambda.
+                if (!insideNamedFunction) {
+                    enterNamedFunction(node);
+                }
                 return;
             }
             if (node instanceof LambdaExpression lambda) {
@@ -94,7 +103,7 @@ public final class FrontendLambdaIdentityAnalyzer {
                     ancestors.addLast(lambda);
                     // Traversal parity with collectLambdaContexts: recurse into the body ONLY
                     // (parameter defaults / return type never carry recorded lambdas).
-                    walkChildren(lambda.body());
+                    walkNode(lambda.body());
                     ancestors.removeLast();
                 }
                 // Outside a supported executable body the lambda is never recorded and never
@@ -126,7 +135,7 @@ public final class FrontendLambdaIdentityAnalyzer {
                                 + function.getClass().getSimpleName()
                 );
             };
-            walkChildren(body);
+            walkNode(body);
             ancestors.removeLast();
             ordinalCounter = savedCounter;
             insideNamedFunction = savedFlag;

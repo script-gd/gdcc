@@ -1,6 +1,8 @@
 package gd.script.gdcc.api;
 
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.exception.ApiModuleNotFoundException;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -14,6 +16,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -190,27 +193,25 @@ class ApiAnalyzeTest {
 
     @Test
     void analyzeReportsParseErrorsAsCompletedDiagnosticsWithDisplayPaths() {
-        var api = ApiCompileTestSupport.newApi(ApiCompileTestSupport.RecordingCompiler.succeeding());
+        var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
+        var api = ApiCompileTestSupport.newApi(compiler);
 
         api.createModule("demo", "Broken Parse Demo");
-        api.putFile("demo", "/src/broken.gd", """
+        var source = """
                 class_name AnalyzeBroken
                 extends Node
-                
+
                 func _ready(
                     pass
-                """, "res://shown/broken.gd");
+                """;
+        var displayPath = "res://shown/broken.gd";
+        api.putFile("demo", "/src/broken.gd", source, displayPath);
 
         var result = api.analyze("demo");
-        var parseDiagnostic = result.diagnostics().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals("parse.lowering"))
-                .findFirst()
-                .orElseThrow();
 
-        assertEquals(AnalysisResult.Outcome.COMPLETED, result.outcome());
-        assertTrue(result.hasErrors());
-        assertEquals("res://shown/broken.gd", parseDiagnostic.sourcePath());
-        assertEquals(List.of("res://shown/broken.gd"), result.sourcePaths());
+        assertEquals(AnalysisResult.LoweringStatus.NOT_REQUESTED, result.loweringStatus());
+        assertRecoveredSignatureSnapshot(api, result, source, displayPath);
+        assertEquals(0, compiler.invocationCount());
     }
 
     @Test
@@ -284,26 +285,26 @@ class ApiAnalyzeTest {
 
     @Test
     void analyzeWithLoweringMarksParseErrorsAsLoweringFailure() {
-        var api = ApiCompileTestSupport.newApi(ApiCompileTestSupport.RecordingCompiler.succeeding());
+        var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
+        var api = ApiCompileTestSupport.newApi(compiler);
 
         api.createModule("demo", "Parse Lowering Demo");
-        api.putFile("demo", "/src/broken.gd", """
+        var source = """
                 class_name AnalyzeParseLowering
                 extends Node
-                
-                func _ready(
-                    pass
-                """);
 
-        // Parse errors end the pipeline before lowering can run, so the lowering answer is FAILED
-        // while the analysis outcome stays COMPLETED with the parse diagnostics attached.
+                func probe(
+                    pass
+                """;
+        api.putFile("demo", "/src/broken.gd", source);
+
+        // Use a non-virtual method so only the parser can explain the failed lowering.
         var result = api.analyze("demo", new AnalyzeOptions(true));
 
-        assertEquals(AnalysisResult.Outcome.COMPLETED, result.outcome());
-        assertTrue(result.hasErrors());
-        assertTrue(result.diagnostics().asList().stream()
-                .anyMatch(diagnostic -> diagnostic.category().equals("parse.lowering")));
         assertEquals(AnalysisResult.LoweringStatus.FAILED, result.loweringStatus());
+        assertEquals(2, result.diagnostics().size());
+        assertRecoveredSignatureSnapshot(api, result, source, "/src/broken.gd");
+        assertEquals(0, compiler.invocationCount());
     }
 
     @Test
@@ -443,6 +444,52 @@ class ApiAnalyzeTest {
         var result = Objects.requireNonNull(resultRef.get());
         assertEquals(AnalysisResult.Outcome.COMPLETED, result.outcome());
         assertFalse(result.hasErrors());
+    }
+
+    private static void assertRecoveredSignatureSnapshot(
+            API api,
+            AnalysisResult result,
+            String source,
+            String displayPath
+    ) {
+        assertEquals(AnalysisResult.Outcome.COMPLETED, result.outcome());
+        assertTrue(result.hasErrors());
+        assertEquals(List.of(displayPath), result.sourcePaths());
+        var parserDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> DiagnosticCodes.MISSING_CLOSER_PARAMETER_LIST.equals(diagnostic.category())
+                        || DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN.equals(diagnostic.category()))
+                .toList();
+        assertEquals(List.of(DiagnosticCodes.MISSING_CLOSER_PARAMETER_LIST, DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN),
+                parserDiagnostics.stream().map(FrontendDiagnostic::category).toList());
+        var missingCloser = source.indexOf('(') + 1;
+        assertDiagnosticAt(parserDiagnostics.getFirst(), displayPath, missingCloser, missingCloser);
+        assertDiagnosticAt(parserDiagnostics.getLast(), displayPath, missingCloser + 1, source.indexOf("pass"));
+        assertTrue(result.diagnostics().asList().stream()
+                .noneMatch(diagnostic -> diagnostic.category().equals("sema.compile_check")));
+
+        var snapshot = api.getLatestAnalysisSnapshot("demo");
+        assertNotNull(snapshot);
+        assertEquals(result.snapshotVersion(), snapshot.snapshotVersion());
+        assertEquals(result.diagnostics(), snapshot.diagnostics());
+        assertEquals(1, snapshot.sourceViews().size());
+        var view = snapshot.sourceViews().getFirst();
+        assertEquals(displayPath, view.displayPath());
+        assertEquals(source, view.source());
+        assertFalse(view.parseFailed());
+    }
+
+    private static void assertDiagnosticAt(
+            FrontendDiagnostic diagnostic,
+            String displayPath,
+            int startByte,
+            int endByte
+    ) {
+        assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());
+        assertEquals(displayPath, diagnostic.sourcePath());
+        var range = diagnostic.range();
+        assertNotNull(range);
+        assertEquals(startByte, range.startByte());
+        assertEquals(endByte, range.endByte());
     }
 
     private static void await(CountDownLatch latch) {

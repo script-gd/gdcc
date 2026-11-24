@@ -228,6 +228,11 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # define TARGETOS_Linux 1 /* for tccdefs_.h */
 #endif
 
+#if TARGETOS_Linux && defined(TCC_TARGET_X86_64) \
+    && !defined(TARGETOS_ANDROID) && !defined(TARGETOS_DragonFly)
+# define TCC_GDCC_NOEXECSTACK 1
+#endif
+
 #if defined TCC_TARGET_PE || defined TCC_TARGET_MACHO
 # define ELF_OBJ_ONLY /* create elf .o but native executables */
 #else
@@ -742,6 +747,11 @@ struct TCCState {
     unsigned char rdynamic; /* if true, all symbols are exported */
     unsigned char symbolic; /* if true, resolve symbols in the current module first */
     unsigned char znodelete; /* Set DF_1_NODELETE in dynamic section */
+#ifdef TCC_GDCC_NOEXECSTACK
+    unsigned char requires_execstack; /* an input explicitly requests an executable stack */
+    unsigned char output_type_set; /* tcc_set_output_type() has finalized the mode */
+    unsigned char noexecstack_diagnostic; /* unsupported option severity at parse time */
+#endif
     unsigned char filetype; /* file type for compilation (NONE,C,ASM) */
     unsigned char optimize; /* only to #define __OPTIMIZE__ */
     unsigned char option_pthread; /* -pthread option */
@@ -1015,6 +1025,9 @@ struct TCCState {
     /* -Wl options */
     char **link_argv;
     int link_argc, link_optind;
+#ifdef TCC_GDCC_NOEXECSTACK
+    const char *noexecstack_option; /* borrowed from link_argv */
+#endif
 };
 
 struct filespec {
@@ -1250,6 +1263,9 @@ ST_FUNC void libc_free(void *ptr);
 PUB_FUNC int _tcc_error_noabort(const char *fmt, ...) PRINTF_LIKE(1,2);
 PUB_FUNC NORETURN void _tcc_error(const char *fmt, ...) PRINTF_LIKE(1,2);
 PUB_FUNC void _tcc_warning(const char *fmt, ...) PRINTF_LIKE(1,2);
+#ifdef TCC_GDCC_NOEXECSTACK
+ST_FUNC int tcc_check_noexecstack_option(TCCState *s1);
+#endif
 #define tcc_internal_error(msg) \
     tcc_error("internal compiler error in %s:%d: %s", __FUNCTION__,__LINE__,msg)
 

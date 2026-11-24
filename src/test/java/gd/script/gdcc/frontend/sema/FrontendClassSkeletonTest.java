@@ -2,32 +2,58 @@ package gd.script.gdcc.frontend.sema;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
+import dev.superice.gdparser.frontend.ast.AnnotationStatement;
+import dev.superice.gdparser.frontend.ast.AssertStatement;
+import dev.superice.gdparser.frontend.ast.BinaryExpression;
+import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
+import dev.superice.gdparser.frontend.ast.ElifClause;
+import dev.superice.gdparser.frontend.ast.ErrorExpression;
+import dev.superice.gdparser.frontend.ast.ExpressionStatement;
+import dev.superice.gdparser.frontend.ast.ForStatement;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IfStatement;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
+import dev.superice.gdparser.frontend.ast.MatchSection;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
+import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Parameter;
+import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SignalStatement;
+import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.ast.WhileStatement;
+import dev.superice.gdparser.frontend.cst.CstIssueKind;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
+import gd.script.gdcc.frontend.parse.FrontendParseRecovery;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.GdScriptClassConstant;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.SignalDef;
 import gd.script.gdcc.type.GdArrayType;
@@ -748,7 +774,6 @@ class FrontendClassSkeletonTest {
                 signal changed(payload: MissingSignal)
                 var field: MissingField
                 var bag: Array[MissingArray]
-                var nested_bag: Array[Array[int]]
                 
                 func ping(arg: MissingParam) -> MissingReturn:
                     pass
@@ -771,7 +796,6 @@ class FrontendClassSkeletonTest {
         assertEquals(GdVariantType.VARIANT, changedSignal.getParameter(0).getType());
         assertEquals(GdVariantType.VARIANT, findPropertyByName(unknownTypeSurface, "field").getType());
         assertEquals(GdVariantType.VARIANT, findPropertyByName(unknownTypeSurface, "bag").getType());
-        assertEquals(GdVariantType.VARIANT, findPropertyByName(unknownTypeSurface, "nested_bag").getType());
         assertEquals(GdVariantType.VARIANT, pingFunction.getParameter(0).getType());
         assertEquals(GdVariantType.VARIANT, pingFunction.getReturnType());
         assertEquals(GdVariantType.VARIANT, initFunction.getParameter(0).getType());
@@ -779,14 +803,550 @@ class FrontendClassSkeletonTest {
         var typeResolutionDiagnostics = result.diagnostics().asList().stream()
                 .filter(diagnostic -> diagnostic.category().equals("sema.type_resolution"))
                 .toList();
-        assertEquals(7, typeResolutionDiagnostics.size());
+        assertEquals(6, typeResolutionDiagnostics.size());
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingSignal")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingField")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingArray")));
-        assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Array[Array[int]]")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingParam")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingReturn")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingCtor")));
+    }
+
+    @Test
+    void damagedMembersDoNotClaimNamesOrRegisterPropertiesDuringPrepass() throws IOException {
+        var parser = new GdScriptParserService();
+        var original = new DiagnosticManager();
+        var unit = parser.parseUnit(Path.of("tmp", "damaged_members.gd"), """
+                class:
+                    pass
+                var nested_bag: Array[Array[int]]
+                var kept: int = 1
+                enum { nested_bag = 9 }
+                """, original);
+        var malformedClass = assertInstanceOf(ClassDeclaration.class, unit.ast().statements().getFirst());
+        var damagedProperty = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().get(1));
+        var kept = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().get(2));
+        var parsed = original.snapshot().asList();
+        assertEquals(List.of(DiagnosticCodes.DECLARATION_MISSING_NAME, DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN),
+                parsed.stream().map(FrontendDiagnostic::category).toList());
+        var api = ExtensionApiLoader.loadDefault();
+        for (var active : List.of(original, new DiagnosticManager())) {
+            var data = new FrontendSemanticAnalyzer().analyze(
+                    FrontendModule.singleUnit("test", unit), new ClassRegistry(api), active);
+            var relation = data.moduleSkeleton().sourceClassRelations().getFirst();
+            assertTrue(relation.innerClassRelations().isEmpty());
+            assertEquals(List.of("kept"), relation.classDef().getProperties().stream().map(PropertyDef::getName).toList());
+            assertEquals(List.of("nested_bag"), relation.classDef().getScriptConstants().stream().map(GdScriptClassConstant::name).toList());
+            assertTrue(data.skippedSubtreeRoots().containsKey(malformedClass));
+            assertTrue(data.skippedSubtreeRoots().containsKey(damagedProperty));
+            assertFalse(data.scopesByAst().containsKey(damagedProperty));
+            assertTrue(data.scopesByAst().containsKey(kept));
+            assertEquals(unit.parseRecoveries().size(), data.claimedParseRecoveries().size());
+            if (active == original) {
+                assertEquals(parsed, active.snapshot().asList());
+            } else {
+                var fallback = active.snapshot().asList();
+                assertEquals(List.of("sema.class_skeleton", "sema.class_skeleton"),
+                        fallback.stream().map(FrontendDiagnostic::category).toList());
+                assertTrue(fallback.getFirst().message().contains("missing a class name"));
+            }
+        }
+    }
+
+    @Test
+    void damagedLambdaInitializerRetainsItsReturnErrorWithoutASkeletonEcho() throws IOException {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "damaged_lambda_property.gd"), """
+                var callback = func():
+                    return 1 +
+                var kept: int = 2
+                """, diagnostics);
+        var variable = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().getFirst());
+        var lambda = assertInstanceOf(LambdaExpression.class, variable.value());
+        var damaged = assertInstanceOf(ReturnStatement.class, lambda.body().statements().getFirst());
+        assertEquals(1, unit.parseRecoveries().size());
+        assertDamagedReturnRecovery(unit, 0, damaged, "+");
+        assertRejectedInitializerWithParserDiagnostics(unit, diagnostics, variable, unit.parseRecoveries());
+    }
+
+    @Test
+    void distinctNestedReturnErrorsStaySeparateWithoutClaimingAnUnrelatedInitializer() throws IOException {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "two_damaged_returns.gd"), """
+                var callback = func(flag):
+                    if flag:
+                        return 1 +
+                    return 2 -
+                    var unrelated = flag is Array[Array[int]]
+                var kept: int = 2
+                """, diagnostics);
+        var variable = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().getFirst());
+        var lambda = assertInstanceOf(LambdaExpression.class, variable.value());
+        var ifStatement = assertInstanceOf(IfStatement.class, lambda.body().statements().getFirst());
+        var first = assertInstanceOf(ReturnStatement.class, ifStatement.body().statements().getFirst());
+        var second = assertInstanceOf(ReturnStatement.class, lambda.body().statements().get(1));
+        var unrelated = assertInstanceOf(VariableDeclaration.class, lambda.body().statements().getLast());
+        assertEquals(3, unit.parseRecoveries().size());
+        assertDamagedReturnRecovery(unit, 0, first, "+");
+        assertDamagedReturnRecovery(unit, 1, second, "-");
+        var independentRecovery = unit.parseRecoveries().getLast();
+        assertSame(unrelated, independentRecovery.owner());
+        assertEquals("variable.initializer", independentRecovery.facet());
+        assertRejectedInitializerWithParserDiagnostics(unit, diagnostics, variable, unit.parseRecoveries().subList(0, 2));
+    }
+
+    @Test
+    void nestedInitializerErrorsFollowTheDamagedValueSlotAndKeepIndependentErrors() throws IOException {
+        var original = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "nested_initializer_slots.gd"), """
+                var callback = func(flag):
+                    var local = 1 +
+                    2 -
+                    if 3 +:
+                        pass
+                    if true:
+                        var in_body = 4 -
+                    var independent = flag is Array[Array[int]]
+                var kept: int = 2
+                """, original);
+        var callback = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().getFirst());
+        var lambda = assertInstanceOf(LambdaExpression.class, callback.value());
+        var statements = lambda.body().statements();
+        assertEquals(5, statements.size());
+        var local = assertInstanceOf(VariableDeclaration.class, statements.getFirst());
+        var expression = assertInstanceOf(ExpressionStatement.class, statements.get(1));
+        var condition = assertInstanceOf(IfStatement.class, statements.get(2));
+        var healthyIf = assertInstanceOf(IfStatement.class, statements.get(3));
+        var inBody = assertInstanceOf(VariableDeclaration.class, healthyIf.body().statements().getFirst());
+        var independent = assertInstanceOf(VariableDeclaration.class, statements.getLast());
+        assertEquals(5, unit.parseRecoveries().size());
+        assertMissingOperandRecovery(unit, 0, local, "variable.initializer", "+");
+        assertMissingOperandRecovery(unit, 1, expression, "expression", "-");
+        assertMissingOperandRecovery(unit, 2, condition, "if.condition", "+");
+        assertMissingOperandRecovery(unit, 3, inBody, "variable.initializer", "-");
+        var independentRecovery = unit.parseRecoveries().getLast();
+        assertSame(independent, independentRecovery.owner());
+        assertEquals("variable.initializer", independentRecovery.facet());
+        assertEquals(DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN, independentRecovery.code());
+        assertRejectedInitializerWithParserDiagnostics(
+                unit, original, callback, unit.parseRecoveries().subList(0, 4));
+    }
+
+    @Test
+    void damagedLambdaValuesKeepTheirExactOwnedRecoveryAcrossControlAndArgumentSlots() throws IOException {
+        var cases = List.of(
+                new LambdaDamageCase("while", "():\n    while 1 +:\n        pass\n",
+                        "while.condition", WhileStatement.class),
+                new LambdaDamageCase("elif", "():\n    if false:\n        pass\n    elif 1 +:\n        pass\n",
+                        "elif.condition", ElifClause.class),
+                new LambdaDamageCase("for", "():\n    for i in 1 +:\n        pass\n",
+                        "for.iterable", ForStatement.class),
+                new LambdaDamageCase("assert_condition", "():\n    assert(1 +, \"msg\")\n",
+                        "assert.condition", AssertStatement.class),
+                new LambdaDamageCase("assert_message", "():\n    assert(true, 1 +)\n",
+                        "assert.message", AssertStatement.class),
+                new LambdaDamageCase("match_subject", "():\n    match 1 +:\n        _:\n            pass\n",
+                        "match.value", MatchStatement.class),
+                new LambdaDamageCase("match_guard", "():\n    match 1:\n        _ when 2 +:\n            pass\n",
+                        "match.guard", MatchSection.class),
+                new LambdaDamageCase("match_pattern", "():\n    match 1:\n        2 +:\n            pass\n",
+                        "match.pattern", MatchSection.class),
+                new LambdaDamageCase("multiple_patterns", "():\n    match 1:\n        2 +, 3 -:\n            pass\n",
+                        "match.pattern", MatchSection.class, List.of("+", "-")),
+                new LambdaDamageCase("match_dict_key", "():\n    match {}:\n        {1 +: _}:\n            pass\n",
+                        "match.pattern", MatchSection.class),
+                new LambdaDamageCase("lambda_default", "(x = 1 +):\n    pass\n",
+                        "parameter.default", Parameter.class),
+                new LambdaDamageCase("nested_lambda_default", "():\n    var cb = func(x = 1 +):\n        pass\n",
+                        "parameter.default", Parameter.class),
+                new LambdaDamageCase("annotation_argument", "():\n    @warning_ignore(1 +)\n    var x: int = 2\n",
+                        "annotation.arguments", AnnotationStatement.class),
+                new LambdaDamageCase("multiple_annotation_arguments",
+                        "():\n    @warning_ignore(1 +, 2 -)\n    var x: int = 2\n",
+                        "annotation.arguments", AnnotationStatement.class, List.of("+", "-"))
+        );
+        var parser = new GdScriptParserService();
+        for (var fixture : cases) {
+            var original = new DiagnosticManager();
+            var unit = parser.parseUnit(Path.of("tmp", fixture.name() + ".gd"),
+                    "var callback = func" + fixture.lambdaTail() + "var kept: int = 2\n", original);
+            var callback = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().getFirst());
+            assertEquals(fixture.operators().size(), unit.parseRecoveries().size(), fixture.name());
+            var owner = assertInstanceOf(fixture.ownerType(), unit.parseRecoveries().getFirst().owner(), fixture.name());
+            assertTrue(containsNode(callback, owner), fixture.name());
+            for (var index = 0; index < fixture.operators().size(); index++) {
+                assertMissingOperandRecovery(unit, index, owner, fixture.facet(), fixture.operators().get(index));
+            }
+            assertRejectedInitializerWithParserDiagnostics(unit, original, callback, unit.parseRecoveries());
+        }
+    }
+
+    @Test
+    void oneRetainedRecoveryCannotCoverTwoBrokenPatternsInTheSameSection() throws IOException {
+        var parsedDiagnostics = new DiagnosticManager();
+        var parsed = new GdScriptParserService().parseUnit(Path.of("tmp", "partial_pattern_recoveries.gd"), """
+                var callback = func():
+                    match 1:
+                        2 +, 3 -:
+                            pass
+                var kept: int = 2
+                """, parsedDiagnostics);
+        var callback = assertInstanceOf(VariableDeclaration.class, parsed.ast().statements().getFirst());
+        var lambda = assertInstanceOf(LambdaExpression.class, callback.value());
+        var match = assertInstanceOf(MatchStatement.class, lambda.body().statements().getFirst());
+        var section = match.sections().getFirst();
+        assertEquals(2, section.patterns().size());
+        assertEquals(2, parsed.parseRecoveries().size());
+        assertMissingOperandRecovery(parsed, 0, section, "match.pattern", "+");
+        assertMissingOperandRecovery(parsed, 1, section, "match.pattern", "-");
+        assertEachSharedRecoveryAloneLeavesASiblingUncovered(parsed, parsedDiagnostics, callback);
+    }
+
+    @Test
+    void oneRetainedRecoveryCannotCoverTwoBrokenAnnotationArguments() throws IOException {
+        var parsedDiagnostics = new DiagnosticManager();
+        var parsed = new GdScriptParserService().parseUnit(Path.of("tmp", "partial_annotation_arguments.gd"), """
+                var callback = func():
+                    @warning_ignore(1 +, 2 -)
+                    var x: int = 2
+                var kept: int = 2
+                """, parsedDiagnostics);
+        var callback = assertInstanceOf(VariableDeclaration.class, parsed.ast().statements().getFirst());
+        var lambda = assertInstanceOf(LambdaExpression.class, callback.value());
+        var annotation = assertInstanceOf(AnnotationStatement.class, lambda.body().statements().getFirst());
+        assertEquals(2, annotation.arguments().size());
+        assertEquals(2, parsed.parseRecoveries().size());
+        assertMissingOperandRecovery(parsed, 0, annotation, "annotation.arguments", "+");
+        assertMissingOperandRecovery(parsed, 1, annotation, "annotation.arguments", "-");
+        assertEachSharedRecoveryAloneLeavesASiblingUncovered(parsed, parsedDiagnostics, callback);
+    }
+
+    private static void assertEachSharedRecoveryAloneLeavesASiblingUncovered(
+            FrontendSourceUnit parsed, DiagnosticManager parsedDiagnostics, VariableDeclaration callback
+    ) throws IOException {
+        var parsedErrors = parsedDiagnostics.snapshot().asList();
+        for (var index : List.of(0, 1)) {
+            var retained = List.of(parsed.parseRecoveries().get(index));
+            var original = new DiagnosticManager();
+            original.report(parsedErrors.get(index));
+            var partial = new FrontendSourceUnit(parsed.path(), parsed.source(), parsed.ast(), false, retained);
+            assertRejectedInitializerDiagnostics(partial, original, callback, retained, true);
+        }
+    }
+
+    @Test
+    void sharedPatternRecoveriesKeepAllErrorsInADamagedChildButDoNotClaimItsHealthySibling() throws IOException {
+        var original = new DiagnosticManager();
+        var parsed = new GdScriptParserService().parseUnit(Path.of("tmp", "pattern_recovery_ranges.gd"), """
+                var callback = func():
+                    match 1:
+                        [2 +, 3 -], 4:
+                            pass
+                var kept: int = 2
+                """, original);
+        var callback = assertInstanceOf(VariableDeclaration.class, parsed.ast().statements().getFirst());
+        var lambda = assertInstanceOf(LambdaExpression.class, callback.value());
+        var match = assertInstanceOf(MatchStatement.class, lambda.body().statements().getFirst());
+        var section = match.sections().getFirst();
+        assertEquals(2, parsed.parseRecoveries().size());
+        assertMissingOperandRecovery(parsed, 0, section, "match.pattern", "+");
+        assertMissingOperandRecovery(parsed, 1, section, "match.pattern", "-");
+        var damaged = FrontendRange.fromAstRange(section.patterns().getFirst().range());
+        var healthy = FrontendRange.fromAstRange(section.patterns().getLast().range());
+        assertNotNull(damaged);
+        assertNotNull(healthy);
+        assertTrue(damaged.endByte() < healthy.startByte());
+        var edge = new FrontendRange(damaged.endByte(), damaged.endByte(), damaged.end(), damaged.end());
+        var separator = new FrontendRange(damaged.endByte(), healthy.startByte(), damaged.end(), healthy.start());
+        var atEnd = patternRecovery(section, edge, "missing token at the damaged pattern edge");
+        var between = patternRecovery(section, separator, "separator does not belong to a pattern");
+        var other = patternRecovery(section, healthy, "independent issue in the healthy pattern");
+        var noRange = patternRecovery(section, null, "issue without a parser range");
+        var retained = List.of(parsed.parseRecoveries().getFirst(), parsed.parseRecoveries().getLast(), atEnd);
+        var all = List.of(retained.getFirst(), retained.get(1), atEnd, between, other, noRange);
+        for (var recovery : List.of(atEnd, between, other, noRange)) {
+            original.report(parserDiagnostic(parsed, recovery));
+        }
+        var unit = new FrontendSourceUnit(parsed.path(), parsed.source(), parsed.ast(), false, all);
+        assertRejectedInitializerWithParserDiagnostics(unit, original, callback, retained);
+    }
+
+    @Test
+    void zeroWidthRecoveryAtATouchingPatternBoundaryRemainsIndependent() throws IOException {
+        var parserDiagnostics = new DiagnosticManager();
+        var parsed = new GdScriptParserService().parseUnit(Path.of("tmp", "touching_patterns.gd"), """
+                var callback = func():
+                    match 1:
+                        2 +:
+                            pass
+                var kept: int = 2
+                """, parserDiagnostics);
+        var sourceCallback = assertInstanceOf(VariableDeclaration.class, parsed.ast().statements().getFirst());
+        var lambda = assertInstanceOf(LambdaExpression.class, sourceCallback.value());
+        var match = assertInstanceOf(MatchStatement.class, lambda.body().statements().getFirst());
+        var section = match.sections().getFirst();
+        var binary = assertInstanceOf(BinaryExpression.class, section.patterns().getFirst());
+        var operand = assertInstanceOf(ErrorExpression.class, binary.right());
+        assertEquals(binary.range().endByte(), operand.range().startByte());
+        assertEquals(operand.range().startByte(), operand.range().endByte());
+        var adjacent = new ErrorExpression(CstIssueKind.MISSING, "match.pattern", "", operand.range());
+        var newSection = new MatchSection(List.of(binary, adjacent), section.guard(), section.body(), section.range());
+        var newMatch = new MatchStatement(match.value(), List.of(newSection), match.range());
+        var newBody = new Block(List.of(newMatch), lambda.body().range());
+        var newLambda = new LambdaExpression(lambda.name(), lambda.parameters(), lambda.returnType(), newBody, lambda.range());
+        var callback = new VariableDeclaration(sourceCallback.kind(), sourceCallback.name(), sourceCallback.type(), newLambda,
+                sourceCallback.isStatic(), sourceCallback.sourceNodeType(), sourceCallback.range());
+        var tree = new SourceFile(List.of(callback, parsed.ast().statements().getLast()), parsed.ast().range());
+        var former = parsed.parseRecoveries().getFirst();
+        var first = new FrontendParseRecovery(former.code(), former.severity(), former.message(), former.range(),
+                newSection, former.facet());
+        var ambiguous = patternRecovery(newSection, FrontendRange.fromAstRange(adjacent.range()), "ambiguous shared edge");
+        var unit = new FrontendSourceUnit(parsed.path(), parsed.source(), tree, false, List.of(first, ambiguous));
+        var original = new DiagnosticManager();
+        original.reportAll(List.of(parserDiagnostic(unit, first), parserDiagnostic(unit, ambiguous)));
+        assertRejectedInitializerDiagnostics(unit, original, callback, List.of(first), true);
+    }
+
+    private static FrontendParseRecovery patternRecovery(
+            MatchSection section, @Nullable FrontendRange range, String message
+    ) {
+        return new FrontendParseRecovery(DiagnosticCodes.SLOT_MATCH_PATTERN, FrontendDiagnosticSeverity.ERROR,
+                message, range, section, "match.pattern");
+    }
+
+    private static FrontendDiagnostic parserDiagnostic(FrontendSourceUnit unit, FrontendParseRecovery recovery) {
+        return FrontendDiagnostic.error(recovery.code(), recovery.message(),
+                FrontendDiagnostic.sourcePathText(unit.path()), recovery.range());
+    }
+
+    @Test
+    void assertDelimiterErrorStaysIndependentFromTheDamagedConditionOnTheSameOwner() throws IOException {
+        var original = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "damaged_assert_delimiter.gd"), """
+                var callback = func():
+                    assert 1 +
+                var kept: int = 2
+                """, original);
+        var callback = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().getFirst());
+        var lambda = assertInstanceOf(LambdaExpression.class, callback.value());
+        var assertion = assertInstanceOf(AssertStatement.class, lambda.body().statements().getFirst());
+        assertEquals(2, unit.parseRecoveries().size());
+        var delimiter = unit.parseRecoveries().getFirst();
+        assertSame(assertion, delimiter.owner());
+        assertEquals("assert.arguments", delimiter.facet());
+        assertEquals(DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN, delimiter.code());
+        assertEquals("assert", unit.source().substring(delimiter.range().startByte(), delimiter.range().endByte()));
+        assertMissingOperandRecovery(unit, 1, assertion, "assert.condition", "+");
+        assertRejectedInitializerWithParserDiagnostics(
+                unit, original, callback, List.of(unit.parseRecoveries().getLast()));
+    }
+
+    private record LambdaDamageCase(
+            String name, String lambdaTail, String facet, Class<? extends Node> ownerType, List<String> operators
+    ) {
+        private LambdaDamageCase(String name, String lambdaTail, String facet, Class<? extends Node> ownerType) {
+            this(name, lambdaTail, facet, ownerType, List.of("+"));
+        }
+    }
+
+    private static boolean containsNode(Node node, Node expected) {
+        if (node == expected) {
+            return true;
+        }
+        for (var child : node.getChildren()) {
+            if (containsNode(child, expected)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Test
+    void missingRecoveryForAnotherDamagedSlotKeepsTheSkeletonFallback() throws IOException {
+        var parsedDiagnostics = new DiagnosticManager();
+        var parsedUnit = new GdScriptParserService().parseUnit(Path.of("tmp", "unowned_initializer_slot.gd"), """
+                var callback = func():
+                    if true:
+                        var local = 1 +
+                    match 2:
+                        _ when 3 -:
+                            pass
+                var kept: int = 2
+                """, parsedDiagnostics);
+        var callback = assertInstanceOf(VariableDeclaration.class, parsedUnit.ast().statements().getFirst());
+        var lambda = assertInstanceOf(LambdaExpression.class, callback.value());
+        var healthyIf = assertInstanceOf(IfStatement.class, lambda.body().statements().getFirst());
+        var local = assertInstanceOf(VariableDeclaration.class, healthyIf.body().statements().getFirst());
+        var match = assertInstanceOf(MatchStatement.class, lambda.body().statements().getLast());
+        var section = match.sections().getFirst();
+        assertEquals(2, parsedUnit.parseRecoveries().size());
+        assertMissingOperandRecovery(parsedUnit, 0, local, "variable.initializer", "+");
+        assertMissingOperandRecovery(parsedUnit, 1, section, "match.guard", "-");
+        // Keep the damaged guard but simulate a caller that has only the local initializer recovery.
+        var retained = parsedUnit.parseRecoveries().getFirst();
+        var unit = new FrontendSourceUnit(
+                parsedUnit.path(), parsedUnit.source(), parsedUnit.ast(), false, List.of(retained));
+        var expectedParserError = parsedDiagnostics.snapshot().asList().getFirst();
+        var original = new DiagnosticManager();
+        original.report(expectedParserError);
+        var api = ExtensionApiLoader.loadDefault();
+        for (var live : List.of(original, new DiagnosticManager())) {
+            var data = new FrontendSemanticAnalyzer().analyze(
+                    FrontendModule.singleUnit("test", unit), new ClassRegistry(api), live);
+            var errors = live.snapshot().asList();
+            assertEquals(2, errors.size());
+            assertEquals(expectedParserError, errors.getFirst());
+            assertEquals("sema.class_skeleton", errors.getLast().category());
+            assertEquals(FrontendRange.fromAstRange(callback.range()), errors.getLast().range());
+            assertEquals(1, data.claimedParseRecoveries().size());
+            assertEquals(expectedParserError, data.claimedParseRecoveries().get(retained));
+            assertTrue(data.skippedSubtreeRoots().containsKey(callback));
+            assertEquals(List.of("kept"), data.moduleSkeleton().sourceClassRelations().getFirst().classDef()
+                    .getProperties().stream().map(PropertyDef::getName).toList());
+        }
+    }
+
+    @Test
+    void damagedClassConstantInitializerRetainsItsReturnErrorWithoutASkeletonEcho() throws IOException {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "damaged_lambda_constant.gd"), """
+                const CALLBACK = func():
+                    return 1 +
+                const KEPT = 2
+                var kept: int = 2
+                """, diagnostics);
+        var constant = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().getFirst());
+        var lambda = assertInstanceOf(LambdaExpression.class, constant.value());
+        var damaged = assertInstanceOf(ReturnStatement.class, lambda.body().statements().getFirst());
+        assertEquals(1, unit.parseRecoveries().size());
+        assertDamagedReturnRecovery(unit, 0, damaged, "+");
+        assertRejectedInitializerWithParserDiagnostics(unit, diagnostics, constant, unit.parseRecoveries());
+    }
+
+    private static void assertDamagedReturnRecovery(
+            FrontendSourceUnit unit, int index, ReturnStatement owner, String operator
+    ) {
+        assertMissingOperandRecovery(unit, index, owner, "return.value", operator);
+    }
+
+    private static void assertMissingOperandRecovery(
+            FrontendSourceUnit unit, int index, Node owner, String facet, String operator
+    ) {
+        var recovery = unit.parseRecoveries().get(index);
+        assertSame(owner, recovery.owner());
+        assertEquals(facet, recovery.facet());
+        assertEquals(DiagnosticCodes.SLOT_BINARY_RIGHT, recovery.code());
+        assertEquals(operator, unit.source().substring(recovery.range().startByte(), recovery.range().endByte()));
+    }
+
+    private static void assertRejectedInitializerWithParserDiagnostics(
+            FrontendSourceUnit unit, DiagnosticManager original, VariableDeclaration rejected,
+            List<FrontendParseRecovery> coveredRecoveries
+    ) throws IOException {
+        assertRejectedInitializerDiagnostics(unit, original, rejected, coveredRecoveries, false);
+    }
+
+    private static void assertRejectedInitializerDiagnostics(
+            FrontendSourceUnit unit, DiagnosticManager original, VariableDeclaration rejected,
+            List<FrontendParseRecovery> coveredRecoveries, boolean wantsSkeletonFallback
+    ) throws IOException {
+        var parsed = original.snapshot().asList();
+        assertEquals(unit.parseRecoveries().size(), parsed.size());
+        var kept = assertInstanceOf(VariableDeclaration.class, unit.ast().statements().getLast());
+        var api = ExtensionApiLoader.loadDefault();
+        for (var active : List.of(original, new DiagnosticManager())) {
+            var data = new FrontendSemanticAnalyzer().analyze(
+                    FrontendModule.singleUnit("test", unit), new ClassRegistry(api), active);
+            var owner = data.moduleSkeleton().sourceClassRelations().getFirst().classDef();
+            assertEquals(List.of("kept"), owner.getProperties().stream().map(PropertyDef::getName).toList());
+            if (rejected.name().equals("CALLBACK")) {
+                assertEquals(List.of("KEPT"), owner.getScriptConstants().stream().map(GdScriptClassConstant::name).toList());
+            }
+            assertTrue(data.skippedSubtreeRoots().containsKey(rejected));
+            assertFalse(data.scopesByAst().containsKey(rejected));
+            assertTrue(data.scopesByAst().containsKey(kept));
+            var errors = active.snapshot().asList();
+            assertEquals(parsed.size() + (wantsSkeletonFallback ? 1 : 0), errors.size(), errors::toString);
+            var fallbacks = errors.stream().filter(error -> error.category().equals("sema.class_skeleton")).toList();
+            if (wantsSkeletonFallback) {
+                assertEquals(1, fallbacks.size());
+                assertEquals(FrontendRange.fromAstRange(rejected.range()), fallbacks.getFirst().range());
+            } else {
+                assertTrue(fallbacks.isEmpty());
+            }
+            var parserErrors = errors.stream().filter(error -> error.category().startsWith("parse.")).toList();
+            assertEquals(Set.copyOf(parsed), Set.copyOf(parserErrors));
+            assertEquals(coveredRecoveries.size(), data.claimedParseRecoveries().size());
+            for (var index = 0; index < unit.parseRecoveries().size(); index++) {
+                var recovery = unit.parseRecoveries().get(index);
+                var claim = data.claimedParseRecoveries().get(recovery);
+                if (coveredRecoveries.stream().anyMatch(covered -> recovery == covered)) {
+                    assertEquals(parsed.get(index), claim);
+                } else {
+                    assertNull(claim);
+                }
+            }
+        }
+    }
+
+    @Test
+    void depthPlaceholderNeverReportsMissingClassNameInEitherManager() throws IOException {
+        var source = new StringBuilder("var kept: int = 1\n");
+        for (var nesting = 0; nesting < 263; nesting++) {
+            source.repeat("    ", nesting).append("class Deep:\n");
+        }
+        source.repeat("    ", 263).append("pass\n");
+        var original = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "deep_classes.gd"), source.toString(), original);
+        var parsed = original.snapshot().asList();
+        assertEquals(1, parsed.size());
+        assertEquals(DiagnosticCodes.NESTING_DEPTH_EXCEEDED, parsed.getFirst().category());
+        var api = ExtensionApiLoader.loadDefault();
+        for (var active : List.of(original, new DiagnosticManager())) {
+            var data = new FrontendSemanticAnalyzer().analyze(
+                    FrontendModule.singleUnit("test", unit), new ClassRegistry(api), active);
+            var relation = data.moduleSkeleton().sourceClassRelations().getFirst();
+            assertEquals(parsed, active.snapshot().asList());
+            assertTrue(data.claimedParseRecoveries().isEmpty());
+            assertTrue(data.skippedSubtreeRoots().keySet().stream().anyMatch(node ->
+                    node instanceof ClassDeclaration declaration && declaration.name() == null));
+            assertEquals(GdIntType.INT, findPropertyByName(relation.classDef(), "kept").getType());
+        }
+    }
+
+    @Test
+    void damagedSignatureSlotsDoNotEraseIntSiblingsOrFunctionBody() throws IOException {
+        var original = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "damaged_signature.gd"), """
+                signal changed(broken: Array[Array[int]], kept: int)
+                func ping(x:, y: int) -> Array[Array[int]]:
+                    return y
+                """, original);
+        var function = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getLast());
+        var parsed = original.snapshot().asList();
+        assertEquals(3, parsed.size());
+        var api = ExtensionApiLoader.loadDefault();
+        for (var active : List.of(original, new DiagnosticManager())) {
+            var data = new FrontendSemanticAnalyzer().analyze(
+                    FrontendModule.singleUnit("test", unit), new ClassRegistry(api), active);
+            var classDef = data.moduleSkeleton().sourceClassRelations().getFirst().classDef();
+            var signal = findSignalByName(classDef, "changed");
+            var ping = findFunctionByName(classDef, "ping");
+            assertEquals(GdVariantType.VARIANT, signal.getParameter(0).getType());
+            assertEquals(GdIntType.INT, signal.getParameter(1).getType());
+            assertEquals(GdVariantType.VARIANT, ping.getParameter(0).getType());
+            assertEquals(GdIntType.INT, ping.getParameter(1).getType());
+            assertEquals(GdVariantType.VARIANT, ping.getReturnType());
+            assertTrue(data.scopesByAst().containsKey(function.body()));
+            assertFalse(data.skippedSubtreeRoots().containsKey(function));
+            assertEquals(3, data.claimedParseRecoveries().size());
+            if (active == original) {
+                assertEquals(parsed, active.snapshot().asList());
+            } else {
+                assertEquals(List.of("sema.type_resolution", "sema.type_resolution", "sema.type_resolution"),
+                        active.snapshot().asList().stream().map(FrontendDiagnostic::category).toList());
+            }
+        }
     }
 
     @Test
@@ -873,7 +1433,7 @@ class FrontendClassSkeletonTest {
         var inner = findClassByName(result.allClassDefs(), "DuplicateInitConstructor__sub__Inner");
 
         assertEquals(List.of("_init", "ping"), topLevel.getFunctions().stream()
-                .map(function -> function.getName())
+                .map(LirFunctionDef::getName)
                 .toList());
         var topLevelInit = findFunctionByName(topLevel, "_init");
         assertEquals(1, topLevelInit.getParameterCount());
@@ -890,7 +1450,7 @@ class FrontendClassSkeletonTest {
     }
 
     @Test
-    void phase3PublishesAcceptedTopLevelAndInnerShellsBeforeMemberFilling() throws Exception {
+    void buildResolvesMemberTypesAgainstLaterTopLevelAndInnerClasses() throws Exception {
         var parserService = new GdScriptParserService();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var builder = new FrontendClassSkeletonBuilder();
@@ -900,64 +1460,41 @@ class FrontendClassSkeletonTest {
                 class_name Phase3Probe
                 extends Node
                 
-                signal changed()
+                signal changed(target: LaterScript)
                 
                 func _init(seed: int):
                     pass
                 
+                func create(target: LaterScript) -> Inner:
+                    pass
+
                 class Inner:
                     var hp: int = 1
+                    var outer: Phase3Probe
                     func _init():
                         pass
                     func ping():
                         pass
                 """, diagnostics);
+        var later = parserService.parseUnit(Path.of("tmp", "later_script.gd"), """
+                class_name LaterScript
+                extends RefCounted
+                var peer: Phase3Probe
+                """, diagnostics);
+        assertTrue(diagnostics.isEmpty());
+        var result = builder.build(new FrontendModule("phase3_probe_module", List.of(unit, later)),
+                registry, diagnostics, analysisData);
+        assertTrue(result.diagnostics().isEmpty(), result.diagnostics()::toString);
 
-        var discovery = invokeBuilderMethod(
-                builder,
-                "discoverModuleClassHeaders",
-                new Class<?>[]{FrontendModule.class, ClassRegistry.class, DiagnosticManager.class},
-                new FrontendModule("phase3_probe_module", List.of(unit)),
-                registry,
-                diagnostics
-        );
-        @SuppressWarnings("unchecked")
-        var sourceUnitGraphs = (List<Object>) invokeAccessor(discovery, "sourceUnitGraphs");
-        var shellContext = newSkeletonBuildContext(registry, diagnostics, unit.path(), analysisData, Map.of());
-        var shellRelations = new ArrayList<FrontendSourceClassRelation>();
-        for (var sourceUnitGraph : sourceUnitGraphs) {
-            if (invokeAccessor(sourceUnitGraph, "topLevelHeader") == null) {
-                continue;
-            }
-            shellRelations.add((FrontendSourceClassRelation) invokeBuilderMethod(
-                    builder,
-                    "buildSourceClassRelationShell",
-                    new Class<?>[]{sourceUnitGraph.getClass(), shellContext.getClass()},
-                    sourceUnitGraph,
-                    shellContext
-            ));
-        }
-
-        assertEquals(1, shellRelations.size());
-        var shellRelation = shellRelations.getFirst();
-        assertTrue(shellRelation.topLevelClassDef().getSignals().isEmpty());
-        assertTrue(shellRelation.topLevelClassDef().getProperties().isEmpty());
-        assertTrue(shellRelation.topLevelClassDef().getFunctions().isEmpty());
-        assertEquals(1, shellRelation.innerClassRelations().size());
-        var innerShell = shellRelation.innerClassRelations().getFirst().classDef();
-        assertTrue(innerShell.getSignals().isEmpty());
-        assertTrue(innerShell.getProperties().isEmpty());
-        assertTrue(innerShell.getFunctions().isEmpty());
-
-        invokeBuilderMethod(
-                builder,
-                "publishClassShells",
-                new Class<?>[]{List.class, ClassRegistry.class},
-                shellRelations,
-                registry
-        );
-        assertNotNull(registry.findGdccClass("Phase3Probe"));
-        assertNotNull(registry.findGdccClass("Phase3Probe__sub__Inner"));
+        var outerRelation = result.sourceClassRelations().getFirst();
+        assertSame(unit, outerRelation.unit());
+        assertEquals(1, outerRelation.innerClassRelations().size());
+        var outer = outerRelation.topLevelClassDef();
+        var inner = outerRelation.innerClassRelations().getFirst().classDef();
+        var laterClass = result.sourceClassRelations().getLast().topLevelClassDef();
+        assertSame(outer, registry.findGdccClass("Phase3Probe"));
+        assertSame(inner, registry.findGdccClass("Phase3Probe__sub__Inner"));
+        assertSame(laterClass, registry.findGdccClass("LaterScript"));
         assertNull(registry.findGdccClassSourceNameOverride("Phase3Probe"));
         assertEquals("Inner", registry.findGdccClassSourceNameOverride("Phase3Probe__sub__Inner"));
 
@@ -966,31 +1503,24 @@ class FrontendClassSkeletonTest {
         assertEquals("Phase3Probe__sub__Inner", innerTypeMeta.canonicalName());
         assertEquals("Inner", innerTypeMeta.sourceName());
 
-        invokeBuilderMethod(
-                builder,
-                "fillSourceClassRelationMembers",
-                new Class<?>[]{FrontendSourceClassRelation.class, shellContext.getClass(), List.class, Map.class, Map.class},
-                shellRelation,
-                shellContext,
-                new ArrayList<>(),
-                Map.of(
-                        shellRelation.canonicalName(), shellRelation,
-                        shellRelation.innerClassRelations().getFirst().canonicalName(),
-                        shellRelation.innerClassRelations().getFirst()
-                ),
-                new LinkedHashMap<>()
-        );
-        assertEquals("changed", shellRelation.topLevelClassDef().getSignals().getFirst().getName());
-        assertEquals("_init", shellRelation.topLevelClassDef().getFunctions().getFirst().getName());
-        assertEquals("hp", innerShell.getProperties().getFirst().getName());
-        assertEquals(List.of("_init", "ping"), innerShell.getFunctions().stream()
-                .map(function -> function.getName())
+        var signal = outer.getSignals().getFirst();
+        assertEquals("changed", signal.getName());
+        assertObjectTypeName(signal.getParameters().getFirst().getType(), "LaterScript");
+        assertEquals(GdIntType.INT, findFunctionByName(outer, "_init").getParameters().getFirst().getType());
+        var create = findFunctionByName(outer, "create");
+        assertObjectTypeName(create.getParameters().getFirst().getType(), "LaterScript");
+        assertObjectTypeName(create.getReturnType(), "Phase3Probe__sub__Inner");
+        assertEquals(GdIntType.INT, findPropertyByName(inner, "hp").getType());
+        assertObjectTypeName(findPropertyByName(inner, "outer").getType(), "Phase3Probe");
+        assertObjectTypeName(findPropertyByName(laterClass, "peer").getType(), "Phase3Probe");
+        assertEquals(List.of("_init", "ping"), inner.getFunctions().stream()
+                .map(LirFunctionDef::getName)
                 .toList());
     }
 
     /// Verifies the shared parse->skeleton pipeline keeps the original parse diagnostics exactly
-    /// once. Parse diagnostics live only in the shared manager, so the builder must not invent
-    /// an extra diagnostic source or duplicate what parse already published earlier.
+    /// once. The builder must not duplicate either the attributed signature recovery or the
+    /// separate unexpected token reported without an owner.
     @Test
     void buildKeepsSharedParseDiagnosticsWithoutDuplicatingThem() throws IOException {
         var parserService = new GdScriptParserService();
@@ -1019,8 +1549,28 @@ class FrontendClassSkeletonTest {
         assertEquals("BrokenSharedPipeline", classDef.getName());
         assertEquals(diagnostics.snapshot(), result.diagnostics());
         assertEquals(parseSnapshot, result.diagnostics());
-        assertEquals(parseSnapshot.size(), result.diagnostics().size());
-        assertTrue(result.diagnostics().asList().stream().allMatch(diagnostic -> diagnostic.category().equals("parse.lowering")));
+        assertEquals(2, parseSnapshot.size());
+        assertEquals(2, unit.parseRecoveries().size());
+        var missingCloser = unit.parseRecoveries().getFirst();
+        var unexpectedIndent = unit.parseRecoveries().getLast();
+        var function = findStatement(unit.ast().statements(), FunctionDeclaration.class, f -> f.name().equals("_ready"));
+        assertSame(function, missingCloser.owner());
+        assertEquals("function.signature", missingCloser.facet());
+        assertEquals(DiagnosticCodes.MISSING_CLOSER_PARAMETER_LIST, missingCloser.code());
+        assertEquals(FrontendRange.fromAstRange(function.range()).end(), missingCloser.range().start());
+        assertEquals(missingCloser.range().startByte(), missingCloser.range().endByte());
+        assertNull(unexpectedIndent.owner());
+        assertNull(unexpectedIndent.facet());
+        assertEquals(DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN, unexpectedIndent.code());
+        assertEquals(unit.source().indexOf("    pass"), unexpectedIndent.range().startByte());
+        assertEquals(unit.source().indexOf("pass"), unexpectedIndent.range().endByte());
+        var path = FrontendDiagnostic.sourcePathText(unit.path());
+        assertEquals(FrontendDiagnostic.error(DiagnosticCodes.MISSING_CLOSER_PARAMETER_LIST,
+                "Expected closing \")\" after function parameters.", path, missingCloser.range()),
+                parseSnapshot.asList().getFirst());
+        assertEquals(FrontendDiagnostic.error(DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN,
+                "Unexpected \"Indent\" in class body.", path, unexpectedIndent.range()),
+                parseSnapshot.asList().getLast());
     }
 
     @Test
@@ -1759,50 +2309,6 @@ class FrontendClassSkeletonTest {
     private void assertObjectTypeName(GdType type, String expectedTypeName) {
         var objectType = assertInstanceOf(GdObjectType.class, type);
         assertEquals(new GdObjectType(expectedTypeName), objectType);
-    }
-
-    private Object newSkeletonBuildContext(
-            ClassRegistry classRegistry,
-            DiagnosticManager diagnostics,
-            Path sourcePath,
-            FrontendAnalysisData analysisData,
-            Map<String, String> moduleTopLevelCanonicalNameMap
-    ) throws Exception {
-        var contextClass = Class.forName(
-                "gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder$SkeletonBuildContext"
-        );
-        var constructor = contextClass.getDeclaredConstructor(
-                ClassRegistry.class,
-                DiagnosticManager.class,
-                Path.class,
-                FrontendAnalysisData.class,
-                Map.class
-        );
-        constructor.setAccessible(true);
-        return constructor.newInstance(
-                classRegistry,
-                diagnostics,
-                sourcePath,
-                analysisData,
-                moduleTopLevelCanonicalNameMap
-        );
-    }
-
-    private Object invokeBuilderMethod(
-            FrontendClassSkeletonBuilder builder,
-            String methodName,
-            Class<?>[] parameterTypes,
-            Object... args
-    ) throws Exception {
-        var method = FrontendClassSkeletonBuilder.class.getDeclaredMethod(methodName, parameterTypes);
-        method.setAccessible(true);
-        return method.invoke(builder, args);
-    }
-
-    private Object invokeAccessor(Object target, String methodName) throws Exception {
-        var method = target.getClass().getDeclaredMethod(methodName);
-        method.setAccessible(true);
-        return method.invoke(target);
     }
 
     private <T extends Statement> T findStatement(

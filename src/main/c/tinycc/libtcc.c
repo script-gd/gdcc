@@ -623,7 +623,7 @@ static void tcc_split_path(TCCState *s, void *p_ary, int *p_nb_ary, const char *
 #define WARN_NOE 4 /* warning is not an error (-Wno-error=option) */
 
 /* error1() modes */
-enum { ERROR_WARN, ERROR_NOABORT, ERROR_ERROR };
+enum { ERROR_WARN, ERROR_NOABORT, ERROR_ERROR, ERROR_WARN_DEFERRED };
 
 static void error1(int mode, const char *fmt, va_list ap)
 {
@@ -634,7 +634,9 @@ static void error1(int mode, const char *fmt, va_list ap)
 
     tcc_exit_state(s1);
 
-    if (mode == ERROR_WARN) {
+    if (mode == ERROR_WARN_DEFERRED) {
+        mode = ERROR_WARN; /* warning switches were applied when the option was parsed */
+    } else if (mode == ERROR_WARN) {
         if (s1->warn_error)
             mode = ERROR_ERROR;
         if (s1->warn_num) {
@@ -732,6 +734,54 @@ PUB_FUNC void _tcc_warning(const char *fmt, ...)
     va_end(ap);
 }
 
+#ifdef TCC_GDCC_NOEXECSTACK
+enum { NOEXECSTACK_QUIET, NOEXECSTACK_WARN, NOEXECSTACK_ERROR, NOEXECSTACK_REPORTED_ERROR };
+
+static void tcc_warn_deferred(TCCState *s1, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    tcc_enter_state(s1);
+    error1(ERROR_WARN_DEFERRED, fmt, ap);
+    va_end(ap);
+}
+
+/* Called only once it is known that the output does not support the option. */
+ST_FUNC int tcc_check_noexecstack_option(TCCState *s1)
+{
+    static const char message[] = "unsupported linker option '%s'";
+    switch (s1->noexecstack_diagnostic) {
+    case NOEXECSTACK_ERROR:
+        s1->noexecstack_diagnostic = NOEXECSTACK_REPORTED_ERROR;
+        return tcc_error_noabort(message, s1->noexecstack_option);
+    case NOEXECSTACK_REPORTED_ERROR:
+        return -1;
+    case NOEXECSTACK_WARN:
+        s1->noexecstack_diagnostic = NOEXECSTACK_QUIET;
+        tcc_warn_deferred(s1, message, s1->noexecstack_option);
+        break;
+    }
+    return 0;
+}
+
+static int tcc_set_noexecstack_option(TCCState *s1, const char *opt)
+{
+    int level = NOEXECSTACK_QUIET;
+    int warn = s1->warn_unsupported;
+    if (!s1->warn_none && (warn & WARN_ON)) {
+        level = NOEXECSTACK_WARN;
+        if (!(warn & WARN_NOE) && ((warn & WARN_ERR) || s1->warn_error))
+            level = NOEXECSTACK_ERROR;
+    }
+    if (!s1->noexecstack_option || level > s1->noexecstack_diagnostic) {
+        s1->noexecstack_option = opt;
+        s1->noexecstack_diagnostic = level;
+    }
+    if (s1->output_type_set && s1->output_type != TCC_OUTPUT_DLL)
+        return tcc_check_noexecstack_option(s1);
+    return 0;
+}
+#endif
 
 /********************************************************/
 /* I/O layer */
@@ -969,6 +1019,11 @@ LIBTCCAPI int tcc_set_output_type(TCCState *s, int output_type)
         output_type |= TCC_OUTPUT_DYN;
 #endif
     s->output_type = output_type;
+#ifdef TCC_GDCC_NOEXECSTACK
+    s->output_type_set = 1;
+    if (output_type != TCC_OUTPUT_DLL && tcc_check_noexecstack_option(s) < 0)
+        return -1;
+#endif
 
     if (!s->nostdinc) {
         /* default include paths */
@@ -1519,7 +1574,15 @@ static int tcc_set_linker(TCCState *s, const char *optarg)
         } else if (link_option(&o, "O")) {
             ignoring = 1;
         } else if (link_option(&o, "z=")) {
-            ignoring = 1;
+#ifdef TCC_GDCC_NOEXECSTACK
+            if (!strcmp(o.arg, "noexecstack")) {
+                if (tcc_set_noexecstack_option(s, o.opt) < 0) {
+                    ++s->link_optind;
+                    return -1;
+                }
+            } else
+#endif
+                ignoring = 1;
         } else if (link_option(&o, "L:")) {
             tcc_add_library_path(s, o.arg);
         } else if (link_option(&o, "l:")) {
@@ -2201,8 +2264,14 @@ unsupported_option:
         x = 0, r = 0;
         goto extra_action;
     }
-    if (!empty)
+    if (!empty) {
+#ifdef TCC_GDCC_NOEXECSTACK
+        /* The CLI can open a preprocessing output before tcc_set_output_type(). */
+        if (argv[0] && s->output_type != TCC_OUTPUT_DLL && tcc_check_noexecstack_option(s) < 0)
+            return -1;
+#endif
         return 0;
+    }
     if (s->verbose == 2)
         return OPT_PRINT_DIRS;
     if (s->verbose)

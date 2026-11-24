@@ -24,7 +24,7 @@
 
 ## 2. 总体架构与组件
 
-- `TinyCcCompiler`：`CCompiler` 实现。每轮构建：解析 bundle（fail-fast）→ 平台校验 → per-project `CProjectBuildLock` → 进程级 `TCC_GLOBAL_LOCK`（锁序固定为项目锁 → 全局锁，两级均 `lockInterruptibly`）→ 逐 TU 独立 state 产 `TCC_OUTPUT_OBJ` object（经 §5 缓存）→ 新 state 按 `cFiles` 顺序一次链接所有 `.o` 并 `tcc_output_file` 产出物。无 PCH、无 PDB；`optimizationLevel` 不改变编译 flag（唯一固定选项 `-std=c11`），DEBUG/RELEASE 共享缓存条目，仅输出基名不同。
+- `TinyCcCompiler`：`CCompiler` 实现。每轮构建：解析 bundle（fail-fast）→ 平台校验 → per-project `CProjectBuildLock` → 进程级 `TCC_GLOBAL_LOCK`（锁序固定为项目锁 → 全局锁，两级均 `lockInterruptibly`）→ 逐 TU 独立 state 产 `TCC_OUTPUT_OBJ` object（经 §5 缓存）→ 新 state 按 `cFiles` 顺序一次链接所有 `.o` 并 `tcc_output_file` 产出物。无 PCH、无 PDB；逐 TU 固定用 `-std=c11`，Linux x86-64 共享库的最终链接另加 `-Wl,-z,noexecstack`。`optimizationLevel` 不改变这些选项，DEBUG/RELEASE 共享对象缓存条目，仅输出基名不同。
 - `TinyCcLibrary`：进程级 FFM 绑定（`Arena.ofShared()` 加载一次、永不卸载；加载失败不缓存并释放 arena）。绑定 10 个符号：`tcc_new`、`tcc_delete`、`tcc_set_lib_path`、`tcc_set_error_func`、`tcc_set_options`、`tcc_set_output_type`、`tcc_add_include_path`、`tcc_add_file`、`tcc_compile_string`、`tcc_output_file`。常量 `TCC_OUTPUT_DLL=4`、`TCC_OUTPUT_OBJ=3`。
 - `TinyCcNative`：窄接口（`newState`/`delete`/`setLibPath`/`setOptions`/`setOutputType`/`addIncludePath`/`addFile`/`outputFile`/`setErrorHandler`/`callbackFailure`），是全部单测的替换缝（纯 Java fake）；`TinyCcFfmNative` 为 FFM 实现。`tcc_compile_string` 仅为 API 完整性绑定，不在该接口上。
 - `TinyCcBundle`：bundle 解析、校验、安装与缓存（§4）。
@@ -39,6 +39,8 @@
 - 全部 int 返回值按 `!= 0` 判失败（`tcc_add_file` 可返回 -2/-3）；每个 downcall 后检查回调失败标志。
 - 诊断经 error 回调上报：瞬态字符串必须当场拷贝；异常绝不越过 native 帧（回调内异常记录到失败标志）。`tcc_output_file` 会重置 `nb_errors`，其返回值单独不能证明成功——成功判定 = 无回调失败 + 返回 0 + 产物存在。
 - 轮次产物的成功结果 `artifacts=[outputPath]`；失败为空。中断轮次不带缓存统计（见 §6）。
+- Linux x86-64 的 ELF 共享库必须有且仅有一个 `PT_GNU_STACK`，权限恰为 `PF_R | PF_W`。缺少该段时，部分 glibc 加载器会按平台默认推断为需要可执行栈并拒绝 `dlopen`。TinyCC 仅在这类链接显式收到 `-Wl,-z,noexecstack` 时发出该段；若汇编或已接受的链接对象（含选中的 archive 成员）明确携带可执行 `.note.GNU-stack`，opt-in 链接失败，不覆盖已有输出。缺失注记不作需求推断，该选项面向 GDCC 受控输入。未启用时保留原行为；其他平台和输出类型保留不支持选项的诊断，严重性按解析该选项时的 warning 设置决定。
+- Linux x86-64 最终链接成功后，Java 在构建锁内只读校验 ELF64 标识、program header 表和上述栈权限。不合约则返回失败和空产物列表，尝试移除本次无效文件，并提示更新 bundle 或取消 `GDCC_TINYCC_HOME` 后重启；不改写 ELF。覆盖目录通过 MANIFEST 检查也不能跳过这道产物门。
 
 ## 4. bundle 合同
 
@@ -63,7 +65,7 @@ tinycc-bundle/<platformKey>/            # linux-x86_64 / windows-x86_64 / linux-
 
 ### 4.2 安装协议
 
-- 目标目录：`<OS.get_cache_dir()>/gdcc/tinycc/<key>/`，key = `<sanitized-gdccVersion>-tinycc-<fullCommit>-<platformKey>`；`GDCC_TINYCC_HOME` 覆盖直接指向 bundle 根（跳过安装，仍全量校验）。这里使用系统全局缓存根，不是 `EditorPaths` 的 Godot 编辑器专属缓存，也不是项目 `user://`。
+- 目标目录：`<OS.get_cache_dir()>/gdcc/tinycc/<key>/`，key = `<sanitized-gdccVersion>-tinycc-<fullCommit>-<platformKey>`。仅 `linux-x86_64` 追加 `-noexecstack-v1`，使同版本、同 pin 的旧缓存不遮蔽带修复的内嵌库，旧目录原地保留；bundle 格式、上游 pin 和其他平台 key 不变。`GDCC_TINYCC_HOME` 覆盖直接指向 bundle 根（跳过安装，仍全量校验）。这里使用系统全局缓存根，不是 `EditorPaths` 的 Godot 编辑器专属缓存，也不是项目 `user://`。
 - 系统缓存根由 `SystemPathUtil.getCacheDir()` 解析，对齐 Godot **4.5.1-stable** 的 `OS.get_cache_dir()` → `get_cache_path()`，基线 commit `f62fdbde15035c5576dad93e586201f4d41ef0cb`：
   - Windows：非空 `%LOCALAPPDATA%`；缺失或空串时调用 `GetTempPathW`，并用 `GetLongPathNameW` 尝试展开短路径；系统临时目录查询失败才回退非空 `%APPDATA%`，再回退 `.`。不使用 JVM `java.io.tmpdir` 或拼接 `user.home/AppData/Local`。
   - macOS：`$HOME/Library/Caches`；没有 `HOME` 时回退 `.`，忽略 `XDG_CACHE_HOME`。
@@ -138,6 +140,7 @@ tinycc-bundle/<platformKey>/            # linux-x86_64 / windows-x86_64 / linux-
   隔离的 `HOME`、`LOCALAPPDATA` 与 `XDG_CACHE_HOME`，验证 RPC 发现 TinyCC、Auto（null）+ Debug 原生构建成功及 bundle 完整
   校验安装。Gradle `test` 依赖 `jar` 并传入实际归档路径，不能依赖旧 JAR 或测试侧 bundle 覆盖。
 - `TinyCcBundleTest` 锁定系统缓存根下的 `gdcc/tinycc` 后缀。
+- Linux x86-64 栈元数据回归覆盖 vendored CLI 的 opt-in/opt-out 与严格模式、FFM 真实产物及无效 ELF 拒绝、同版本旧 bundle 旁路，以及 TinyCC CLI 构建的 TLS 卸载测试产物。判据是编译器输出的 program header，不依赖宿主 glibc 是否容忍旧产物。
 - `TinyCcPackagedMatrixTest` 在任意宿主校验四套 classpath bundle 的完整安装、目标机器与
   文件格式、Mach-O namespace/install name/签名，以及运行时 archive 内的目标 ELF 对象。
   `gd.script.gdcc.tools.util.UtilTest` 覆盖完整目录发布及失败回滚。

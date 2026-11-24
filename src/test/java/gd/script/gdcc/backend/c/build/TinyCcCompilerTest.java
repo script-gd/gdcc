@@ -7,10 +7,17 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
 import java.io.IOException;
+import java.lang.foreign.Arena;
+import java.lang.foreign.FunctionDescriptor;
+import java.lang.foreign.Linker;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.SymbolLookup;
+import java.lang.foreign.ValueLayout;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.io.File;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -309,6 +316,9 @@ class TinyCcCompilerTest {
 
         var first = compiler.compile(tempDir, List.of(), List.of(tuA, tuB), "probe", COptimizationLevel.DEBUG, host);
         assertTrue(first.success(), () -> "first round failed:\n" + first.buildLog());
+        if (host == TargetPlatform.LINUX_X86_64) {
+            assertNonExecutableGnuStack(first.artifacts().getFirst());
+        }
         assertEquals(42, callEntry(first.artifacts().getFirst()), "the miss round links the current sources");
 
         // Only the local header changes: tu_a's key must change, tu_b's must not.
@@ -319,9 +329,32 @@ class TinyCcCompilerTest {
         assertEquals("[gdcc] tcc object cache: 1 hits, 1 misses\n", second.buildLog());
         assertEquals(List.of(TinyCcLibrary.TCC_OUTPUT_OBJ, TinyCcLibrary.TCC_OUTPUT_DLL), outputTypesPerRound.get(1),
                 "exactly one OBJ state for the changed TU, plus the link state");
+        if (host == TargetPlatform.LINUX_X86_64) {
+            assertNonExecutableGnuStack(second.artifacts().getFirst());
+        }
         NativeArtifactInspector.assertExportsSymbol(second.artifacts().getFirst(), "gdextension_entry");
         assertEquals(43, callEntry(second.artifacts().getFirst()),
                 "the relinked library runs the recompiled code, not the stale object");
+    }
+
+    /// Independent ELF check: older glibc may load a DSO even when its GNU_STACK is absent.
+    private static void assertNonExecutableGnuStack(@NotNull Path library) throws Exception {
+        var builder = new ProcessBuilder("readelf", "-lW", library.toString()).redirectErrorStream(true);
+        builder.environment().put("LC_ALL", "C");
+        var process = builder.start();
+        try {
+            assertTrue(process.waitFor(10, TimeUnit.SECONDS), "readelf did not finish");
+            var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertEquals(0, process.exitValue(), output);
+            var stackRows = output.lines().filter(line -> line.strip().matches("GNU_STACK\\s+.*")).toList();
+            assertEquals(1, stackRows.size(), output);
+            assertTrue(stackRows.getFirst().strip().matches("GNU_STACK(?:\\s+0x[0-9a-fA-F]+){5}\\s+RW\\s+(?:0x)?[0-9a-fA-F]+"),
+                    () -> "expected one GNU_STACK with exactly RW flags:\n" + output);
+        } finally {
+            if (process.isAlive()) {
+                process.destroyForcibly();
+            }
+        }
     }
 
     @Test
@@ -348,13 +381,13 @@ class TinyCcCompilerTest {
     /// dlopens the artifact and calls `gdextension_entry()` — proves the linked library actually
     /// runs the current round's code, which symbol presence alone cannot show.
     private static int callEntry(@NotNull Path library) throws Throwable {
-        var linker = java.lang.foreign.Linker.nativeLinker();
-        try (var arena = java.lang.foreign.Arena.ofConfined()) {
-            var lookup = java.lang.foreign.SymbolLookup.libraryLookup(library, arena);
+        var linker = Linker.nativeLinker();
+        try (var arena = Arena.ofConfined()) {
+            var lookup = SymbolLookup.libraryLookup(library, arena);
             var symbol = lookup.find("gdextension_entry");
             assertTrue(symbol.isPresent(), "gdextension_entry not found in " + library);
             var handle = linker.downcallHandle(symbol.get(),
-                    java.lang.foreign.FunctionDescriptor.of(java.lang.foreign.ValueLayout.JAVA_INT));
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT));
             return (int) handle.invokeExact();
         }
     }
@@ -370,58 +403,52 @@ class TinyCcCompilerTest {
         });
     }
 
-    private static final class SpyTinyCcNative implements TinyCcNative {
-        private final TinyCcNative delegate;
-        private final List<Integer> stateOutputTypes;
-
-        private SpyTinyCcNative(@NotNull TinyCcNative delegate, @NotNull List<Integer> stateOutputTypes) {
-            this.delegate = delegate;
-            this.stateOutputTypes = stateOutputTypes;
-        }
-
+    private record SpyTinyCcNative(
+            @NotNull TinyCcNative delegate, @NotNull List<Integer> stateOutputTypes
+    ) implements TinyCcNative {
         @Override
-        public @Nullable java.lang.foreign.MemorySegment newState() {
+        public @Nullable MemorySegment newState() {
             return delegate.newState();
         }
 
         @Override
-        public void delete(@NotNull java.lang.foreign.MemorySegment state) {
+        public void delete(@NotNull MemorySegment state) {
             delegate.delete(state);
         }
 
         @Override
-        public void setLibPath(@NotNull java.lang.foreign.MemorySegment state, @NotNull String path) {
+        public void setLibPath(@NotNull MemorySegment state, @NotNull String path) {
             delegate.setLibPath(state, path);
         }
 
         @Override
-        public int setOptions(@NotNull java.lang.foreign.MemorySegment state, @NotNull String options) {
+        public int setOptions(@NotNull MemorySegment state, @NotNull String options) {
             return delegate.setOptions(state, options);
         }
 
         @Override
-        public int setOutputType(@NotNull java.lang.foreign.MemorySegment state, int outputType) {
+        public int setOutputType(@NotNull MemorySegment state, int outputType) {
             stateOutputTypes.add(outputType);
             return delegate.setOutputType(state, outputType);
         }
 
         @Override
-        public int addIncludePath(@NotNull java.lang.foreign.MemorySegment state, @NotNull String path) {
+        public int addIncludePath(@NotNull MemorySegment state, @NotNull String path) {
             return delegate.addIncludePath(state, path);
         }
 
         @Override
-        public int addFile(@NotNull java.lang.foreign.MemorySegment state, @NotNull String file) {
+        public int addFile(@NotNull MemorySegment state, @NotNull String file) {
             return delegate.addFile(state, file);
         }
 
         @Override
-        public int outputFile(@NotNull java.lang.foreign.MemorySegment state, @NotNull String file) {
+        public int outputFile(@NotNull MemorySegment state, @NotNull String file) {
             return delegate.outputFile(state, file);
         }
 
         @Override
-        public void setErrorHandler(@NotNull java.lang.foreign.MemorySegment state, @NotNull ErrorHandler handler) {
+        public void setErrorHandler(@NotNull MemorySegment state, @NotNull ErrorHandler handler) {
             delegate.setErrorHandler(state, handler);
         }
 

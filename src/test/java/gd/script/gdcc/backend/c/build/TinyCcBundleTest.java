@@ -36,7 +36,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -110,7 +109,7 @@ class TinyCcBundleTest {
         var exception = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(fixture.toString(), tempDir.resolve("cache"), failingSource(), PLATFORM, VERSION));
 
-        assertTrue(exception.getMessage().contains("GDCC_TINYCC_HOME"), () -> exception.getMessage());
+        assertTrue(exception.getMessage().contains("GDCC_TINYCC_HOME"), exception::getMessage);
         assertTrue(exception.getMessage().contains("bin/libtcc.so"), () -> "the integrity report names the corrupted file: " + exception.getMessage());
     }
 
@@ -118,7 +117,7 @@ class TinyCcBundleTest {
     void envOverrideWithNonexistentDirectoryFails(@TempDir Path tempDir) {
         var exception = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(tempDir.resolve("nope").toString(), tempDir.resolve("cache"), failingSource(), PLATFORM, VERSION));
-        assertTrue(exception.getMessage().contains("GDCC_TINYCC_HOME"), () -> exception.getMessage());
+        assertTrue(exception.getMessage().contains("GDCC_TINYCC_HOME"), exception::getMessage);
     }
 
     @Test
@@ -129,7 +128,7 @@ class TinyCcBundleTest {
 
         var exception = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(fixture.toString(), tempDir.resolve("cache"), failingSource(), PLATFORM, VERSION));
-        assertTrue(exception.getMessage().contains("tinyccCommit"), () -> exception.getMessage());
+        assertTrue(exception.getMessage().contains("tinyccCommit"), exception::getMessage);
         assertTrue(exception.getMessage().contains(TinyCcBundle.TINYCC_PINNED_COMMIT), () -> "message names the pinned commit: " + exception.getMessage());
     }
 
@@ -141,7 +140,7 @@ class TinyCcBundleTest {
 
         var exception = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(fixture.toString(), tempDir.resolve("cache"), failingSource(), PLATFORM, VERSION));
-        assertTrue(exception.getMessage().contains("platform"), () -> exception.getMessage());
+        assertTrue(exception.getMessage().contains("platform"), exception::getMessage);
     }
 
     @Test
@@ -152,7 +151,7 @@ class TinyCcBundleTest {
 
         var exception = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(fixture.toString(), tempDir.resolve("cache"), failingSource(), PLATFORM, VERSION));
-        assertTrue(exception.getMessage().contains("bundleFormat"), () -> exception.getMessage());
+        assertTrue(exception.getMessage().contains("bundleFormat"), exception::getMessage);
     }
 
     @Test
@@ -162,7 +161,7 @@ class TinyCcBundleTest {
         Files.delete(missing.resolve("VERSION"));
         var missingException = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(missing.toString(), tempDir.resolve("cache"), failingSource(), PLATFORM, VERSION));
-        assertTrue(missingException.getMessage().contains("VERSION"), () -> missingException.getMessage());
+        assertTrue(missingException.getMessage().contains("VERSION"), missingException::getMessage);
 
         // Garbage content parses as empty properties, so the required keys surface as missing.
         var malformed = tempDir.resolve("malformed");
@@ -170,7 +169,7 @@ class TinyCcBundleTest {
         Files.writeString(malformed.resolve("VERSION"), "this is not a properties document\n");
         var malformedException = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(malformed.toString(), tempDir.resolve("cache"), failingSource(), PLATFORM, VERSION));
-        assertTrue(malformedException.getMessage().contains("bundleFormat"), () -> malformedException.getMessage());
+        assertTrue(malformedException.getMessage().contains("bundleFormat"), malformedException::getMessage);
     }
 
     @Test
@@ -190,14 +189,14 @@ class TinyCcBundleTest {
         deleteRecursively(noWinapi.resolve("include/winapi"));
         var winapiException = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(noWinapi.toString(), tempDir.resolve("cache"), failingSource(), TinyCcBundle.WINDOWS_X86_64_KEY, VERSION));
-        assertTrue(winapiException.getMessage().contains("include/winapi"), () -> winapiException.getMessage());
+        assertTrue(winapiException.getMessage().contains("include/winapi"), winapiException::getMessage);
 
         var noDefs = tempDir.resolve("no-defs");
         writeWindowsBundleFixture(noDefs);
         Files.delete(noDefs.resolve("lib/gdi32.def"));
         var defException = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(noDefs.toString(), tempDir.resolve("cache"), failingSource(), TinyCcBundle.WINDOWS_X86_64_KEY, VERSION));
-        assertTrue(defException.getMessage().contains("lib/gdi32.def"), () -> defException.getMessage());
+        assertTrue(defException.getMessage().contains("lib/gdi32.def"), defException::getMessage);
     }
 
     @Test
@@ -243,7 +242,7 @@ class TinyCcBundleTest {
         Files.delete(fixture.resolve("bin/libtcc.dylib"));
         var exception = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(fixture.toString(), tempDir.resolve("cache"), failingSource(), TinyCcBundle.MACOS_AARCH64_KEY, VERSION));
-        assertTrue(exception.getMessage().contains("bin/libtcc.dylib"), () -> exception.getMessage());
+        assertTrue(exception.getMessage().contains("bin/libtcc.dylib"), exception::getMessage);
     }
 
     @Test
@@ -276,6 +275,45 @@ class TinyCcBundleTest {
         var second = TinyCcBundle.requireBundleRoot(null, cacheRoot, failingSource(), PLATFORM, VERSION);
 
         assertEquals(first, second);
+    }
+
+    @Test
+    void linuxX8664InstallsNewEmbeddedPayloadBesideSameVersionLegacyCache(@TempDir Path tempDir) throws IOException {
+        var cacheRoot = tempDir.resolve("cache");
+        var legacyKey = VERSION + "-tinycc-" + TinyCcBundle.TINYCC_PINNED_COMMIT + "-" + PLATFORM;
+        var legacy = cacheRoot.resolve(legacyKey);
+        writeLinuxBundleFixture(legacy);
+        Files.writeString(legacy.resolve(TinyCcBundle.READY_MARKER_NAME), "");
+        var legacyLibrary = Files.readString(legacy.resolve("bin/libtcc.so"));
+
+        var embedded = tempDir.resolve("embedded");
+        writeLinuxBundleFixture(embedded);
+        var newLibrary = "patched fixture libtcc.so\n";
+        Files.writeString(embedded.resolve("bin/libtcc.so"), newLibrary);
+        writeManifest(embedded);
+        assertEquals(Files.readString(legacy.resolve("VERSION")), Files.readString(embedded.resolve("VERSION")));
+
+        try (var noClasspath = new URLClassLoader(new URL[0], null)) {
+            assertFalse(TinyCcBundle.isBundlePresent(null, cacheRoot, PLATFORM, VERSION, noClasspath),
+                    "the legacy extraction is not the current embedded bundle");
+        }
+        var installed = TinyCcBundle.requireBundleRoot(null, cacheRoot, directorySource(embedded), PLATFORM, VERSION);
+
+        assertEquals(cacheRoot.resolve(legacyKey + "-noexecstack-v1"), installed);
+        assertEquals(newLibrary, Files.readString(installed.resolve("bin/libtcc.so")));
+        assertEquals(legacyLibrary, Files.readString(legacy.resolve("bin/libtcc.so")));
+        assertEquals(installed, TinyCcBundle.requireBundleRoot(null, cacheRoot, failingSource(), PLATFORM, VERSION));
+        // The namespace applies only to embedded installs; it does not reclassify explicit overrides.
+        assertEquals(legacy, TinyCcBundle.requireBundleRoot(legacy.toString(), cacheRoot, failingSource(), PLATFORM, VERSION));
+    }
+
+    @Test
+    void otherPlatformCacheKeysStayUnchanged() {
+        for (var platform : List.of(TinyCcBundle.WINDOWS_X86_64_KEY, TinyCcBundle.LINUX_AARCH64_KEY,
+                TinyCcBundle.MACOS_AARCH64_KEY)) {
+            assertEquals(VERSION + "-tinycc-" + TinyCcBundle.TINYCC_PINNED_COMMIT + "-" + platform,
+                    TinyCcBundle.bundleKey(VERSION, platform));
+        }
     }
 
     @Test
@@ -353,7 +391,7 @@ class TinyCcBundleTest {
                 installerB.join(Duration.ofSeconds(30));
             }
         }
-        assertFalse(installerA.isAlive() || installerB == null || installerB.isAlive(), "a racing installer hung");
+        assertFalse(installerA.isAlive() || installerB.isAlive(), "a racing installer hung");
 
         assertEquals(List.of(), failures, () -> "both installers must succeed: " + failures);
         assertEquals(2, results.size());
@@ -563,7 +601,7 @@ class TinyCcBundleTest {
                 installerB.join(Duration.ofSeconds(30));
             }
         }
-        assertFalse(installerA.isAlive() || installerB == null || installerB.isAlive(), "an installer hung");
+        assertFalse(installerA.isAlive() || installerB.isAlive(), "an installer hung");
         assertEquals(List.of(), failures, () -> "both installers must succeed: " + failures);
         // After A released the lock, B's pass reclaimed the crash residue and reused the bundle.
         assertFalse(Files.exists(stale), "the stale residue is reclaimed once the lock is free");
@@ -671,8 +709,8 @@ class TinyCcBundleTest {
         Files.writeString(envFixture.resolve("MANIFEST"), poisonedManifest);
         var exception = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(envFixture.toString(), tempDir.resolve("cache"), failingSource(), PLATFORM, VERSION));
-        assertTrue(exception.getMessage().contains("GDCC_TINYCC_HOME"), () -> exception.getMessage());
-        assertTrue(exception.getMessage().contains("MANIFEST"), () -> exception.getMessage());
+        assertTrue(exception.getMessage().contains("GDCC_TINYCC_HOME"), exception::getMessage);
+        assertTrue(exception.getMessage().contains("MANIFEST"), exception::getMessage);
 
         // Cache: an installed bundle whose manifest is poisoned heals on the next resolution.
         var cacheRoot = tempDir.resolve("cache2");
@@ -780,7 +818,7 @@ class TinyCcBundleTest {
 
         var exception = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(null, cacheRoot, failing, PLATFORM, VERSION));
-        assertTrue(exception.getMessage().contains("simulated source failure"), () -> exception.getMessage());
+        assertTrue(exception.getMessage().contains("simulated source failure"), exception::getMessage);
         assertFalse(Files.exists(cacheRoot.resolve(TinyCcBundle.bundleKey(VERSION, PLATFORM))), "nothing is published");
         assertNoStagingResidue(cacheRoot);
 
@@ -817,7 +855,7 @@ class TinyCcBundleTest {
         var exception = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(null, cacheRoot, directorySource(staleManifestFixture), PLATFORM, VERSION));
 
-        assertTrue(exception.getMessage().contains("stdbool.h"), () -> exception.getMessage());
+        assertTrue(exception.getMessage().contains("stdbool.h"), exception::getMessage);
         assertFalse(Files.exists(cacheRoot.resolve(TinyCcBundle.bundleKey(VERSION, PLATFORM))));
         assertNoStagingResidue(cacheRoot);
     }
@@ -836,7 +874,7 @@ class TinyCcBundleTest {
         var exception = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(null, cacheRoot, lyingSource, PLATFORM, VERSION));
 
-        assertTrue(exception.getMessage().contains("libtcc1.a"), () -> exception.getMessage());
+        assertTrue(exception.getMessage().contains("libtcc1.a"), exception::getMessage);
         assertFalse(Files.exists(cacheRoot.resolve(TinyCcBundle.bundleKey(VERSION, PLATFORM))));
         assertNoStagingResidue(cacheRoot);
     }
@@ -854,7 +892,7 @@ class TinyCcBundleTest {
 
         var exception = assertThrows(IOException.class,
                 () -> TinyCcBundle.requireBundleRoot(null, cacheRoot, traversalSource, PLATFORM, VERSION));
-        assertTrue(exception.getMessage().contains("Illegal bundle manifest path"), () -> exception.getMessage());
+        assertTrue(exception.getMessage().contains("Illegal bundle manifest path"), exception::getMessage);
         assertFalse(Files.exists(tempDir.resolve("escape")), "nothing may escape the staging directory");
     }
 
@@ -898,7 +936,7 @@ class TinyCcBundleTest {
             var exception = assertThrows(IOException.class,
                     () -> TinyCcBundle.requireBundleRoot(null, tempDir.resolve("cache"),
                             TinyCcBundle.classpathBundleSource(PLATFORM, classLoader), PLATFORM, VERSION));
-            assertTrue(exception.getMessage().contains("Malformed bundle MANIFEST"), () -> exception.getMessage());
+            assertTrue(exception.getMessage().contains("Malformed bundle MANIFEST"), exception::getMessage);
         }
     }
 
@@ -917,7 +955,7 @@ class TinyCcBundleTest {
                 var exception = assertThrows(IOException.class,
                         () -> TinyCcBundle.requireBundleRoot(null, cacheRoot,
                                 TinyCcBundle.classpathBundleSource(PLATFORM, classLoader), PLATFORM, VERSION));
-                assertTrue(exception.getMessage().contains("Illegal bundle manifest path"), () -> exception.getMessage());
+                assertTrue(exception.getMessage().contains("Illegal bundle manifest path"), exception::getMessage);
             }
             assertFalse(Files.exists(cacheRoot.resolve("evil.txt")), "nothing may escape the staging directory");
             assertNoStagingResidue(cacheRoot);
@@ -1143,7 +1181,7 @@ class TinyCcBundleTest {
     }
 
     private static TinyCcBundle.BundleSource failingSource() {
-        return stagingDir -> {
+        return _ -> {
             throw new IOException("this source must never be consulted");
         };
     }

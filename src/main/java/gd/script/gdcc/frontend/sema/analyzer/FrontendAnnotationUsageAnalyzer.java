@@ -1,12 +1,17 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.NavigableMap;
 import java.util.Objects;
+import java.util.Set;
+import java.util.TreeMap;
 
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import dev.superice.gdparser.frontend.ast.AnnotationStatement;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.Node;
@@ -14,6 +19,9 @@ import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
+import gd.script.gdcc.frontend.parse.FrontendParseRecovery;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
@@ -35,6 +43,7 @@ import gd.script.gdcc.type.GdPackedArrayType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
+import gd.script.gdcc.util.IdentityHashSet;
 
 /// Diagnostics-only annotation placement validator for the currently supported subset.
 ///
@@ -44,8 +53,7 @@ import gd.script.gdcc.type.GdVariantType;
 ///
 /// `@export` is retained by the skeleton for ClassDB usage metadata, but Godot rejects every
 /// export annotation on a static variable (export registers per-instance storage, which a static
-/// property never has). gdcc mirrors that rejection here because there is no parser-level
-/// annotation validation layer.
+/// property never has). Parser-owned recoveries are kept separate from these semantic checks.
 public class FrontendAnnotationUsageAnalyzer {
     private static final @NotNull String ANNOTATION_USAGE_CATEGORY = "sema.annotation_usage";
 
@@ -87,6 +95,7 @@ public class FrontendAnnotationUsageAnalyzer {
         private final @NotNull FrontendAnalysisData analysisData;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull DiagnosticManager diagnosticManager;
+        private final @NotNull Set<AnnotationStatement> handledDamagedSources = new IdentityHashSet<>();
 
         private AnnotationUsageVisitor(
                 @NotNull Path sourcePath,
@@ -123,7 +132,16 @@ public class FrontendAnnotationUsageAnalyzer {
             // Never descend into or validate a damaged subtree root: its declaration facts (such
             // as the owning ClassScope) were never published, so placement checks would misreport
             // recovery artifacts as real violations (single-owner recovery rule).
-            if (node == null || analysisData.skippedSubtreeRoots().containsKey(node)) {
+            if (node == null) {
+                return;
+            }
+            if (node instanceof VariableDeclaration variable && !variable.recoveryAnnotations().isEmpty()) {
+                reportProjectedAnnotations(variable);
+            }
+            if (analysisData.skippedSubtreeRoots().containsKey(node)) {
+                if (node instanceof AnnotationStatement annotation) {
+                    reportDamagedSource(annotation, null);
+                }
                 return;
             }
             validateOnreadyUsage(node);
@@ -203,11 +221,79 @@ public class FrontendAnnotationUsageAnalyzer {
             }
         }
 
-        /// An annotation whose source statement is a damaged subtree root keeps only its parser
-        /// diagnostic; the surviving semantic projection must not be validated on top of it.
+        /// A damaged source annotation never participates in placement or argument validation.
         private boolean isDamagedSource(@NotNull FrontendGdAnnotation annotation) {
             var sourceStatement = annotation.sourceStatement();
-            return sourceStatement != null && analysisData.skippedSubtreeRoots().containsKey(sourceStatement);
+            if (sourceStatement == null || !analysisData.skippedSubtreeRoots().containsKey(sourceStatement)) {
+                return false;
+            }
+            reportDamagedSource(sourceStatement, null);
+            return true;
+        }
+
+        /// A discarded accessor suite projects its annotations onto the property. Index the
+        /// property's annotation errors once so each projection only visits its own span.
+        private void reportProjectedAnnotations(@NotNull VariableDeclaration property) {
+            var projectedByStart = new TreeMap<Integer, List<FrontendParseRecovery>>();
+            for (var recovery : analysisData.parseRecoveriesByOwner().getOrDefault(property, List.of())) {
+                var range = recovery.range();
+                if (FrontendErrorSubtreeAnalyzer.isNonExemptError(recovery)
+                        && "variable.property".equals(recovery.facet()) && recovery.code().startsWith("parse.annotation.")
+                        && range != null) {
+                    projectedByStart.computeIfAbsent(range.startByte(), _ -> new ArrayList<>()).add(recovery);
+                }
+            }
+            for (var annotation : property.recoveryAnnotations()) {
+                reportDamagedSource(annotation, projectedByStart);
+            }
+        }
+
+        private void reportDamagedSource(
+                @NotNull AnnotationStatement source,
+                @Nullable NavigableMap<Integer, List<FrontendParseRecovery>> projectedByStart
+        ) {
+            if (!analysisData.skippedSubtreeRoots().containsKey(source) || !handledDamagedSources.add(source)) {
+                return;
+            }
+            var range = FrontendRange.fromAstRange(source.range());
+            var buckets = analysisData.parseRecoveriesByOwner();
+            var matching = new ArrayList<FrontendParseRecovery>();
+            for (var recovery : buckets.getOrDefault(source, List.of())) {
+                if (FrontendErrorSubtreeAnalyzer.isNonExemptError(recovery)
+                        && ("annotation.arguments".equals(recovery.facet()) || "annotation.target".equals(recovery.facet()))) {
+                    matching.add(recovery);
+                }
+            }
+            if (projectedByStart != null && !projectedByStart.isEmpty() && range != null) {
+                for (var sameStart : projectedByStart.subMap(range.startByte(), true, range.endByte(), true).values()) {
+                    for (var recovery : sameStart) {
+                        var recoveryRange = Objects.requireNonNull(recovery.range());
+                        if (recoveryRange.endByte() <= range.endByte()) {
+                            matching.add(recovery);
+                        }
+                    }
+                }
+            }
+            var path = FrontendDiagnostic.sourcePathText(sourcePath);
+            var uncovered = new ArrayList<FrontendParseRecovery>();
+            for (var recovery : matching) {
+                var covering = FrontendParseRecovery.findActiveCoveringDiagnostic(
+                        recovery, analysisData, diagnosticManager, path);
+                if (covering == null) {
+                    uncovered.add(recovery);
+                } else {
+                    recovery.claimCoveringDiagnostic(analysisData, diagnosticManager, covering);
+                }
+            }
+            if (matching.isEmpty() || !uncovered.isEmpty()) {
+                var label = source.name() == null || source.name().isBlank() ? "annotation" : "@" + source.name();
+                var fallback = FrontendDiagnostic.error(
+                        ANNOTATION_USAGE_CATEGORY, "Invalid " + label + " syntax", path, range);
+                diagnosticManager.report(fallback);
+                for (var recovery : uncovered) {
+                    analysisData.claimParseRecovery(recovery, fallback);
+                }
+            }
         }
 
         private void validateSingleExportAnnotation(@NotNull Node annotatedNode, @NotNull FrontendGdAnnotation annotation) {
@@ -236,18 +322,18 @@ public class FrontendAnnotationUsageAnalyzer {
                 return;
             }
             switch (resolveEffectiveExportType(variableDeclaration, propertyDef)) {
-                case EffectiveExportType.UpstreamBlocked upstreamBlocked -> {
+                case EffectiveExportType.UpstreamBlocked _ -> {
                     // The initializer subtree already carries an upstream blocking diagnostic;
                     // stacking a determinability error on the same root cause would double-report.
                 }
-                case EffectiveExportType.VariantTyped variantTyped -> {
+                case EffectiveExportType.VariantTyped _ -> {
                     // A legitimately Variant-typed property is exportable as Variant; Godot's
                     // default type check skips Variant, only the custom multiline check rejects it.
                     if (name.equals("export_multiline")) {
                         reportExportTypeMismatch(annotation, variableDeclaration.name(), GdVariantType.VARIANT, "String");
                     }
                 }
-                case EffectiveExportType.Undetermined undetermined -> {
+                case EffectiveExportType.Undetermined _ -> {
                     // Godot rejects bare `@export` only when neither a type specifier nor an
                     // initializer exists ("type can't be inferred"); the default type check skips
                     // a still-undetermined Variant, only multiline's custom check fails here.
@@ -287,17 +373,13 @@ public class FrontendAnnotationUsageAnalyzer {
             }
             switch (name) {
                 case "export" -> validateBareExportType(annotation, propertyName, propertyScope, type);
-                case "export_range" -> requireExportType(
-                        annotation, propertyName, type,
-                        type instanceof GdIntType || type instanceof GdFloatType
-                );
                 case "export_enum" -> requireExportType(
                         annotation, propertyName, type,
                         type instanceof GdIntType || type instanceof GdStringType
                 );
-                case "export_flags", "export_flags_2d_render", "export_flags_2d_physics",
+                case "export_range", "export_flags", "export_flags_2d_render", "export_flags_2d_physics",
                      "export_flags_2d_navigation", "export_flags_3d_render", "export_flags_3d_physics",
-                     "export_flags_3d_navigation", "export_flags_avoidance" -> requireExportType(
+                     "export_flags_3d_navigation", "export_flags_avoidance", "export_exp_easing" -> requireExportType(
                         annotation, propertyName, type,
                         type instanceof GdIntType || type instanceof GdFloatType
                 );
@@ -305,10 +387,6 @@ public class FrontendAnnotationUsageAnalyzer {
                      "export_global_dir", "export_multiline", "export_placeholder" -> requireExportType(
                         annotation, propertyName, type,
                         type instanceof GdStringType
-                );
-                case "export_exp_easing" -> requireExportType(
-                        annotation, propertyName, type,
-                        type instanceof GdFloatType || type instanceof GdIntType
                 );
                 case "export_color_no_alpha" -> requireExportType(
                         annotation, propertyName, type,

@@ -6,8 +6,13 @@ import org.jetbrains.annotations.Nullable;
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.channels.ClosedByInterruptException;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
@@ -50,7 +55,8 @@ import java.util.concurrent.locks.ReentrantLock;
 ///   from a new state; an object compiled this round never triggers a retry.
 /// - The output artifact is deleted before the final `tcc_output_file` runs, so a stale
 ///   artifact from an earlier round can never masquerade as this round's success; afterwards
-///   the artifact must exist as a regular file.
+///   the artifact must exist as a regular file. Linux x86-64 DLL links request and verify an
+///   explicit non-executable GNU stack because an older libtcc can ignore the option.
 ///
 /// `buildLog` contract: when the cache is available the log starts with the fixed line
 /// `[gdcc] tcc object cache: <hits> hits, <misses> misses`; a degraded round starts with
@@ -80,6 +86,13 @@ public class TinyCcCompiler implements CCompiler {
     private static final String FAILED_PREFIX = "Failed to run tcc: ";
     private static final String CACHE_STATS_PREFIX = "[gdcc] tcc object cache: ";
     private static final String CACHE_FALLBACK_PREFIX = "[gdcc] tcc object cache unavailable this round: ";
+    private static final String C_OPTIONS = "-std=c11";
+    private static final String LINUX_X86_64_DLL_OPTIONS = C_OPTIONS + " -Wl,-z,noexecstack";
+
+    private static final int ELF64_HEADER_SIZE = 64;
+    private static final int ELF64_PROGRAM_HEADER_SIZE = 56;
+    private static final int PT_GNU_STACK = 0x6474e551;
+    private static final int ELF_STACK_RW = 0x6; // PF_R | PF_W, without PF_X.
 
     private final @NotNull BundleResolver bundleResolver;
     private final @NotNull NativeFactory nativeFactory;
@@ -232,6 +245,8 @@ public class TinyCcCompiler implements CCompiler {
         var diagnostics = new ArrayList<String>();
         var log = new RoundCacheLog(cachePlan);
         var outputPath = projectDir.resolve(targetPlatform.sharedLibraryFileName(outputBaseName)).toAbsolutePath();
+        var checkNonExecutableStack = targetPlatform == TargetPlatform.LINUX_X86_64;
+        var linkOptions = checkNonExecutableStack ? LINUX_X86_64_DLL_OPTIONS : C_OPTIONS;
         var borrowedTemps = new ArrayList<Path>();
         try (var arena = Arena.ofConfined()) {
             final TinyCcNative tcc;
@@ -250,7 +265,7 @@ public class TinyCcCompiler implements CCompiler {
                 }
                 var key = cachePlan.available() ? cachePlan.keys().get(i) : null;
                 if (key != null) {
-                    var hit = TinyCcObjCache.findHit(cachePlan.cacheRoot(), key);
+                    var hit = TinyCcObjCache.findHit(cachePlan.requireCacheRoot(), key);
                     if (hit != null) {
                         log.hits++;
                         objects.add(new LinkedObject(hit, key));
@@ -266,7 +281,7 @@ public class TinyCcCompiler implements CCompiler {
                     return failure(log, diagnostics, outcome.failureChannel());
                 }
                 // A TU compiled this round never counts as a cache hit for the self-heal rule.
-                objects.add(new LinkedObject(outcome.objectPath(), null));
+                objects.add(new LinkedObject(outcome.requireObjectPath(), null));
             }
 
             // Linking: one fresh DLL state consuming the objects in cFiles order (object inputs
@@ -278,7 +293,8 @@ public class TinyCcCompiler implements CCompiler {
                     return failure(log, diagnostics, FAILED_PREFIX + "tcc_new failed to allocate a compiler state");
                 }
                 try {
-                    var setupProblem = setupState(tcc, linkState, bundleRoot, diagnostics, List.of(), TinyCcLibrary.TCC_OUTPUT_DLL);
+                    var setupProblem = setupState(tcc, linkState, bundleRoot, diagnostics, List.of(),
+                            linkOptions, TinyCcLibrary.TCC_OUTPUT_DLL);
                     if (setupProblem != null) {
                         return failure(log, diagnostics, setupProblem);
                     }
@@ -316,20 +332,20 @@ public class TinyCcCompiler implements CCompiler {
                         diagnostics.subList(linkDiagnosticsMark, diagnostics.size()).clear();
                         log.hits--;
                         log.misses++;
-                        var rejected = objects.get(rejectedHit);
+                        var rejectedKey = Objects.requireNonNull(objects.get(rejectedHit).cacheKey());
                         try {
-                            TinyCcObjCache.evict(cachePlan.cacheRoot(), rejected.cacheKey());
+                            TinyCcObjCache.evict(cachePlan.requireCacheRoot(), rejectedKey);
                         } catch (IOException e) {
                             log.degradeOnce("could not evict the rejected cache entry: " + e.getMessage());
                         }
-                        var recompiled = compileTuToObject(tcc, bundleRoot, diagnostics, includeDirs, cFiles.get(rejectedHit), rejected.cacheKey(), cachePlan, borrowedTemps);
+                        var recompiled = compileTuToObject(tcc, bundleRoot, diagnostics, includeDirs, cFiles.get(rejectedHit), rejectedKey, cachePlan, borrowedTemps);
                         if (recompiled.fallbackReason() != null) {
                             log.degradeOnce(recompiled.fallbackReason());
                         }
                         if (recompiled.failureChannel() != null) {
                             return failure(log, diagnostics, recompiled.failureChannel());
                         }
-                        objects.set(rejectedHit, new LinkedObject(recompiled.objectPath(), null));
+                        objects.set(rejectedHit, new LinkedObject(recompiled.requireObjectPath(), null));
                         continue;
                     }
                     // Last cancellation point before the artifact is touched.
@@ -354,6 +370,27 @@ public class TinyCcCompiler implements CCompiler {
                     if (!Files.isRegularFile(outputPath)) {
                         return failure(log, diagnostics, FAILED_PREFIX + "tcc_output_file reported success but " + outputPath + " was not created");
                     }
+                    if (checkNonExecutableStack) {
+                        try {
+                            validateLinuxX8664DllStack(outputPath);
+                        } catch (IOException e) {
+                            // The previous artifact was removed before output. Discard only the
+                            // just-written invalid artifact, while still holding the build lock.
+                            var detail = e.getMessage();
+                            try {
+                                Files.deleteIfExists(outputPath);
+                            } catch (IOException cleanupError) {
+                                detail += "; could not remove the invalid artifact: " + cleanupError.getMessage();
+                            }
+                            if (e instanceof ClosedByInterruptException) {
+                                return interruptedResult();
+                            }
+                            return failure(log, diagnostics, FAILED_PREFIX + "could not verify a non-executable GNU_STACK in "
+                                    + outputPath + ": " + detail
+                                    + ". Use an up-to-date GDCC TinyCC bundle or unset " + TinyCcBundle.ENV_HOME
+                                    + " to use the embedded bundle, then restart GDCC");
+                        }
+                    }
                     return new CCompileResult(true, log.header() + diagnosticsLog(diagnostics), List.of(outputPath));
                 } finally {
                     tcc.delete(linkState);
@@ -372,6 +409,67 @@ public class TinyCcCompiler implements CCompiler {
         }
     }
 
+    /// Only reads the ELF64 file and program headers. Newer glibc can reject DLLs with a
+    /// missing or executable GNU_STACK; a successful native return cannot prove it was emitted.
+    private static void validateLinuxX8664DllStack(@NotNull Path outputPath) throws IOException {
+        try (var file = FileChannel.open(outputPath, LinkOption.NOFOLLOW_LINKS)) {
+            var header = ByteBuffer.allocate(ELF64_HEADER_SIZE).order(ByteOrder.LITTLE_ENDIAN);
+            readElfBytes(file, header, 0);
+            // EI_MAG, EI_CLASS (64-bit), EI_DATA (little-endian), EI_VERSION, then
+            // e_type (ET_DYN), e_machine (EM_X86_64), e_version and e_ehsize.
+            if (header.getInt(0) != 0x464c457f || header.get(4) != 2 || header.get(5) != 1
+                    || header.get(6) != 1 || header.getShort(16) != 3 || header.getShort(18) != 62
+                    || header.getInt(20) != 1 || header.getShort(52) != ELF64_HEADER_SIZE) {
+                throw new IOException("expected a little-endian x86-64 ELF shared library");
+            }
+            var offset = header.getLong(32); // e_phoff
+            var entrySize = Short.toUnsignedInt(header.getShort(54)); // e_phentsize
+            var remaining = Short.toUnsignedInt(header.getShort(56)); // e_phnum
+            var tableSize = (long) remaining * ELF64_PROGRAM_HEADER_SIZE;
+            // TinyCC emits a direct program-header count, not PN_XNUM (which requires
+            // a section-table lookup). Subtract the bounded size to avoid offset overflow.
+            if (entrySize != ELF64_PROGRAM_HEADER_SIZE || remaining == 0 || remaining == 0xffff
+                    || offset < ELF64_HEADER_SIZE || offset > file.size() - tableSize) {
+                throw new IOException("invalid ELF program header table");
+            }
+
+            var entries = ByteBuffer.allocate(ELF64_PROGRAM_HEADER_SIZE * Math.min(remaining, 64))
+                    .order(ByteOrder.LITTLE_ENDIAN);
+            var found = false;
+            while (remaining > 0) {
+                var bytes = Math.min(entries.capacity(), remaining * ELF64_PROGRAM_HEADER_SIZE);
+                entries.clear().limit(bytes);
+                readElfBytes(file, entries, offset);
+                for (var index = 0; index < bytes; index += ELF64_PROGRAM_HEADER_SIZE) {
+                    if (entries.getInt(index) != PT_GNU_STACK) { // p_type
+                        continue;
+                    }
+                    if (found || entries.getInt(index + Integer.BYTES) != ELF_STACK_RW) { // p_flags
+                        throw new IOException("expected exactly one GNU_STACK header with RW permissions");
+                    }
+                    found = true;
+                }
+                offset += bytes;
+                remaining -= bytes / ELF64_PROGRAM_HEADER_SIZE;
+            }
+            if (!found) {
+                throw new IOException("missing GNU_STACK program header");
+            }
+        }
+    }
+
+    private static void readElfBytes(@NotNull FileChannel file, @NotNull ByteBuffer buffer, long offset)
+            throws IOException {
+        while (buffer.hasRemaining()) {
+            var count = file.read(buffer, offset);
+            if (count <= 0) {
+                throw new IOException("truncated ELF header data");
+            }
+            offset += count;
+        }
+        buffer.flip();
+    }
+
     /// Compiles one TU to an object with a dedicated fresh state. The output always lands in a
     /// round-exclusive temp file (system temp area), so a cache filesystem failure can never
     /// fail the build; the link consumes this exclusive copy. With a key, a copy is then staged
@@ -383,7 +481,8 @@ public class TinyCcCompiler implements CCompiler {
             return TuOutcome.failure(FAILED_PREFIX + "tcc_new failed to allocate a compiler state");
         }
         try {
-            var setupProblem = setupState(tcc, state, bundleRoot, diagnostics, includeDirs, TinyCcLibrary.TCC_OUTPUT_OBJ);
+            var setupProblem = setupState(tcc, state, bundleRoot, diagnostics, includeDirs,
+                    C_OPTIONS, TinyCcLibrary.TCC_OUTPUT_OBJ);
             if (setupProblem != null) {
                 return TuOutcome.failure(setupProblem);
             }
@@ -424,10 +523,11 @@ public class TinyCcCompiler implements CCompiler {
                 return new TuOutcome(objectOut, null, null);
             }
             try {
-                var cacheTemp = TinyCcObjCache.newTempObjectPath(cachePlan.cacheRoot(), key);
+                var cacheRoot = cachePlan.requireCacheRoot();
+                var cacheTemp = TinyCcObjCache.newTempObjectPath(cacheRoot, key);
                 try {
                     Files.copy(objectOut, cacheTemp, StandardCopyOption.REPLACE_EXISTING);
-                    TinyCcObjCache.publish(cachePlan.cacheRoot(), key, cacheTemp);
+                    TinyCcObjCache.publish(cacheRoot, key, cacheTemp);
                 } catch (IOException | RuntimeException e) {
                     deleteQuietly(cacheTemp);
                     throw e;
@@ -447,12 +547,12 @@ public class TinyCcCompiler implements CCompiler {
     /// Shared state setup: error handler first (before any call that can emit diagnostics),
     /// then lib path, options and output type, then the include paths in input order. Returns
     /// the failure channel on the first failing step, or null when the state is ready.
-    private static @Nullable String setupState(@NotNull TinyCcNative tcc, @NotNull MemorySegment state, @NotNull Path bundleRoot, @NotNull List<String> diagnostics, @NotNull List<Path> includeDirs, int outputType) {
+    private static @Nullable String setupState(@NotNull TinyCcNative tcc, @NotNull MemorySegment state, @NotNull Path bundleRoot, @NotNull List<String> diagnostics, @NotNull List<Path> includeDirs, @NotNull String options, int outputType) {
         tcc.setErrorHandler(state, diagnostics::add);
         tcc.setLibPath(state, bundleRoot.toString());
-        var optionsStatus = tcc.setOptions(state, "-std=c11");
+        var optionsStatus = tcc.setOptions(state, options);
         if (optionsStatus != 0) {
-            return FAILED_PREFIX + "tcc_set_options(\"-std=c11\") failed with status " + optionsStatus;
+            return FAILED_PREFIX + "tcc_set_options(\"" + options + "\") failed with status " + optionsStatus;
         }
         var callbackProblem = callbackFailureChannel(tcc);
         if (callbackProblem != null) {
@@ -533,6 +633,10 @@ public class TinyCcCompiler implements CCompiler {
             return cacheRoot != null;
         }
 
+        @NotNull Path requireCacheRoot() {
+            return Objects.requireNonNull(cacheRoot);
+        }
+
         static @NotNull CachePlan unavailable(@NotNull String reason) {
             return new CachePlan(null, List.of(), reason);
         }
@@ -548,6 +652,10 @@ public class TinyCcCompiler implements CCompiler {
     /// the first cache degradation for the round's fallback line.
     private record TuOutcome(@Nullable Path objectPath, @Nullable String fallbackReason,
                              @Nullable String failureChannel) {
+        @NotNull Path requireObjectPath() {
+            return Objects.requireNonNull(objectPath);
+        }
+
         static @NotNull TuOutcome failure(@NotNull String channel) {
             return new TuOutcome(null, null, channel);
         }

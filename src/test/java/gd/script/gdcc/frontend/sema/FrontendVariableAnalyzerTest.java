@@ -12,6 +12,7 @@ import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirClassDef;
@@ -27,7 +28,10 @@ import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
+import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
+import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
@@ -36,6 +40,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Modifier;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +57,98 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendVariableAnalyzerTest {
+    @Test
+    void analyzeSkipsUnpublishedMatchSectionWithoutLosingSiblingInventory() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "inventory_marked_match_section.gd"), """
+                func run():
+                    match 1:
+                        var rejected:
+                            pass
+                        var kept:
+                            var copy = kept
+                """, diagnostics);
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var function = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getLast());
+        var match = assertInstanceOf(MatchStatement.class, function.body().statements().getFirst());
+        var rejected = match.sections().getFirst();
+        var kept = match.sections().getLast();
+        var input = publishedPhaseInput(unit, diagnostics, List.of(rejected));
+
+        new FrontendVariableAnalyzer().analyze(input.analysisData(), diagnostics);
+
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected diagnostics: " + diagnostics.snapshot());
+        assertNull(input.analysisData().scopesByAst().get(rejected));
+        assertNull(input.analysisData().scopesByAst().get(rejected.body()));
+        var keptScope = assertInstanceOf(BlockScope.class, input.analysisData().scopesByAst().get(kept));
+        assertSame(kept.patterns().getFirst(), keptScope.resolveValueHere("kept").declaration());
+        assertSame(kept.body().statements().getFirst(), keptScope.resolveValueHere("copy").declaration());
+    }
+
+    @Test
+    void analyzeDoesNotCaptureSelfFromParserDamagedBranch() throws Exception {
+        var source = """
+                extends Node
+                func run():
+                    var callback = func():
+                        if %s:
+                            return self
+                        return null
+                """;
+        for (var condition : List.of("", "true")) {
+            var diagnostics = new DiagnosticManager();
+            var unit = new GdScriptParserService().parseUnit(
+                    Path.of("tmp", "inventory_capture_from_branch.gd"), source.formatted(condition), diagnostics
+            );
+            var analysis = new FrontendSemanticAnalyzer().analyze(
+                    new FrontendModule("test_module", List.of(unit)), newRegistry(), diagnostics
+            );
+            var function = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getLast());
+            var declaration = assertInstanceOf(VariableDeclaration.class, function.body().statements().getFirst());
+            var lambda = assertInstanceOf(LambdaExpression.class, declaration.value());
+            var branch = assertInstanceOf(IfStatement.class, lambda.body().statements().getFirst());
+            var damaged = condition.isEmpty();
+            assertEquals(damaged, analysis.skippedSubtreeRoots().containsKey(branch));
+            assertEquals(damaged ? List.of("parse.missing_expression.if_condition") : List.of(),
+                    diagnostics.snapshot().asList().stream().map(FrontendDiagnostic::category).toList());
+            assertEquals(damaged ? List.of() : List.of("self"), analysis.lambdaPlans().get(lambda).capturePlan()
+                    .captures().stream().map(LambdaCaptureEntry::name).toList());
+        }
+    }
+
+    @Test
+    void analyzeResolvesDamagedLambdaParameterTypeWithOneActiveError() throws Exception {
+        var parseDiagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "inventory_lambda_parameter_type.gd"), """
+                func run():
+                    var callback = func(damaged: Array[Array[int]], kept: int):
+                        return kept
+                """, parseDiagnostics);
+        var function = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getLast());
+        var declaration = assertInstanceOf(VariableDeclaration.class, function.body().statements().getFirst());
+        var lambda = assertInstanceOf(LambdaExpression.class, declaration.value());
+        var damaged = lambda.parameters().getFirst();
+        assertNotNull(damaged.type());
+        assertEquals(1, unit.parseRecoveries().size());
+        assertSame(damaged, unit.parseRecoveries().getFirst().owner());
+        assertEquals("parameter.type", unit.parseRecoveries().getFirst().facet());
+
+        for (var diagnostics : List.of(parseDiagnostics, new DiagnosticManager())) {
+            var analysis = new FrontendSemanticAnalyzer().analyze(
+                    new FrontendModule("test_module", List.of(unit)), newRegistry(), diagnostics
+            );
+            var scope = assertInstanceOf(CallableScope.class, analysis.scopesByAst().get(lambda));
+            assertEquals(GdVariantType.VARIANT, scope.resolveValueHere("damaged").type());
+            assertEquals(GdIntType.INT, scope.resolveValueHere("kept").type());
+            assertTrue(analysis.lambdaPlans().containsKey(lambda));
+            var reports = diagnostics.snapshot().asList();
+            assertEquals(1, reports.size(), reports::toString);
+            assertEquals(FrontendDiagnosticSeverity.ERROR, reports.getFirst().severity());
+            assertEquals(diagnostics == parseDiagnostics ? "parse.syntax.unexpected_token" : "sema.type_resolution",
+                    reports.getFirst().category());
+        }
+    }
+
     @Test
     void analyzeRejectsAnalysisDataWithoutPublishedModuleSkeletonBoundary() {
         var analyzer = new FrontendVariableAnalyzer();
@@ -1056,33 +1153,40 @@ class FrontendVariableAnalyzerTest {
 
     @Test
     void analyzeReportsCaptureConflictForSelfNamedParameterWithoutThrowing() throws Exception {
-        var phaseInput = publishedPhaseInput("phase4_lambda_self_param_conflict.gd", """
+        var parsed = parseHealthySourceUnit("phase4_lambda_self_param_conflict.gd", """
                 class_name LambdaSelfParamConflict
                 extends Node
                 
                 var hp: int = 0
                 
                 func ping():
-                    var cb := func(self):
+                    var cb := func(other):
                         return self.hp
                     return cb
                 """);
-        var pingFunction = findStatement(
-                phaseInput.unit().ast().statements(),
-                FunctionDeclaration.class,
-                functionDeclaration -> functionDeclaration.name().equals("ping")
+        var parsedFunction = assertInstanceOf(FunctionDeclaration.class, parsed.ast().statements().getLast());
+        var parsedDeclaration = assertInstanceOf(VariableDeclaration.class, parsedFunction.body().statements().getFirst());
+        var parsedLambda = assertInstanceOf(LambdaExpression.class, parsedDeclaration.value());
+        // Source parsing drops the invalid parameter. Seed it in the AST to exercise the binder's guard.
+        var selfParameter = renamedParameter(parsedLambda.parameters().getFirst(), "self");
+        var cbLambda = new LambdaExpression(parsedLambda.name(), List.of(selfParameter), parsedLambda.returnType(),
+                parsedLambda.body(), parsedLambda.range());
+        var statements = new ArrayList<>(parsedFunction.body().statements());
+        statements.set(0, new VariableDeclaration(
+                parsedDeclaration.kind(), parsedDeclaration.name(), parsedDeclaration.type(), cbLambda,
+                parsedDeclaration.isStatic(), parsedDeclaration.sourceNodeType(), parsedDeclaration.range(),
+                parsedDeclaration.recoveryAnnotations()
+        ));
+        var pingFunction = new FunctionDeclaration(
+                parsedFunction.name(), parsedFunction.parameters(), parsedFunction.returnType(), parsedFunction.isStatic(),
+                new Block(statements, parsedFunction.body().range()), parsedFunction.range()
         );
-        var cbDeclaration = findStatement(
-                pingFunction.body().statements(),
-                VariableDeclaration.class,
-                variableDeclaration -> variableDeclaration.name().equals("cb")
-        );
-        var cbLambda = assertInstanceOf(LambdaExpression.class, cbDeclaration.value());
+        var unit = withLastFunction(parsed, pingFunction);
+        assertTrue(unit.parseRecoveries().isEmpty());
+        var phaseInput = publishedPhaseInput(unit, new DiagnosticManager(), List.of());
         var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda));
         var diagnosticsBefore = phaseInput.diagnostics().snapshot();
 
-        // Plan §3.4 rule 7: a capture that collides with an existing parameter slot must produce
-        // exactly one binding diagnostic and never reach CallableScope's fail-fast duplicate guard.
         new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
 
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
@@ -1098,6 +1202,50 @@ class FrontendVariableAnalyzerTest {
         var selfBinding = lambdaScope.resolveValueHere("self");
         assertNotNull(selfBinding);
         assertEquals(ScopeValueKind.PARAMETER, selfBinding.kind());
+        assertSame(selfParameter, selfBinding.declaration());
+    }
+
+    @Test
+    void analyzeSourceSelfParameterKeepsOneParserErrorAndAUsableReceiverCapture() throws Exception {
+        var source = """
+                extends Node
+                var hp: int = 0
+                func ping():
+                    var cb := func(%s):
+                        return self.hp
+                    return cb
+                """;
+        for (var name : List.of("self", "other")) {
+            var parseDiagnostics = new DiagnosticManager();
+            var unit = new GdScriptParserService().parseUnit(
+                    Path.of("tmp", "lambda_self_parameter_source.gd"), source.formatted(name), parseDiagnostics
+            );
+            var rejected = name.equals("self");
+            var expected = parseDiagnostics.snapshot().asList();
+            assertEquals(rejected ? List.of("parse.declaration.missing_name") : List.of(),
+                    expected.stream().map(FrontendDiagnostic::category).toList());
+            var function = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getLast());
+            var declaration = assertInstanceOf(VariableDeclaration.class, function.body().statements().getFirst());
+            var lambda = assertInstanceOf(LambdaExpression.class, declaration.value());
+            assertEquals(rejected ? List.of() : List.of("other"), lambda.parameters().stream().map(Parameter::name).toList());
+            for (var diagnostics : List.of(parseDiagnostics, new DiagnosticManager())) {
+                var analysis = new FrontendSemanticAnalyzer().analyze(
+                        new FrontendModule("test_module", List.of(unit)), newRegistry(), diagnostics
+                );
+                assertEquals(expected, diagnostics.snapshot().asList());
+                var scope = assertInstanceOf(CallableScope.class, analysis.scopesByAst().get(lambda));
+                var self = scope.resolveValueHere("self");
+                assertEquals(ScopeValueKind.CAPTURE, self.kind());
+                assertSame(function, self.declaration());
+                assertEquals(List.of("self"), analysis.lambdaPlans().get(lambda).capturePlan().captures()
+                        .stream().map(LambdaCaptureEntry::name).toList());
+                if (!rejected) {
+                    var other = scope.resolveValueHere("other");
+                    assertEquals(ScopeValueKind.PARAMETER, other.kind());
+                    assertSame(lambda.parameters().getFirst(), other.declaration());
+                }
+            }
+        }
     }
 
     @Test
@@ -1279,19 +1427,22 @@ class FrontendVariableAnalyzerTest {
 
     @Test
     void analyzeReportsDuplicateParametersWithoutOverwritingFirstBinding() throws Exception {
-        var phaseInput = publishedPhaseInput("phase3_duplicate_parameter.gd", """
+        var parsed = parseHealthySourceUnit("phase3_duplicate_parameter.gd", """
                 class_name DuplicateParameterBinding
                 extends Node
                 
-                func ping(value: int, value):
+                func ping(value: int, other):
                     pass
                 """);
-        var sourceFile = phaseInput.unit().ast();
-        var pingFunction = findStatement(
-                sourceFile.statements(),
-                FunctionDeclaration.class,
-                functionDeclaration -> functionDeclaration.name().equals("ping")
+        var function = assertInstanceOf(FunctionDeclaration.class, parsed.ast().statements().getLast());
+        var duplicate = renamedParameter(function.parameters().getLast(), "value");
+        var pingFunction = new FunctionDeclaration(
+                function.name(), List.of(function.parameters().getFirst(), duplicate), function.returnType(),
+                function.isStatic(), function.body(), function.range()
         );
+        var unit = withLastFunction(parsed, pingFunction);
+        assertTrue(unit.parseRecoveries().isEmpty());
+        var phaseInput = publishedPhaseInput(unit, new DiagnosticManager(), List.of());
         var pingScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(pingFunction));
         var diagnosticsBefore = phaseInput.diagnostics().snapshot();
 
@@ -1307,8 +1458,45 @@ class FrontendVariableAnalyzerTest {
         assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
         assertEquals("sema.variable_binding", error.category());
         assertTrue(error.message().contains("Duplicate parameter 'value'"));
+        assertEquals(FrontendRange.fromAstRange(duplicate.range()), error.range());
         assertEquals(GdIntType.INT, binding.type());
         assertSame(pingFunction.parameters().getFirst(), binding.declaration());
+    }
+
+    @Test
+    void analyzeSourceDuplicateParameterKeepsOneParserErrorAndResolvesTheFirstDeclaration() throws Exception {
+        var source = """
+                func ping(value: int, %s):
+                    return value
+                """;
+        for (var name : List.of("value", "other")) {
+            var parseDiagnostics = new DiagnosticManager();
+            var unit = new GdScriptParserService().parseUnit(
+                    Path.of("tmp", "duplicate_parameter_source.gd"), source.formatted(name), parseDiagnostics
+            );
+            var rejected = name.equals("value");
+            var expected = parseDiagnostics.snapshot().asList();
+            assertEquals(rejected ? List.of("parse.signature.duplicate_parameter") : List.of(),
+                    expected.stream().map(FrontendDiagnostic::category).toList());
+            var function = assertInstanceOf(FunctionDeclaration.class, unit.ast().statements().getLast());
+            assertEquals(rejected ? List.of("value") : List.of("value", "other"),
+                    function.parameters().stream().map(Parameter::name).toList());
+            var returnValue = assertInstanceOf(ReturnStatement.class, function.body().statements().getFirst()).value();
+            for (var diagnostics : List.of(parseDiagnostics, new DiagnosticManager())) {
+                var analysis = new FrontendSemanticAnalyzer().analyze(
+                        new FrontendModule("test_module", List.of(unit)), newRegistry(), diagnostics
+                );
+                assertEquals(expected, diagnostics.snapshot().asList());
+                var scope = assertInstanceOf(CallableScope.class, analysis.scopesByAst().get(function));
+                var first = scope.resolveValueHere("value");
+                assertEquals(GdIntType.INT, first.type());
+                assertSame(function.parameters().getFirst(), first.declaration());
+                assertSame(first, analysis.symbolBindings().get(returnValue).resolvedValue());
+                if (!rejected) {
+                    assertSame(function.parameters().getLast(), scope.resolveValueHere("other").declaration());
+                }
+            }
+        }
     }
 
     @Test
@@ -1657,12 +1845,39 @@ class FrontendVariableAnalyzerTest {
         );
     }
 
+    private static @NotNull Parameter renamedParameter(@NotNull Parameter parameter, @NotNull String name) {
+        return new Parameter(name, parameter.type(), parameter.defaultValue(), parameter.variadic(), parameter.range());
+    }
+
+    private static @NotNull FrontendSourceUnit withLastFunction(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull FunctionDeclaration function
+    ) {
+        var statements = new ArrayList<>(unit.ast().statements());
+        statements.set(statements.size() - 1, function);
+        return new FrontendSourceUnit(unit.path(), unit.source(), new SourceFile(statements, unit.ast().range()));
+    }
+
+    private static @NotNull FrontendSourceUnit parseHealthySourceUnit(@NotNull String fileName, @NotNull String source) {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", fileName), source, diagnostics);
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        return unit;
+    }
+
     private PhaseInput publishedPhaseInput(@NotNull String fileName, @NotNull String source) throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
         assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        return publishedPhaseInput(unit, diagnostics, List.of());
+    }
 
+    private PhaseInput publishedPhaseInput(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull DiagnosticManager diagnostics,
+            @NotNull List<Node> skippedRoots
+    ) throws Exception {
         var registry = newRegistry();
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
@@ -1673,6 +1888,9 @@ class FrontendVariableAnalyzerTest {
         );
         analysisData.updateModuleSkeleton(moduleSkeleton);
         analysisData.updateDiagnostics(diagnostics.snapshot());
+        for (var root : skippedRoots) {
+            analysisData.skippedSubtreeRoots().put(root, true);
+        }
         new FrontendScopeAnalyzer().analyze(registry, analysisData, diagnostics);
         analysisData.updateDiagnostics(diagnostics.snapshot());
         return new PhaseInput(unit, analysisData, diagnostics);

@@ -1,9 +1,13 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.AnnotationStatement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.gdscript.DiagnosticCodes;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
@@ -18,7 +22,9 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendClassSkeletonAnnotationTest {
@@ -108,7 +114,8 @@ class FrontendClassSkeletonAnnotationTest {
         var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
         var diagnostics = new DiagnosticManager();
         var analysisData = FrontendAnalysisData.bootstrap();
-        var unit = parserService.parseUnit(Path.of("tmp", "unsupported_property_annotation.gd"), """
+        var path = Path.of("tmp", "unsupported_property_annotation.gd");
+        var unit = parserService.parseUnit(path, """
                 class_name UnsupportedPropertyAnnotation
                 extends Node
                 
@@ -137,7 +144,7 @@ class FrontendClassSkeletonAnnotationTest {
         assertTrue(diagnostic.message().contains("@warning_ignore"));
         assertTrue(diagnostic.message().contains("hp"));
         assertEquals(
-                FrontendDiagnostic.sourcePathText(Path.of("tmp", "unsupported_property_annotation.gd")),
+                FrontendDiagnostic.sourcePathText(path),
                 diagnostic.sourcePath()
         );
         assertNotNull(diagnostic.range());
@@ -189,7 +196,7 @@ class FrontendClassSkeletonAnnotationTest {
         var analysisData = FrontendAnalysisData.bootstrap();
         var unit = parserService.parseUnit(Path.of("tmp", "tool_after_trivia.gd"), """
                 # leading comment
-                \"\"\"Script documentation.\"\"\"
+                \"""Script documentation.\"""
                 @tool
                 class_name TriviaTool
                 extends Node
@@ -238,7 +245,7 @@ class FrontendClassSkeletonAnnotationTest {
 
     /// A member-target annotation closes the owner preamble: `@tool` written after `@export` is
     /// no longer script-level, attaches to the member, and must not mark the class. The skeleton
-    /// keeps it retention-only; the placement diagnostic is owned by the usage analyzer.
+    /// keeps it retention-only without echoing the parser's placement diagnostic.
     @Test
     void buildDoesNotMarkToolWrittenAfterMemberAnnotation() throws Exception {
         var parserService = new GdScriptParserService();
@@ -250,6 +257,7 @@ class FrontendClassSkeletonAnnotationTest {
                 @tool
                 var hp: int
                 """, diagnostics);
+        var parsed = diagnostics.snapshot();
 
         var result = new FrontendClassSkeletonBuilder().build(
                 new FrontendModule("test_module", List.of(unit)),
@@ -266,7 +274,7 @@ class FrontendClassSkeletonAnnotationTest {
         assertEquals(List.of("export", "tool"), annotationNames(analysisData.annotationsByAst().get(hpVariable)));
         assertEquals("", findPropertyByName(classDef, "hp").getAnnotations().get("export"));
         assertFalse(findPropertyByName(classDef, "hp").getAnnotations().containsKey("tool"));
-        assertTrue(result.diagnostics().isEmpty());
+        assertParserAnnotationDiagnostics(unit, parsed, result, invalidLevel("tool", "@tool"));
     }
 
     /// Class/root-compatible annotations do not close the owner preamble (Godot `parse_program`
@@ -303,8 +311,8 @@ class FrontendClassSkeletonAnnotationTest {
         assertTrue(result.diagnostics().isEmpty());
     }
 
-    /// `@tool` on an inner class stays retention-only on the `ClassDeclaration`: it never marks
-    /// any class and never reaches the unsupported-annotation diagnostic path.
+    /// `@tool` on an inner class remains attached to the `ClassDeclaration` for inspection.
+    /// Neither class is marked as tool and the builder leaves the placement error to the parser.
     @Test
     void buildKeepsInnerClassToolAsRetentionOnly() throws Exception {
         var parserService = new GdScriptParserService();
@@ -319,6 +327,7 @@ class FrontendClassSkeletonAnnotationTest {
                     @tool
                     var x := 1
                 """, diagnostics);
+        var parsed = diagnostics.snapshot();
 
         var result = new FrontendClassSkeletonBuilder().build(
                 new FrontendModule("test_module", List.of(unit)),
@@ -332,7 +341,8 @@ class FrontendClassSkeletonAnnotationTest {
         assertFalse(relation.topLevelClassDef().isTool());
         assertFalse(relation.innerClassRelations().getFirst().classDef().isTool());
         assertEquals(List.of("tool"), annotationNames(analysisData.annotationsByAst().get(innerDeclaration)));
-        assertTrue(result.diagnostics().isEmpty());
+        assertEquals("x", relation.innerClassRelations().getFirst().classDef().getProperties().getFirst().getName());
+        assertParserAnnotationDiagnostics(unit, parsed, result, invalidLevel("tool", "@tool"));
     }
 
     /// A trailing `@tool` at the end of a non-empty list anchors on its own `AnnotationStatement`
@@ -351,6 +361,7 @@ class FrontendClassSkeletonAnnotationTest {
                 
                 @tool
                 """, diagnostics);
+        var parsed = diagnostics.snapshot();
 
         var result = new FrontendClassSkeletonBuilder().build(
                 new FrontendModule("test_module", List.of(unit)),
@@ -372,11 +383,12 @@ class FrontendClassSkeletonAnnotationTest {
                 List.of("tool"),
                 annotationNames(analysisData.annotationsByAst().get(trailingAnnotationStatement))
         );
-        assertTrue(result.diagnostics().isEmpty());
+        assertParserAnnotationDiagnostics(unit, parsed, result, invalidLevel("tool", "@tool"));
+        assertSame(trailingAnnotationStatement, unit.parseRecoveries().getFirst().owner());
     }
 
     /// `@tool` with arguments never marks the script, but a coexisting legal zero-argument `@tool`
-    /// still does; the arity diagnostic is owned by the usage analyzer.
+    /// still does; the parser reports the malformed annotation.
     @Test
     void buildMarksToolWhenValidAndArgumentCarryingToolCoexist() throws Exception {
         var parserService = new GdScriptParserService();
@@ -399,11 +411,15 @@ class FrontendClassSkeletonAnnotationTest {
 
         assertTrue(result.sourceClassRelations().getFirst().topLevelClassDef().isTool());
         assertEquals(2, analysisData.annotationsByAst().get(unit.ast()).size());
-        assertTrue(result.diagnostics().isEmpty());
+        assertEquals(2, result.diagnostics().asList().size());
+        assertEquals(2, result.diagnostics().asList().stream().map(FrontendDiagnostic::message).distinct().count());
+        assertTrue(result.diagnostics().asList().stream().allMatch(d -> d.category().startsWith("parse.")));
+        assertInstanceOf(AnnotationStatement.class, unit.parseRecoveries().getFirst().owner());
+        assertTrue(analysisData.skippedSubtreeRoots().containsKey(unit.parseRecoveries().getFirst().owner()));
     }
 
     /// `@tool` / `@icon` mis-attached to a member are retention-only: no property metadata and no
-    /// `sema.unsupported_annotation` (their placement diagnostics belong to the usage analyzer).
+    /// `sema.unsupported_annotation` (the parser reports each invalid placement).
     @Test
     void buildKeepsToolAndIconOnMemberAsRetentionOnly() throws Exception {
         var parserService = new GdScriptParserService();
@@ -419,6 +435,7 @@ class FrontendClassSkeletonAnnotationTest {
                 @icon("res://icon.svg")
                 var hp := 1
                 """, diagnostics);
+        var parsed = diagnostics.snapshot();
 
         var result = new FrontendClassSkeletonBuilder().build(
                 new FrontendModule("test_module", List.of(unit)),
@@ -432,11 +449,12 @@ class FrontendClassSkeletonAnnotationTest {
         assertFalse(classDef.isTool());
         assertTrue(findPropertyByName(classDef, "hp").getAnnotations().isEmpty());
         assertEquals(List.of("tool", "icon"), annotationNames(analysisData.annotationsByAst().get(hpVariable)));
-        assertTrue(result.diagnostics().isEmpty());
+        assertParserAnnotationDiagnostics(unit, parsed, result,
+                invalidLevel("tool", "@tool"), invalidLevel("icon", "@icon(\"res://icon.svg\")"));
     }
 
     /// `@tool` with arguments alone never marks the script: the skeleton consumes only the
-    /// zero-argument form, and the arity diagnostic belongs to the usage analyzer.
+    /// zero-argument form, and preserves the parser's arity diagnostic.
     @Test
     void buildDoesNotMarkToolWithArgumentsOnly() throws Exception {
         var parserService = new GdScriptParserService();
@@ -448,6 +466,7 @@ class FrontendClassSkeletonAnnotationTest {
                 class_name ToolWithArgsOnly
                 extends Node
                 """, diagnostics);
+        var parsed = diagnostics.snapshot();
 
         var result = new FrontendClassSkeletonBuilder().build(
                 new FrontendModule("test_module", List.of(unit)),
@@ -460,7 +479,8 @@ class FrontendClassSkeletonAnnotationTest {
         assertFalse(classDef.isTool());
         assertFalse(classDef.hasAnnotation("tool"));
         assertEquals(List.of("tool"), annotationNames(analysisData.annotationsByAst().get(unit.ast())));
-        assertTrue(result.diagnostics().isEmpty());
+        assertParserAnnotationDiagnostics(unit, parsed, result, new ExpectedAnnotationRecovery(
+                "tool", "@tool(1)", DiagnosticCodes.SYNTAX_UNEXPECTED_TOKEN, "requires at most 0 arguments"));
     }
 
     /// When a list contains only `@export` + `@tool`, the member-target `@export` closes the
@@ -476,6 +496,7 @@ class FrontendClassSkeletonAnnotationTest {
                 @export
                 @tool
                 """, diagnostics);
+        var parsed = diagnostics.snapshot();
 
         var result = new FrontendClassSkeletonBuilder().build(
                 new FrontendModule("test_module", List.of(unit)),
@@ -492,7 +513,11 @@ class FrontendClassSkeletonAnnotationTest {
         assertEquals(2, statements.size());
         assertEquals(List.of("export"), annotationNames(analysisData.annotationsByAst().get(statements.get(0))));
         assertEquals(List.of("tool"), annotationNames(analysisData.annotationsByAst().get(statements.get(1))));
-        assertTrue(result.diagnostics().isEmpty());
+        assertParserAnnotationDiagnostics(unit, parsed, result, invalidLevel("tool", "@tool"),
+                new ExpectedAnnotationRecovery("export", "@export", DiagnosticCodes.ANNOTATION_DANGLING,
+                        "does not precede a valid target"));
+        assertSame(statements.get(1), unit.parseRecoveries().getFirst().owner());
+        assertSame(statements.get(0), unit.parseRecoveries().getLast().owner());
     }
 
     /// Well-formed export variants map to their Godot hint_string metadata during skeleton build.
@@ -711,6 +736,61 @@ class FrontendClassSkeletonAnnotationTest {
         assertTrue(findPropertyByName(classDef, "speed").getAnnotations().isEmpty());
         assertEquals(List.of("export_range"), annotationNames(analysisData.annotationsByAst().get(speedVariable)));
         assertTrue(result.diagnostics().isEmpty());
+    }
+
+    @Test
+    void missingToolCloserDoesNotTurnAnEmptyRecoveredArgumentListIntoToolMetadata() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(Path.of("tmp", "recovered_tool.gd"), """
+                @tool(
+                func ping():
+                    pass
+                """, diagnostics);
+        var expected = diagnostics.snapshot().asList();
+        assertEquals(1, expected.size());
+        assertEquals(DiagnosticCodes.MISSING_CLOSER_ANNOTATION, expected.getFirst().category());
+        var annotation = assertInstanceOf(AnnotationStatement.class, unit.parseRecoveries().getFirst().owner());
+        assertTrue(annotation.arguments().isEmpty());
+        var data = FrontendAnalysisData.bootstrap();
+        var result = new FrontendClassSkeletonBuilder().build(
+                FrontendModule.singleUnit("test", unit),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()), diagnostics, data);
+        assertFalse(result.sourceClassRelations().getFirst().classDef().isTool());
+        assertTrue(data.skippedSubtreeRoots().containsKey(annotation));
+        assertEquals(expected, diagnostics.snapshot().asList());
+    }
+
+    private static ExpectedAnnotationRecovery invalidLevel(String name, String text) {
+        return new ExpectedAnnotationRecovery(name, text, DiagnosticCodes.ANNOTATION_INVALID_LEVEL,
+                "must be at the top of the script");
+    }
+
+    private static void assertParserAnnotationDiagnostics(
+            FrontendSourceUnit unit,
+            DiagnosticSnapshot parsed,
+            FrontendModuleSkeleton result,
+            ExpectedAnnotationRecovery... expectedRecoveries
+    ) {
+        assertEquals(parsed, result.diagnostics());
+        assertEquals(expectedRecoveries.length, parsed.size());
+        assertEquals(expectedRecoveries.length, unit.parseRecoveries().size());
+        for (var index = 0; index < expectedRecoveries.length; index++) {
+            var expected = expectedRecoveries[index];
+            var recovery = unit.parseRecoveries().get(index);
+            var annotation = assertInstanceOf(AnnotationStatement.class, recovery.owner());
+            var range = FrontendRange.fromAstRange(annotation.range());
+            assertEquals(expected.name(), annotation.name());
+            assertEquals(expected.text(), unit.source().substring(range.startByte(), range.endByte()));
+            assertEquals("annotation.target", recovery.facet());
+            assertEquals(expected.code(), recovery.code());
+            assertEquals(range, recovery.range());
+            assertTrue(recovery.message().contains(expected.messageFragment()));
+            assertEquals(FrontendDiagnostic.error(expected.code(), recovery.message(),
+                    FrontendDiagnostic.sourcePathText(unit.path()), range), parsed.asList().get(index));
+        }
+    }
+
+    private record ExpectedAnnotationRecovery(String name, String text, String code, String messageFragment) {
     }
 
     private LirClassDef findClassByName(List<LirClassDef> classDefs, String className) {
